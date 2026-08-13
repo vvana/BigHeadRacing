@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testflip"]
+
+[ext_resource type="Script" path="res://tools/test_flip.gd" id="1_testflip"]
+
+[node name="TestFlip" type="Node3D"]
+script = ExtResource("1_testflip")

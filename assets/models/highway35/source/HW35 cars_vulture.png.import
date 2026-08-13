@@ -1,0 +1,37 @@
+[remap]
+
+importer="texture"
+type="CompressedTexture2D"
+uid="uid://cuwqsjj2dogvp"
+path="res://.godot/imported/HW35 cars_vulture.png-aa411f9d466320c9b58fa227ed941dd8.ctex"
+metadata={
+"vram_texture": false
+}
+generator_parameters={
+"md5": "b69b72f9c2f4c18624373efa96775db2"
+}
+
+[deps]
+
+source_file="res://assets/models/highway35/source/HW35 cars_vulture.png"
+dest_files=["res://.godot/imported/HW35 cars_vulture.png-aa411f9d466320c9b58fa227ed941dd8.ctex"]
+
+[params]
+
+compress/mode=0
+compress/high_quality=false
+compress/lossy_quality=0.7
+compress/hdr_compression=1
+compress/normal_map=0
+compress/channel_pack=0
+mipmaps/generate=true
+mipmaps/limit=-1
+roughness/mode=0
+roughness/src_normal=""
+process/fix_alpha_border=true
+process/premult_alpha=false
+process/normal_map_invert_y=false
+process/hdr_as_srgb=false
+process/hdr_clamp_exposure=false
+process/size_limit=0
+detect_3d/compress_to=1

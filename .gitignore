@@ -1,0 +1,13 @@
+# Godot 4: кэш импорта и служебные файлы — генерируются при первом открытии
+.godot/
+*.translation
+
+# Экспортные сборки
+/build/
+/export/
+export_presets.cfg
+
+# Системное
+Thumbs.db
+desktop.ini
+.DS_Store
