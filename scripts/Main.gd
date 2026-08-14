@@ -176,11 +176,12 @@ func _build_player_marker() -> Node3D:
 	cone.bottom_radius = 0.0   # остриё вниз — указывает на машину
 	cone.height = 0.6
 	marker.mesh = cone
+	marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.85, 0.1)
+	mat.albedo_color = Color(0.15, 0.95, 0.25)
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.emission_enabled = true
-	mat.emission = Color(1.0, 0.7, 0.05)
+	mat.emission = Color(0.1, 0.8, 0.2)
 	marker.material_override = mat
 	marker.position = Vector3(0, 2.4, 0)
 	return marker
