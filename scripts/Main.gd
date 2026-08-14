@@ -28,6 +28,9 @@ var _flip_time: Array[float] = []
 var _stall_time: Array[float] = []
 var _finished := false
 
+var _player_marker: Node3D          # стрелка-указатель над машиной игрока
+var _marker_time := 0.0
+
 var _speed_label: Label
 var _lap_label: Label
 var _pos_label: Label
@@ -98,6 +101,8 @@ func _spawn_cars() -> void:
 		_last_offset.append(0.0)
 
 	_car = _cars[0]
+	_player_marker = _build_player_marker()
+	_car.add_child(_player_marker)
 	for i in _cars.size():
 		_last_offset[i] = _track._curve.get_closest_offset(
 				_cars[i].global_position)
@@ -161,7 +166,31 @@ func _physics_process(_delta: float) -> void:
 		_cars[i].ai_rubber = clampf(1.0 + diff / 120.0, 0.85, 1.3)
 
 
+## Маркер игрока: ярко-жёлтая стрелка (конус остриём вниз) над машиной.
+## Материал unshaded + emission — видна при любом освещении.
+func _build_player_marker() -> Node3D:
+	var marker := MeshInstance3D.new()
+	marker.name = "PlayerMarker"
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.34
+	cone.bottom_radius = 0.0   # остриё вниз — указывает на машину
+	cone.height = 0.6
+	marker.mesh = cone
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.85, 0.1)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.emission_enabled = true
+	mat.emission = Color(1.0, 0.7, 0.05)
+	marker.material_override = mat
+	marker.position = Vector3(0, 2.4, 0)
+	return marker
+
+
 func _process(delta: float) -> void:
+	if _player_marker:
+		# Лёгкое покачивание по высоте (без вращения — оно отвлекало).
+		_marker_time += delta
+		_player_marker.position.y = 2.4 + 0.12 * sin(_marker_time * 3.0)
 	if _car:
 		_speed_label.text = "%d км/ч" % int(_car.speed_kmh())
 		_ammo_label.text = "Снаряды %d   Мины %d" % [_car.ammo, _car.mines]
@@ -211,6 +240,7 @@ func _respawn_car(i: int) -> void:
 	car.global_transform = _track.respawn_transform(car.global_position)
 	car.linear_velocity = Vector3.ZERO
 	car.angular_velocity = Vector3.ZERO
+	car.reset_speed_memory()
 	_offtrack_time[i] = 0.0
 	_flip_time[i] = 0.0
 	_stall_time[i] = 0.0

@@ -4,7 +4,7 @@ extends Node3D
 ## полотно дороги (с собственной коллизией), сплошное ограждение по краям,
 ## трамплины и финишный створ. Всё из кода, без внешних ассетов.
 
-const TRACK_HALF_WIDTH := 7.0   # половина ширины полотна, м
+const TRACK_HALF_WIDTH := 9.0   # половина ширины полотна, м
 const WALL_HEIGHT := 1.7   # выше высоты прыжка (~1.8 м) — просто так не улететь
 const WALL_THICKNESS := 0.5
 const SAMPLES := 256            # детализация контура (сэмплов на круг)
@@ -262,9 +262,15 @@ func _build_walls() -> void:
 
 	var body := StaticBody3D.new()
 	body.name = "Walls"
-	# Упругие стены: машина рикошетит, а не липнет (дух RnRR).
+	body.add_to_group("walls")  # Car._wall_slide узнаёт стену по группе
+	# Слой 2: кузов со стенами сталкивается (mask машины включает 2),
+	# а ЛУЧИ ПОДВЕСКИ стены не видят (mask 1) — иначе колёса «едут»
+	# по вертикальной стене как по дороге.
+	body.collision_layer = 2
+	# Стены не упругие: машина не отскакивает, а выравнивается вдоль
+	# ограждения и скользит (см. Car._wall_slide).
 	body.physics_material_override = PhysicsMaterial.new()
-	body.physics_material_override.bounce = 0.5
+	body.physics_material_override.bounce = 0.0
 	body.physics_material_override.friction = 0.1
 
 	var mesh := MeshInstance3D.new()
