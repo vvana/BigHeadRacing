@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testposition"]
+
+[ext_resource type="Script" path="res://tools/test_position.gd" id="1_testposition"]
+
+[node name="TestPosition" type="Node3D"]
+script = ExtResource("1_testposition")

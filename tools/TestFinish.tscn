@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testfinish"]
+
+[ext_resource type="Script" path="res://tools/test_finish.gd" id="1_testfinish"]
+
+[node name="TestFinish" type="Node3D"]
+script = ExtResource("1_testfinish")

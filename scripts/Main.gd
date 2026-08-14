@@ -103,9 +103,15 @@ func _spawn_cars() -> void:
 	_car = _cars[0]
 	_player_marker = _build_player_marker()
 	_car.add_child(_player_marker)
+	var length := _track._curve.get_baked_length()
 	for i in _cars.size():
-		_last_offset[i] = _track._curve.get_closest_offset(
-				_cars[i].global_position)
+		var off := _track._curve.get_closest_offset(_cars[i].global_position)
+		_last_offset[i] = off
+		# Стартовый прогресс = фактическая отметка относительно ЛИНИИ
+		# (решётка стоит до линии, off у конца круга → прогресс < 0).
+		# Если у всех начинать с нуля, задний ряд получает фору ~5-7 м
+		# и позиция в HUD врёт, когда соперник борется рядом.
+		_progress[i] = off - length if off > length * 0.5 else off
 
 
 ## Случайные машины соперников (не совпадающие с машиной игрока).
@@ -229,7 +235,11 @@ func _player_place() -> int:
 
 func _finish_race() -> void:
 	_finished = true
-	_car.controls_enabled = false
+	# Гонка окончена для всех: управление снято, машины плавно тормозят
+	# (см. ветку race_over в Car._physics_process).
+	for c in _cars:
+		c.controls_enabled = false
+		c.race_over = true
 	_center_label.text = "ФИНИШ! Место: %d из %d\nEnter — в гараж" \
 			% [_player_place(), _cars.size()]
 	_center_label.visible = true

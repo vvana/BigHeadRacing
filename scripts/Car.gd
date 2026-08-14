@@ -51,6 +51,7 @@ var ammo := 6
 var mines := 3
 var alive := true
 var controls_enabled := false   # включает менеджер гонки после отсчёта
+var race_over := false          # финиш: газа нет, машина плавно тормозит
 var track: TrackBuilder = null  # ставит Main: маршрут ИИ и точки респавна
 var ai_rubber := 1.0            # «резинка»: множитель тяги/скорости ИИ
 
@@ -144,6 +145,19 @@ func _physics_process(delta: float) -> void:
 			_player_control(delta, on_ground)
 		else:
 			_ai_control(delta, on_ground)
+	elif alive and race_over and on_ground:
+		# После финиша машина плавно тормозит до полной остановки:
+		# тормозной силой против хода, остаток скорости ниже 0.5 м/с
+		# обнуляем (иначе на уклоне машина ползла бы вечно).
+		var brake_h := linear_velocity
+		brake_h.y = 0.0
+		if brake_h.length() > 0.5:
+			apply_central_force(
+					-brake_h.normalized() * brake_power * mass * 0.1)
+		else:
+			linear_velocity.x = 0.0
+			linear_velocity.z = 0.0
+		angular_velocity.y = lerpf(angular_velocity.y, 0.0, 10.0 * delta)
 	_jump_time = maxf(0.0, _jump_time - delta)
 	_protect_landing_speed(on_ground, delta)
 	if alive:
