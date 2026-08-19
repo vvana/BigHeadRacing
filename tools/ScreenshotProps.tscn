@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_screenshotprops"]
+
+[ext_resource type="Script" path="res://tools/screenshot_props.gd" id="1_shotprops"]
+
+[node name="ScreenshotProps" type="Node3D"]
+script = ExtResource("1_shotprops")

@@ -283,7 +283,10 @@ func _check_recovery(delta: float) -> void:
 				_respawn_car(i)
 				continue
 		else:
-			_offtrack_time[i] = 0.0
+			# Затухание вместо сброса: машина, дребезжащая у самой границы
+			# (кадр внутри порога — кадр снаружи), при жёстком сбросе никогда
+			# не набирала таймер и каталась за ограждением бесконечно.
+			_offtrack_time[i] = maxf(0.0, _offtrack_time[i] - delta * 2.0)
 
 		# Переворот считаем, только когда машина уже легла на землю:
 		# в полёте её может кувыркать, это не повод для возврата.
@@ -331,11 +334,20 @@ func _setup_environment() -> void:
 
 	var env := WorldEnvironment.new()
 	var e := Environment.new()
-	e.background_mode = Environment.BG_COLOR
-	e.background_color = Color(0.35, 0.18, 0.12)  # красноватое небо чужой планеты
+	# Голубое градиентное небо (мультяшный день — под стать декору трассы).
+	var sky_mat := ProceduralSkyMaterial.new()
+	sky_mat.sky_top_color = Color(0.3, 0.55, 0.87)
+	sky_mat.sky_horizon_color = Color(0.74, 0.85, 0.95)
+	sky_mat.ground_horizon_color = Color(0.74, 0.85, 0.95)
+	sky_mat.ground_bottom_color = Color(0.28, 0.4, 0.24)  # в тон травы
+	sky_mat.sun_angle_max = 15.0
+	var sky := Sky.new()
+	sky.sky_material = sky_mat
+	e.background_mode = Environment.BG_SKY
+	e.sky = sky
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	e.ambient_light_color = Color(0.6, 0.5, 0.45)
-	e.ambient_light_energy = 0.7
+	e.ambient_light_color = Color(0.65, 0.67, 0.72)
+	e.ambient_light_energy = 0.8
 	env.environment = e
 	add_child(env)
 

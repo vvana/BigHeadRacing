@@ -5,12 +5,12 @@ extends Node3D
 ## трамплины и финишный створ. Всё из кода, без внешних ассетов.
 
 const TRACK_HALF_WIDTH := 9.0   # половина ширины полотна, м
-const WALL_HEIGHT := 1.7   # выше высоты прыжка (~1.8 м) — просто так не улететь
+const WALL_HEIGHT := 2.6   # заметно выше высоты прыжка (~1.9 м) — не улететь
 const WALL_THICKNESS := 0.5
-const SAMPLES := 256            # детализация контура (сэмплов на круг)
+const SAMPLES := 384            # детализация контура (сэмплов на круг)
 
-const GROUND_SIZE := 190.0      # сторона квадрата земли, м
-const GROUND_RES := 72          # ячеек земли по стороне
+const GROUND_SIZE := 280.0      # сторона квадрата земли, м
+const GROUND_RES := 104         # ячеек земли по стороне
 const SHOULDER := 5.0           # ширина ровной обочины у дороги, м
 # Обочина лежит НИЖЕ полотна: сетка земли грубее дороги, и вровень её
 # треугольники пробивались сквозь асфальт (z-fighting). Просвет прячет
@@ -31,6 +31,7 @@ func _ready() -> void:
 	_build_walls()
 	_build_ramps()
 	_build_start_line()
+	_build_decor()
 
 
 ## Профиль высот в духе Rock'n'Roll Racing: ровные плато на разных уровнях,
@@ -71,12 +72,13 @@ static func _profile_height(t: float) -> float:
 ## а касательные считаются по-катмулл-ромовски (пропорционально шагу),
 ## иначе на длинных участках кривая ломается «уголком».
 func _build_curve() -> void:
-	var count := 40
+	var count := 56
 	var points: Array[Vector3] = []
 	for i in count:
 		var a := TAU * i / count
 		# Радиус «дышит» — получаются широкие дуги и лёгкие шиканы.
-		var r := 33.0 + 6.0 * sin(a * 2.0) + 2.5 * sin(a * 3.0 + 1.2)
+		var r := 52.0 + 9.0 * sin(a * 2.0) + 4.0 * sin(a * 3.0 + 1.2) \
+				+ 2.0 * sin(a * 5.0 + 0.4)
 		var y := _profile_height(float(i) / count)
 		points.append(Vector3(cos(a) * r, y, sin(a) * r))
 
@@ -166,6 +168,8 @@ func _build_ground() -> void:
 			var c := Vector3(x1, h[ix + 1][iz + 1], z1)
 			var d := Vector3(x0, h[ix][iz + 1], z1)
 			for v in [a, b, c, a, c, d]:
+				# Планарная UV по миру: тайл травы 10 м.
+				st.set_uv(Vector2(v.x, v.z) * 0.1)
 				st.add_vertex(v)
 			faces.append_array([a, b, c, a, c, d])
 	st.generate_normals()
@@ -176,7 +180,9 @@ func _build_ground() -> void:
 	var mesh := MeshInstance3D.new()
 	mesh.mesh = st.commit()
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.45, 0.33, 0.22)  # грунт в марсианском духе RnRR
+	# Зелёные поля — трава из Cartoon Tracks Pack.
+	mat.albedo_texture = load(
+			"res://assets/models/track_env/cartoon/textures/grass_1.png")
 	mesh.material_override = mat
 	ground.add_child(mesh)
 
@@ -325,8 +331,8 @@ func _build_ramps() -> void:
 		ramp.rotate_object_local(Vector3.RIGHT, deg_to_rad(9.0))  # наклон-трамплин
 
 
-## Стартово-финишный створ: шахматная клетка на полотне и арка с клетчатым
-## баннером над трассой. Только визуал — коллизий нет, чтобы не сбивало.
+## Стартово-финишный створ: шахматная клетка на полотне. Арка, баннер и
+## стартовые огни — модели из ассетов (см. TrackDecor). Коллизий нет.
 func _build_start_line() -> void:
 	var white := StandardMaterial3D.new()
 	white.albedo_color = Color(0.94, 0.94, 0.94)
@@ -356,40 +362,10 @@ func _build_start_line() -> void:
 				(row - 0.5) * cell)
 			gate.add_child(tile)
 
-	# Опоры арки — снаружи ограждения, чтобы не мешали гонке.
-	var post_mat := StandardMaterial3D.new()
-	post_mat.albedo_color = Color(0.55, 0.55, 0.6)
-	post_mat.metallic = 0.7
-	post_mat.roughness = 0.4
-	var post_h := 8.5
-	for side: float in [-1.0, 1.0]:
-		var post := MeshInstance3D.new()
-		var cyl := CylinderMesh.new()
-		cyl.top_radius = 0.16
-		cyl.bottom_radius = 0.22
-		cyl.height = post_h
-		post.mesh = cyl
-		post.material_override = post_mat
-		post.position = Vector3(side * (TRACK_HALF_WIDTH + 0.9), post_h * 0.5, 0)
-		gate.add_child(post)
 
-	# Клетчатый баннер над дорогой.
-	var span := (TRACK_HALF_WIDTH + 0.9) * 2.0
-	var b_cols := 16
-	var b_cell := span / b_cols
-	var b_rows := 2
-	for row in b_rows:
-		for c in b_cols:
-			var tile := MeshInstance3D.new()
-			var box := BoxMesh.new()
-			box.size = Vector3(b_cell, b_cell, 0.25)
-			tile.mesh = box
-			tile.material_override = white if (c + row) % 2 == 0 else black
-			tile.position = Vector3(
-				-span * 0.5 + b_cell * (c + 0.5),
-				post_h - b_cell * (row + 0.5),
-				0)
-			gate.add_child(tile)
+## Декор из готовых ассетов — отдельным узлом (см. TrackDecor.gd).
+func _build_decor() -> void:
+	TrackDecor.new().build(self)
 
 
 ## Горизонтальное расстояние от точки до оси трассы (для детекта вылета).

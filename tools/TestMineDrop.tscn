@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testminedrop"]
+
+[ext_resource type="Script" path="res://tools/test_mine_drop.gd" id="1_testminedrop"]
+
+[node name="TestMineDrop" type="Node3D"]
+script = ExtResource("1_testminedrop")

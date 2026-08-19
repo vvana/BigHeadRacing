@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_screenshottrib"]
+
+[ext_resource type="Script" path="res://tools/screenshot_tribunes.gd" id="1_shottrib"]
+
+[node name="ScreenshotTribunes" type="Node3D"]
+script = ExtResource("1_shottrib")

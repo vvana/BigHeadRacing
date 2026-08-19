@@ -13,6 +13,7 @@ extends RigidBody3D
 @export var max_speed := 34.0
 @export var steer_speed := 3.4          # руль быстрый — аркада
 @export var steer_speed_min := 2.6      # и на скорости почти не тупеет
+@export var steer_full_speed := 10.0    # к этой скорости руль набирает полную силу
 @export var air_steer_speed := 2.2      # рысканье в полёте (можно рулить в воздухе)
 
 @export_group("Сцепление")
@@ -26,10 +27,12 @@ extends RigidBody3D
 
 @export_group("Прочее")
 # Взлётная скорость прыжка, м/с (фишка RnRR). 7.5 при прижиме в полёте
-# (см. _physics_process) даёт высоту ~1.9 м — стену (1.7) перепрыгнуть можно.
+# (см. _physics_process) даёт высоту ~1.9 м — ниже ограждения (2.6):
+# с ровного места стену не перепрыгнуть, только с трамплина.
 @export var jump_impulse := 7.5
 @export var max_track_angle_deg := 80.0 # предел разворота поперёк оси трассы
 @export var wall_align_speed := 7.0     # скорость доворота вдоль ограждения, 1/с
+@export var bump_spin := 0.25           # закрутка от нецентрального удара машиной
 @export var is_player := true
 
 @export_group("Бой")
@@ -58,6 +61,7 @@ var ai_rubber := 1.0            # «резинка»: множитель тяг�
 var _grounded_wheels := 0
 var _can_jump := true
 var _wall_align_time := 0.0     # окно доворота после касания стены, с
+var _bump_spin_time := 0.0      # окно после тарана: руль не глушит закрутку
 var _jump_time := 0.0           # после прыжка клапан вертикали у стены отключён
 var _air_time := 0.0            # сколько уже летим, с (для нарастания прижима)
 var _ground_normal := Vector3.UP  # средняя нормаль опоры под колёсами
@@ -88,11 +92,12 @@ func _ready() -> void:
 	# в _bounce_off_cars().
 	physics_material_override = PhysicsMaterial.new()
 	physics_material_override.bounce = 0.0
-	# Трение корпуса низкое: сцепление с дорогой — отдельная аркадная сила
-	# в _drive, а трение материала работает только когда корпус ЧИРКАЕТ
-	# о землю/стену — и там оно лишь ворует скорость (жалоба «замедляется
-	# при приземлении»).
-	physics_material_override.friction = 0.15
+	# Трение корпуса почти нулевое: сцепление с дорогой — отдельная аркадная
+	# сила в _drive, а трение материала работает при ЧИРКАНИИ корпуса о
+	# землю/стену (ворует скорость — жалоба «замедляется при приземлении»)
+	# и МЕЖДУ МАШИНАМИ (корпуса в контакте цеплялись и ехали вместе —
+	# жалоба «прилипают друг к другу»).
+	physics_material_override.friction = 0.05
 	# Нужно для get_colliding_bodies() в _wall_slide.
 	contact_monitor = true
 	max_contacts_reported = 8
@@ -159,6 +164,7 @@ func _physics_process(delta: float) -> void:
 			linear_velocity.z = 0.0
 		angular_velocity.y = lerpf(angular_velocity.y, 0.0, 10.0 * delta)
 	_jump_time = maxf(0.0, _jump_time - delta)
+	_bump_spin_time = maxf(0.0, _bump_spin_time - delta)
 	_protect_landing_speed(on_ground, delta)
 	if alive:
 		_bounce_off_cars()
@@ -244,16 +250,36 @@ func _bounce_off_cars() -> void:
 			continue
 		var id := other.get_instance_id()
 		now[id] = true
-		if _touch_cars.has(id):
-			continue
 		var away := global_position - other.global_position
 		away.y = 0.0
-		if away.length_squared() < 1e-4:
+		var dist := away.length()
+		if dist < 0.01:
 			continue
-		away = away.normalized()
+		away /= dist
+		# Пока корпуса соприкасаются — лёгкое расталкивание (7 м/с²):
+		# без него прижатые машины «слипались» и ехали вместе. Активный
+		# таран всё равно продавливает (движок даёт 15 м/с²).
+		apply_central_force(away * 70.0 * mass * 0.1)
+		if _touch_cars.has(id):
+			continue
 		var closing := (other.linear_velocity - linear_velocity).dot(away)
 		if closing > 0.5:
 			apply_central_impulse(away * closing * 0.4 * mass)
+		# Нецентральный удар ЗАКРУЧИВАЕТ: точка контакта — у соперника,
+		# плечо — от центра к нему (не длиннее полукорпуса), момент =
+		# плечо × относительная скорость соперника. Продольный таран мимо
+		# центра «поддевает» корму/нос — машину доворачивает, как в RnRR.
+		# Центральный импульс выше момента не даёт (проходит через центр).
+		var rel := other.linear_velocity - linear_velocity
+		rel.y = 0.0
+		var lever := -away * minf(dist * 0.5, 1.5)
+		var spin := lever.cross(rel.limit_length(15.0)).y * bump_spin
+		if absf(spin) > 0.15:
+			# Итог клампится: серия контактов (удар — отскок — снова удар)
+			# не должна раскручивать волчком.
+			angular_velocity.y = clampf(angular_velocity.y + spin, -3.0, 3.0)
+			# Без окна руление в _drive съело бы закрутку за пару кадров.
+			_bump_spin_time = 0.6
 	_touch_cars = now
 
 
@@ -294,6 +320,14 @@ func _ai_control(delta: float, on_ground: bool) -> void:
 	var angle := fwd.signed_angle_to(to_target, Vector3.UP)
 	var steer := clampf(angle * 2.0, -1.0, 1.0)
 	var throttle := 1.0 if absf(angle) < 0.9 else 0.45
+	# Умное торможение: скорость сбрасывается ЗАРАНЕЕ перед крутым
+	# поворотом или кромкой обрыва, а не когда уже вылетел за ограждение.
+	var allowed := _ai_allowed_speed(curve, length, my_off)
+	var speed := linear_velocity.length()
+	if speed > allowed + 1.5:
+		throttle = -1.0
+	elif speed > allowed:
+		throttle = 0.0
 	_drive(delta, on_ground, throttle, steer, false, false)
 
 	_ai_fire_cd -= delta
@@ -303,6 +337,50 @@ func _ai_control(delta: float, on_ground: bool) -> void:
 			shoot()
 		elif _enemy_behind() and randf() < 0.5:
 			drop_mine()
+
+
+## Сколько ИИ можно ехать прямо сейчас, чтобы вписаться во всё, что впереди.
+## Идём по оси трассы сэмплами, два предела скорости:
+## 1) Поворот В ПЛАНЕ: нос крутится максимум steer_speed_min рад/с, значит
+##    при кривизне κ вписаться можно лишь на v = ω/κ (с запасом 0.8).
+## 2) ГРЕБЕНЬ (выпуклый перелом профиля — вершина подъёма, кромка обрыва):
+##    быстрее v²·κ_верт = g машина ВЗЛЕТАЕТ — а в полёте она не рулит по
+##    трассе и выше кромки ограждения не ведётся: летит по прямой и падает
+##    за трассой, если трасса в это время поворачивает. Держим скорость у
+##    предела отрыва (×1.35 — лёгкий подскок можно, дальний полёт нельзя).
+## Дальним точкам разрешается быть быстрее на тормозной путь: v² = v_т²+2ad.
+func _ai_allowed_speed(curve: Curve3D, length: float, my_off: float) -> float:
+	var allowed := max_speed * ai_rubber
+	var step := 4.0
+	var prev := _axis_dir(curve, length, my_off)
+	for i in range(1, 16):
+		var d := step * i
+		var dir := _axis_dir(curve, length, my_off + d)
+		var prev_h := Vector3(prev.x, 0.0, prev.z)
+		var dir_h := Vector3(dir.x, 0.0, dir.z)
+		if prev_h.length_squared() > 1e-6 and dir_h.length_squared() > 1e-6:
+			var bend_h := prev_h.normalized().angle_to(dir_h.normalized())
+			if bend_h > 0.02:
+				var v_corner: float = clampf(
+						0.8 * steer_speed_min * step / bend_h, 10.0, max_speed)
+				allowed = minf(allowed,
+						sqrt(v_corner * v_corner + 2.0 * 8.0 * d))
+		var pitch_drop := asin(clampf(prev.y, -1.0, 1.0)) \
+				- asin(clampf(dir.y, -1.0, 1.0))
+		if pitch_drop > 0.03:
+			var v_crest: float = clampf(
+					1.35 * sqrt(9.8 * step / pitch_drop), 10.0, max_speed)
+			allowed = minf(allowed, sqrt(v_crest * v_crest + 2.0 * 8.0 * d))
+		prev = dir
+	return allowed
+
+
+## Направление оси трассы (3D, с высотой) у отметки off.
+func _axis_dir(curve: Curve3D, length: float, off: float) -> Vector3:
+	var a := curve.sample_baked(fposmod(off, length))
+	var b := curve.sample_baked(fposmod(off + 1.5, length))
+	var d := b - a
+	return d.normalized() if d.length_squared() > 1e-6 else Vector3.FORWARD
 
 
 ## Общая аркадная езда для игрока и ИИ.
@@ -325,21 +403,27 @@ func _drive(
 					forward * throttle * power * ai_rubber * mass * 0.1)
 
 		# Руль: почти не слабеет на скорости (RnRR-манёвренность).
+		# После тарана (_bump_spin_time) руль слабый: жёсткий lerp съел бы
+		# закрутку от удара за пару кадров, а машину должно довернуть.
+		var yaw_rate := 2.5 if _bump_spin_time > 0.0 else 10.0
 		if absf(speed) > 0.5:
 			var speed_t: float = clampf(absf(speed) / max_speed, 0.0, 1.0)
 			var turn_rate: float = lerpf(steer_speed, steer_speed_min, speed_t)
+			# Скорость поворота коррелирует со скоростью машины: почти
+			# стоя не развернёшься, полная сила руля — от steer_full_speed.
+			turn_rate *= clampf(absf(speed) / steer_full_speed, 0.0, 1.0)
 			# Задний ход — руль зеркалится, как в жизни.
 			var direction := signf(speed)
 			_yaw_cmd_sign = signf(steer) * direction
 			angular_velocity.y = lerpf(
 				angular_velocity.y,
 				steer * turn_rate * direction,
-				10.0 * delta
+				yaw_rate * delta
 			)
 		else:
 			# Стоя руль не крутит, но случайную закрутку (от толчков,
 			# приземлений на угол) гасим — сама разворачиваться не должна.
-			angular_velocity.y = lerpf(angular_velocity.y, 0.0, 10.0 * delta)
+			angular_velocity.y = lerpf(angular_velocity.y, 0.0, yaw_rate * delta)
 
 		# Гашение бокового сноса (аркадное сцепление).
 		var right := global_transform.basis.x
@@ -366,7 +450,7 @@ func _drive(
 		angular_velocity.y = lerpf(
 			angular_velocity.y,
 			steer * air_steer_speed * direction,
-			6.0 * delta
+			(2.0 if _bump_spin_time > 0.0 else 6.0) * delta
 		)
 		# В воздухе активно выравниваем корпус (и гасим кувырок), чтобы
 		# приземляться на колёса. Первые полсекунды полёта цель — НОРМАЛЬ
@@ -423,6 +507,14 @@ func _wall_slide(delta: float) -> void:
 	h.y = 0.0
 	var v_out := h.dot(n)
 	var touching := _touching_wall()
+	# Просит ли руль прямо сейчас рысканье ПРОЧЬ от стены.
+	var fwd := -global_transform.basis.z
+	fwd.y = 0.0
+	if fwd.length_squared() < 1e-6:
+		return
+	fwd = fwd.normalized()
+	var into_sign := signf(fwd.signed_angle_to(n, Vector3.UP))
+	var steering_away := _yaw_cmd_sign != 0.0 and _yaw_cmd_sign == -into_sign
 	# Зона ведения — динамическая: по вылету кузова В СТОРОНУ стены
 	# (нос 1.5 м + борт 0.85 м, проекции на нормаль). Упреждение — ровно
 	# ОДИН кадр сближения: перехватить надо до решателя (иначе он съест
@@ -464,6 +556,16 @@ func _wall_slide(delta: float) -> void:
 		var dir: Vector3
 		if v_out > 0.0 or h.length() < 0.1:
 			dir = tangent * (1.0 if h.dot(tangent) >= 0.0 else -1.0)
+			if steering_away:
+				# Руль просит прочь от стены — выпускаем ПОД УГЛОМ от
+				# ограждения, а не строго вдоль. Иначе не оторваться:
+				# кривизна трассы каждый кадр даёт новое сближение, ведение
+				# снова ставит скорость «на рельс» и стирает всё, что руль
+				# наработал, а довернуть нос мешает корма, упёртая в стену.
+				var esc := dir.rotated(Vector3.UP, deg_to_rad(22.0))
+				if esc.dot(n) > 0.0:
+					esc = dir.rotated(Vector3.UP, -deg_to_rad(22.0))
+				dir = esc
 		else:
 			dir = h / h.length()
 		linear_velocity = dir * s + Vector3.UP * linear_velocity.y
@@ -481,13 +583,7 @@ func _wall_slide(delta: float) -> void:
 
 	# Если руль прямо сейчас просит рысканье ПРОЧЬ от стены — не мешаем:
 	# ни доворота, ни гашения (иначе у стены нельзя отрулить).
-	var fwd := -global_transform.basis.z
-	fwd.y = 0.0
-	if fwd.length_squared() < 1e-6:
-		return
-	fwd = fwd.normalized()
-	var into_sign := signf(fwd.signed_angle_to(n, Vector3.UP))
-	if _yaw_cmd_sign != 0.0 and _yaw_cmd_sign == -into_sign:
+	if steering_away:
 		return
 	# Иначе — доворот вдоль стены и полное гашение рысканья: без руля
 	# любое вращение здесь — закрутка от удара углом, а не руление.
