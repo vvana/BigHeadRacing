@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testbumps"]
+
+[ext_resource type="Script" path="res://tools/test_bumps.gd" id="1_testbumps"]
+
+[node name="TestBumps" type="Node3D"]
+script = ExtResource("1_testbumps")

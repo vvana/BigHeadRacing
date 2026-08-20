@@ -34,6 +34,11 @@ func _ready() -> void:
 	_build_decor()
 
 
+# ПОКА трасса плоская (просьба пользователя 2026-08-20): профиль высот
+# отключён, но HEIGHT_KEYS и вся механика рельефа сохранены — вернуть
+# перепады можно, просто выставив false.
+const FLAT_TRACK := true
+
 ## Профиль высот в духе Rock'n'Roll Racing: ровные плато на разных уровнях,
 ## короткие подъёмы между ними и резкие сходы-обрывы (с них — прыжок).
 ## Пары [доля круга, высота]; между ними — плато или переход.
@@ -54,6 +59,8 @@ const HEIGHT_KEYS: Array = [
 ## Высота по доле круга: внутри плато — константа, на переходах — плавная
 ## S-кривая (без изломов, но заметно круче синусоиды).
 static func _profile_height(t: float) -> float:
+	if FLAT_TRACK:
+		return 0.0
 	var f := fposmod(t, 1.0)
 	for i in range(HEIGHT_KEYS.size() - 1):
 		var t0: float = HEIGHT_KEYS[i][0]
@@ -168,8 +175,14 @@ func _build_ground() -> void:
 			var c := Vector3(x1, h[ix + 1][iz + 1], z1)
 			var d := Vector3(x0, h[ix][iz + 1], z1)
 			for v in [a, b, c, a, c, d]:
-				# Планарная UV по миру: тайл травы 10 м.
-				st.set_uv(Vector2(v.x, v.z) * 0.1)
+				# Планарная UV по миру: тайл травы 14 м.
+				st.set_uv(Vector2(v.x, v.z) * 0.07)
+				# Низкочастотная вариация яркости по вершинам ломает
+				# видимую повторяемость тайла (пятна «одинаково
+				# расположенные» бросались в глаза).
+				var shade := 1.0 + 0.09 * sin(v.x * 0.113 + v.z * 0.071) \
+						+ 0.06 * sin(v.x * 0.037 - v.z * 0.059 + 2.1)
+				st.set_color(Color(shade, shade, shade))
 				st.add_vertex(v)
 			faces.append_array([a, b, c, a, c, d])
 	st.generate_normals()
@@ -180,9 +193,11 @@ func _build_ground() -> void:
 	var mesh := MeshInstance3D.new()
 	mesh.mesh = st.commit()
 	var mat := StandardMaterial3D.new()
-	# Зелёные поля — трава из Cartoon Tracks Pack.
+	# Зелёные поля — трава из Cartoon Tracks Pack (пятна текстуры
+	# смягчены при конвертации, см. ПРОГРЕСС.md).
 	mat.albedo_texture = load(
 			"res://assets/models/track_env/cartoon/textures/grass_1.png")
+	mat.vertex_color_use_as_albedo = true
 	mesh.material_override = mat
 	ground.add_child(mesh)
 

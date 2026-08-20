@@ -64,6 +64,7 @@ var _wall_align_time := 0.0     # окно доворота после каса�
 var _bump_spin_time := 0.0      # окно после тарана: руль не глушит закрутку
 var _jump_time := 0.0           # после прыжка клапан вертикали у стены отключён
 var _air_time := 0.0            # сколько уже летим, с (для нарастания прижима)
+var _ground_time := 0.0         # сколько уже едем по земле без отрыва, с
 var _ground_normal := Vector3.UP  # средняя нормаль опоры под колёсами
 var _yaw_cmd_sign := 0.0        # знак рысканья, которое сейчас просит руль
 # «Недавняя» горизонтальная скорость: максимум с медленным затуханием
@@ -73,6 +74,9 @@ var _recent_hspeed := 0.0
 var _recent_hdir := Vector3.ZERO  # направление на пике скорости (для защиты)
 var _land_protect := 0.0        # окно защиты скорости после приземления, с
 var _touch_cars := {}           # машины в контакте на прошлом кадре (рикошет)
+# Для капа боковых «пинков» о рёбра полотна на ровной езде:
+var _prev_hvel := Vector3.ZERO  # горизонтальная скорость прошлого кадра
+var _ext_push_time := 0.0       # окно после честного толчка (таран/взрыв)
 var _wheel_pivots: Array[Node3D] = []
 var _steer_visual := 0.0
 var _ai_fire_cd := 2.0
@@ -124,7 +128,15 @@ func _build_collision() -> void:
 			pts.append(Vector3(sx, 0.70, sz))  # верхняя плита
 			pts.append(Vector3(sx, 0.05, sz))  # нижняя кромка носа/кормы
 		for sz: float in [-1.1, 1.1]:
-			pts.append(Vector3(sx, -0.28, sz))  # днище (короче корпуса)
+			# Днище (короче корпуса). Было -0.28: при рабочем прогибе
+			# подвески (~0.25) клиренс оставался ~13 см, и на любом
+			# переносе веса днище чиркало по полотну, ловя внутренние
+			# рёбра тримеша, — серийные «прыжки на ровном» с потерей
+			# скорости. -0.12 даёт ~29 см: при обычной езде кузов НЕ
+			# касается дороги вовсе (урок из WaterSlides: не давать телу
+			# трогать фасеточный меш); упор от провала под дорогу
+			# по-прежнему срабатывает раньше полного пробоя пружин.
+			pts.append(Vector3(sx, -0.12, sz))
 	shape.points = pts
 	col.shape = shape
 	add_child(col)
@@ -169,6 +181,7 @@ func _physics_process(delta: float) -> void:
 	if alive:
 		_bounce_off_cars()
 	_air_time = 0.0 if on_ground else _air_time + delta
+	_ground_time = _ground_time + delta if on_ground else 0.0
 	if alive and not on_ground:
 		# Прижим в полёте: тяжёлая машина быстро возвращается на асфальт —
 		# чувство массы. Вниз сильнее, чем вверх, чтобы прыжок не задушить
@@ -188,8 +201,46 @@ func _physics_process(delta: float) -> void:
 		# клапан _jump_time.
 		if _jump_time <= 0.0:
 			var vn := linear_velocity.dot(_ground_normal)
-			if vn > 3.0:
-				linear_velocity -= _ground_normal * (vn - 3.0)
+			# Сразу после посадки разрешаем 3 м/с (аркадный отскок), а при
+			# УСТОЯВШЕЙСЯ езде по ровному — только 1 м/с: днище, чиркая по
+			# полотну, ловит внутренние рёбра треугольников коллизии, и
+			# машина «подпрыгивала на ровном месте». На склонах и
+			# трамплинах (нормаль наклонена) строгий клапан не применяем —
+			# там vn законно растёт на переломах профиля.
+			var allowed := 3.0
+			if _ground_time > 0.35 and _ground_normal.y > 0.995:
+				allowed = 0.6
+				# Фантомный удар о ребро бьёт в угол днища и даёт
+				# мгновенный ТАНГАЖ («подбрасывает перед на ровном»).
+				# На установившейся ровной езде резких крена/тангажа
+				# быть не может — жёстко ограничиваем. Наезд на трамплин
+				# не задет: там нормаль опоры наклоняется, и ветка
+				# выключается (порог 0.995 выше cos 9° = 0.988).
+				var spin_h := angular_velocity
+				spin_h.y = 0.0
+				if spin_h.length() > 1.2:
+					spin_h = spin_h.limit_length(1.2)
+					angular_velocity = Vector3(
+							spin_h.x, angular_velocity.y, spin_h.z)
+				# Фантомный удар о ребро может дать и БОКОВОЙ пинок —
+				# курс машины «внезапно меняет угол» на ровном месте.
+				# Честная физика (грип 14, руль) меняет боковую скорость
+				# максимум на ~0.3 м/с за кадр — режем всё, что выше 0.6.
+				# Исключения: недавний честный толчок (таран, взрыв,
+				# мина — _ext_push_time) и пристенок (там своё ведение
+				# и свои капы).
+				if _ext_push_time <= 0.0 and _wall_align_time <= 0.0 \
+						and not _touching_wall():
+					var h_flat := linear_velocity
+					h_flat.y = 0.0
+					if _prev_hvel.length() > 5.0 and h_flat.length() > 5.0:
+						var prev_dir := _prev_hvel.normalized()
+						var dv := h_flat - _prev_hvel
+						var lat := dv - prev_dir * dv.dot(prev_dir)
+						if lat.length() > 0.6:
+							linear_velocity -= lat - lat.limit_length(0.6)
+			if vn > allowed:
+				linear_velocity -= _ground_normal * (vn - allowed)
 		# Кузов активно выравнивается к плоскости дороги + сильное гашение
 		# качки (закидывало нос при неравном сжатии пружин). Рысканье
 		# не трогаем — руль работает.
@@ -201,6 +252,17 @@ func _physics_process(delta: float) -> void:
 	if alive:
 		_wall_slide(delta)
 		_clamp_heading(delta)
+	_ext_push_time = maxf(0.0, _ext_push_time - delta)
+	# Память для капа боковых пинков — в самом конце, после всех правок.
+	_prev_hvel = linear_velocity
+	_prev_hvel.y = 0.0
+
+
+## Анимация колёс — в _process, а не _physics_process: кадр рисуется ПОСЛЕ
+## решателя физики, и кламп колёс к полотну должен видеть уже конечное
+## положение кузова (иначе на жёсткой посадке кузов доседал после клампа
+## и колёса на кадр-два всё же ныряли под асфальт).
+func _process(delta: float) -> void:
 	_animate_wheels(delta)
 
 
@@ -256,6 +318,9 @@ func _bounce_off_cars() -> void:
 		if dist < 0.01:
 			continue
 		away /= dist
+		# Контакт с машиной — честный источник боковых сил: кап боковых
+		# пинков (см. _physics_process) на это окно отключаем.
+		_ext_push_time = 0.3
 		# Пока корпуса соприкасаются — лёгкое расталкивание (7 м/с²):
 		# без него прижатые машины «слипались» и ехали вместе. Активный
 		# таран всё равно продавливает (движок даёт 15 м/с²).
@@ -540,7 +605,13 @@ func _wall_slide(delta: float) -> void:
 		return
 	_wall_align_time -= delta
 
-	if guiding:
+	# Перенаправляем на «рельс» только при СБЛИЖЕНИИ со стеной. Если
+	# скорость уже от стены/вдоль — НЕ трогаем вовсе: раньше здесь
+	# направление бралось из мгновенной скорости (которую решатель мог
+	# только что развернуть ударом о ребро), а величина накачивалась из
+	# памяти до полной — машину «выстреливало» в случайную сторону
+	# («внезапно меняет направление»). Фантомные броски гасят капы ниже.
+	if guiding and (v_out > 0.0 or h.length() < 0.1):
 		# Вся горизонтальная скорость — вдоль стены, но с лёгким штрафом:
 		# ограждение направляет и ЧУТЬ притормаживает — четверть скорости
 		# сближения при перехвате + слабый скрежет, пока есть контакт.
@@ -553,27 +624,52 @@ func _wall_slide(delta: float) -> void:
 		s = maxf(s, 0.0)
 		# Память скорости срезаем вслед — иначе она вернёт штраф обратно.
 		_recent_hspeed = minf(_recent_hspeed, s)
-		var dir: Vector3
-		if v_out > 0.0 or h.length() < 0.1:
-			dir = tangent * (1.0 if h.dot(tangent) >= 0.0 else -1.0)
-			if steering_away:
-				# Руль просит прочь от стены — выпускаем ПОД УГЛОМ от
-				# ограждения, а не строго вдоль. Иначе не оторваться:
-				# кривизна трассы каждый кадр даёт новое сближение, ведение
-				# снова ставит скорость «на рельс» и стирает всё, что руль
-				# наработал, а довернуть нос мешает корма, упёртая в стену.
-				var esc := dir.rotated(Vector3.UP, deg_to_rad(22.0))
-				if esc.dot(n) > 0.0:
-					esc = dir.rotated(Vector3.UP, -deg_to_rad(22.0))
-				dir = esc
-		else:
-			dir = h / h.length()
+		# Знак «вдоль»: мгновенная продольная скорость может быть ~0 или
+		# искажена ударом — при слабом сигнале берём память направления,
+		# затем нос (он ограничен ±80° к оси и назад не смотрит).
+		var along := h.dot(tangent)
+		if absf(along) < 2.0 and _recent_hdir != Vector3.ZERO:
+			along = _recent_hdir.dot(tangent) * maxf(_recent_hspeed, 1.0)
+		if absf(along) < 0.5:
+			along = fwd.dot(tangent)
+		var dir := tangent * (1.0 if along >= 0.0 else -1.0)
+		if steering_away:
+			# Руль просит прочь от стены — выпускаем ПОД УГЛОМ от
+			# ограждения, а не строго вдоль. Иначе не оторваться:
+			# кривизна трассы каждый кадр даёт новое сближение, ведение
+			# снова ставит скорость «на рельс» и стирает всё, что руль
+			# наработал, а довернуть нос мешает корма, упёртая в стену.
+			var esc := dir.rotated(Vector3.UP, deg_to_rad(22.0))
+			if esc.dot(n) > 0.0:
+				esc = dir.rotated(Vector3.UP, -deg_to_rad(22.0))
+			dir = esc
 		linear_velocity = dir * s + Vector3.UP * linear_velocity.y
-	if touching:
-		# Клапан подскока: депенетрация вклиненного угла не должна
+	# Стена — тримеш из сотен сегментов, и кузов-коробка, скользя вдоль,
+	# иногда цепляет ВНУТРЕННЕЕ ребро стыка — решатель швыряет машину к
+	# оси («еду вдоль ограждения и будто на что-то наезжаю») или вверх.
+	# Пока машина в пристенке и руль НЕ просит прочь, скорости ОТ стены
+	# взяться неоткуда — ограничиваем её 1.2 м/с (плавный отход за счёт
+	# кривизны трассы остаётся). Подскок режем в том же окне.
+	if not steering_away and (touching or _wall_align_time > 0.0):
+		var h_now := linear_velocity
+		h_now.y = 0.0
+		var out_now := h_now.dot(n)
+		if out_now < -1.2:
+			linear_velocity -= n * (out_now + 1.2)
+	if _jump_time <= 0.0 and (touching or _wall_align_time > 0.0):
+		# Клапан подскока: депенетрация вклиненного угла/ребра не должна
 		# закидывать кузов на стену (после прыжка отключён).
-		if _jump_time <= 0.0:
-			linear_velocity.y = minf(linear_velocity.y, 1.0)
+		linear_velocity.y = minf(linear_velocity.y, 1.0)
+		# И не должна крутить кузов: удар о ребро сегмента у стены даёт
+		# мгновенный крен/тангаж — режем жёстко (мягкое гашение торкой
+		# ниже не успевает за разовым импульсом).
+		var wall_spin := angular_velocity
+		wall_spin.y = 0.0
+		if wall_spin.length() > 1.5:
+			wall_spin = wall_spin.limit_length(1.5)
+			angular_velocity = Vector3(
+					wall_spin.x, angular_velocity.y, wall_spin.z)
+	if touching:
 		# Царапание стены не должно опрокидывать: держим корпус к
 		# горизонту и гасим крен/тангаж (как в полёте).
 		var up := global_transform.basis.y
@@ -651,10 +747,16 @@ func _apply_suspension(_delta: float) -> void:
 
 		# Пружина + демпфер вдоль оси корпуса вверх. Пружина прогрессивная:
 		# при сильном сжатии (жёсткое приземление) жёсткость резко растёт,
-		# чтобы подвеска не пробивалась «в пол».
+		# чтобы подвеска не пробивалась «в пол». Член c⁶ — жёсткий «упор»
+		# у дна хода: в ложбинах профиля на скорости прожатие доходило до
+		# 0.97-0.99, кузов проседал до касания днищем полотна (машина
+		# скребла и притормаживала), а визуальные колёса уходили под
+		# асфальт до 40 см. У прожатия покоя (~0.25) добавка ничтожна —
+		# обычная езда не меняется.
 		var up := global_transform.basis.y
 		var point_velocity := linear_velocity + angular_velocity.cross(start - global_position)
-		var progressive := 1.0 + 2.0 * compression * compression
+		var c2 := compression * compression
+		var progressive := 1.0 + 2.0 * c2 + 12.0 * c2 * c2 * c2
 		var spring_force := compression * suspension_strength * progressive
 		var damp_force := -up.dot(point_velocity) * suspension_damping
 		var force := up * (spring_force + damp_force) * mass * 0.1
@@ -694,7 +796,9 @@ func take_damage(amount: float, dir: Vector3) -> void:
 	if not alive:
 		return
 	hp -= amount
-	# Толчок от попадания — машину шатает, как в RnRR.
+	# Толчок от попадания — машину шатает, как в RnRR. Кап боковых
+	# пинков на это окно отключаем — толчок честный.
+	_ext_push_time = 0.3
 	apply_central_impulse((dir.normalized() + Vector3.UP * 0.4) * mass * 1.5)
 	if hp <= 0.0:
 		_explode()
@@ -763,21 +867,62 @@ func collect_wheels(model: Node) -> void:
 	_wheel_pivots.clear()
 	for child in model.get_children():
 		if child is Node3D and child.has_meta("wheel_radius"):
+			child.set_meta("rest_pos", (child as Node3D).position)
+			child.set_meta("lift", 0.0)
 			_wheel_pivots.append(child)
 
 
 ## Вращение колёс по скорости качения и поворот передних по рулю.
+## Плюс кламп к полотну: кузов — жёсткое тело, при прожатии подвески он
+## опускается, и колёса (запечённые в модель) уходили бы под асфальт.
+## Каждый кадр луч вниз от ступицы ищет дорогу: если низ колеса оказался
+## бы под ней — пивот приподнимается ровно на глубину утопания (вверх
+## мгновенно, вниз плавно, чтобы колесо не дёргалось на стыках).
 func _animate_wheels(delta: float) -> void:
 	if _wheel_pivots.is_empty():
 		return
 	var forward := -global_transform.basis.z
 	var speed := linear_velocity.dot(forward)
+	var space := get_world_3d().direct_space_state
+	# Из луча исключаем все машины: кузов соперника рядом — не дорога,
+	# иначе колесо «вспрыгивало» на него.
+	var car_rids: Array[RID] = []
+	for node in get_tree().get_nodes_in_group("cars"):
+		car_rids.append((node as RigidBody3D).get_rid())
 	for pivot in _wheel_pivots:
 		var radius: float = pivot.get_meta("wheel_radius")
 		var sign_: float = pivot.get_meta("spin_sign")
 		pivot.rotation.x += sign_ * (speed / maxf(radius, 0.05)) * delta
 		if pivot.get_meta("is_front"):
 			pivot.rotation.y = _steer_visual
+		pivot.position = pivot.get_meta("rest_pos")
+		var hub: Vector3 = pivot.global_position
+		var query := PhysicsRayQueryParameters3D.create(
+				hub + Vector3.UP * 1.0, hub + Vector3.DOWN * 2.0)
+		query.collision_mask = 1  # стены — не дорога
+		query.exclude = car_rids
+		var hit := space.intersect_ray(query)
+		var pen := 0.0
+		if not hit.is_empty():
+			pen = (hit["position"] as Vector3).y - (hub.y - radius)
+		# Упреждение на пару шагов решателя: точка колеса сближается с
+		# опорой ещё ПОСЛЕ нашего замера. Считаем по НОРМАЛИ опоры, а не
+		# только по vy: при посадке носом колесо ныряет быстрее центра
+		# (тангаж), а при заезде на наклон (трамплин) поверхность
+		# «набегает» под колесо горизонтально (v·sin наклона). Перелёт
+		# (колесо на пару см выше дороги один кадр) незаметен, недолёт —
+		# виден.
+		if not hit.is_empty():
+			var point_v := linear_velocity \
+					+ angular_velocity.cross(hub - global_position)
+			var approach := -point_v.dot(hit["normal"])
+			pen += maxf(0.0, approach) * delta * 2.0
+		var target := clampf(pen, 0.0, 0.6)
+		var lift: float = pivot.get_meta("lift")
+		lift = target if target > lift else lerpf(lift, target, 12.0 * delta)
+		pivot.set_meta("lift", lift)
+		if lift > 0.001:
+			pivot.global_position = hub + Vector3.UP * lift
 
 
 ## Есть ли под машиной земля вплотную. Луч идёт строго вниз по миру
