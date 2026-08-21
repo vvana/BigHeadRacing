@@ -36,7 +36,8 @@ func _physics_process(_d: float) -> void:
 		for i in range(1, _main._cars.size()):
 			var extra: Car = _main._cars[i]
 			extra.controls_enabled = false
-			extra.ammo = 0
+			extra.alive = false  # и от автовозврата на трассу
+			extra.weapon = -1
 			extra.global_transform = Transform3D(Basis.IDENTITY,
 					Vector3(110.0 + i * 6.0, 2.0, 110.0))
 			extra.linear_velocity = Vector3.ZERO

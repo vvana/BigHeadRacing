@@ -4,13 +4,18 @@ extends Node3D
 ## полотно дороги (с собственной коллизией), сплошное ограждение по краям,
 ## трамплины и финишный створ. Всё из кода, без внешних ассетов.
 
-const TRACK_HALF_WIDTH := 9.0   # половина ширины полотна, м
+# Полотно переменной ширины (см. SEGMENTS): на прямых широкое, в шпильке
+# и крутых поворотах узкое. TRACK_HALF_WIDTH — МАКСИМУМ: по нему считаются
+# обочина, порог вылета и расстановка декора, чтобы в узких местах они
+# просто отходили дальше от кромки, а не резали полотно.
+const TRACK_HALF_WIDTH := 11.0  # максимальная полуширина полотна, м
+const MIN_HALF_WIDTH := 6.0     # самое узкое место (шпилька), м
 const WALL_HEIGHT := 2.6   # заметно выше высоты прыжка (~1.9 м) — не улететь
 const WALL_THICKNESS := 0.5
-const SAMPLES := 384            # детализация контура (сэмплов на круг)
+const SAMPLES := 768            # детализация контура (сэмплов на круг)
 
-const GROUND_SIZE := 280.0      # сторона квадрата земли, м
-const GROUND_RES := 104         # ячеек земли по стороне
+const GROUND_SIZE := 400.0      # сторона квадрата земли, м
+const GROUND_RES := 148         # ячеек земли по стороне
 const SHOULDER := 5.0           # ширина ровной обочины у дороги, м
 # Обочина лежит НИЖЕ полотна: сетка земли грубее дороги, и вровень её
 # треугольники пробивались сквозь асфальт (z-fighting). Просвет прячет
@@ -21,6 +26,11 @@ var _curve := Curve3D.new()
 # Предрассчитанные точки контура и векторы «вправо» в каждой из них.
 var _pts := PackedVector3Array()
 var _rights := PackedVector3Array()
+var _widths := PackedFloat32Array()   # полуширина в каждом сэмпле
+# Ключи ширины: [доля круга, полуширина]. Между ключами — плавный переход.
+var _width_keys: Array[Vector2] = []
+# Прямые участки как [доля начала, доля конца] — на них ставятся трамплины.
+var _straights: Array[Vector2] = []
 
 
 func _ready() -> void:
@@ -34,25 +44,29 @@ func _ready() -> void:
 	_build_decor()
 
 
-# ПОКА трасса плоская (просьба пользователя 2026-08-20): профиль высот
-# отключён, но HEIGHT_KEYS и вся механика рельефа сохранены — вернуть
-# перепады можно, просто выставив false.
-const FLAT_TRACK := true
+# Трасса РОВНАЯ ВЕЗДЕ, кроме одной горки (просьба пользователя
+# 2026-08-21). Механика рельефа общая: HEIGHT_KEYS задаёт профиль, ему
+# следуют полотно, ограждения, обочина и декор.
+const FLAT_TRACK := false
 
-## Профиль высот в духе Rock'n'Roll Racing: ровные плато на разных уровнях,
-## короткие подъёмы между ними и резкие сходы-обрывы (с них — прыжок).
-## Пары [доля круга, высота]; между ними — плато или переход.
+## Профиль высот: одна ГОРКА и больше ничего. Пары [доля круга, высота];
+## между ключами с РАЗНОЙ высотой — плавная S-кривая, с одинаковой —
+## ровное место.
+##
+## Горка стоит на прямой 0.156…0.211 и симметрична относительно её
+## середины: подъём и спуск по ~28 м, между ними короткий гребень.
+## Почему именно тут: трамплины трасса ставит на серединах двух самых
+## длинных прямых (_ramp_ratios → 0.564 и 0.722), и горка не должна с
+## ними пересекаться — прыжок с трамплина на склоне непредсказуем.
+## Стартовая прямая (0.000…0.064) тоже занята — там решётка и створ.
+const HILL_TOP := 4.0          # высота гребня над остальной трассой, м
 const HEIGHT_KEYS: Array = [
-	[0.00, 0.0],   # старт/финиш — ровная прямая
-	[0.14, 0.0],
-	[0.24, 7.0],   # подъём на верхнее плато
-	[0.42, 7.0],   # верхнее плато
-	[0.47, 1.0],   # резкий сход — трамплин с обрыва
-	[0.62, 1.0],   # среднее плато
-	[0.70, 4.5],   # подъём
-	[0.84, 4.5],   # верхнее плато поменьше
-	[0.90, 0.0],   # второй сход
-	[1.00, 0.0],
+	[0.000, 0.0],
+	[0.140, 0.0],       # подножие подъёма
+	[0.178, HILL_TOP],  # заезд на гребень
+	[0.190, HILL_TOP],  # гребень — короткое ровное плато
+	[0.228, 0.0],       # спуск
+	[1.000, 0.0],
 ]
 
 
@@ -74,34 +88,200 @@ static func _profile_height(t: float) -> float:
 	return 0.0
 
 
-## Замкнутый контур трассы: плавная петля переменного радиуса со ступенчатым
-## профилем высот. Точки задаются по углу — так гарантированно нет изломов,
-## а касательные считаются по-катмулл-ромовски (пропорционально шагу),
-## иначе на длинных участках кривая ломается «уголком».
+## КОНФИГУРАЦИЯ ТРАССЫ — последовательность участков «черепахой»:
+##   ["S", длина, полуширина_в_конце]           — прямая
+##   ["A", радиус, угол°, полуширина_в_конце]   — дуга (+ вправо, − влево)
+## Длина -1.0 у прямой = «свободная»: подбирается в _solve_free_lengths(),
+## чтобы кольцо замкнулось ТОЧНО (см. там). Свободных должно быть ровно две,
+## и их направления не должны быть параллельны.
+##
+## СУММА УГЛОВ ДУГ ОБЯЗАНА БЫТЬ ±360° — иначе на стыке будет излом.
+## При правке углов пересчитать: сумма правых минус сумма левых = 360.
+## Минимальный радиус ~19 м: он должен быть заметно больше полуширины в
+## этом месте, иначе внутренняя кромка полотна схлопнется.
+const SEGMENTS: Array = [
+	["S", -1.0, 11.0],           # 0  СТАРТОВАЯ ПРЯМАЯ (свободная), широкая
+	["A", 45.0, 85.0, 9.5],      # 1  быстрый правый
+	["S", 40.0, 10.5],           # 2  короткая прямая
+	["A", 28.0, -45.0, 8.0],     # 3  шикана: влево
+	["A", 28.0, 45.0, 7.5],      # 4  шикана: вправо (сужается к шпильке)
+	["S", 30.0, 7.0],            # 5  подход к шпильке — уже
+	["A", 19.0, 150.0, 6.0],     # 6  ШПИЛЬКА — самое узкое место
+	["S", 35.0, 9.0],            # 7  выход со шпильки, расширяется
+	["A", 40.0, -85.0, 10.0],    # 8  длинный левый
+	["S", -1.0, 11.0],           # 9  ДЛИННАЯ ПРЯМАЯ (свободная), широкая
+	["A", 32.0, 95.0, 8.5],      # 10 средний правый
+	["S", 45.0, 8.0],            # 11 прямая, сужается к крутому повороту
+	["A", 26.0, 105.0, 6.5],     # 12 КРУТОЙ правый — узко
+	["S", 28.0, 9.0],            # 13 выход, расширяется
+	["A", 50.0, -65.0, 10.0],    # 14 пологий левый изгиб
+	["A", 36.0, 75.0, 10.0],     # 15 выход на стартовую прямую
+]
+
+const TURTLE_STEP := 3.0   # шаг опорных точек вдоль трассы, м
+
+
+## Замкнутый контур из прямых и дуг (см. SEGMENTS): настоящие прямые
+## участки, крутые повороты и шпилька — вместо прежней «дышащей» окружности.
+## Точки ставятся часто (TURTLE_STEP), касательные — строго по ходу
+## движения: на прямых это даёт идеальную прямую, на дугах — точную дугу.
 func _build_curve() -> void:
-	var count := 56
-	var points: Array[Vector3] = []
-	for i in count:
-		var a := TAU * i / count
-		# Радиус «дышит» — получаются широкие дуги и лёгкие шиканы.
-		var r := 52.0 + 9.0 * sin(a * 2.0) + 4.0 * sin(a * 3.0 + 1.2) \
-				+ 2.0 * sin(a * 5.0 + 0.4)
-		var y := _profile_height(float(i) / count)
-		points.append(Vector3(cos(a) * r, y, sin(a) * r))
+	var free_lens := _solve_free_lengths()
+	var walk := _walk(free_lens)
+	var points: Array[Vector3] = walk["points"]
+	var dirs: Array[Vector3] = walk["dirs"]
+	_width_keys = walk["width_keys"]
+	_straights = walk["straights"]
 
-	for p: Vector3 in points:
+	# Центрируем контур: «черепаха» стартует из нуля и уходит в сторону,
+	# а земля/скайбокс построены вокруг начала координат.
+	var lo := points[0]
+	var hi := points[0]
+	for p in points:
+		lo = lo.min(p)
+		hi = hi.max(p)
+	var center := (lo + hi) * 0.5
+	center.y = 0.0
+
+	for i in points.size():
+		var p := points[i] - center
 		_curve.add_point(p)
-	# Curve3D.closed появился только в 4.4 — замыкаем кольцо дублем первой точки.
-	_curve.add_point(points[0])
+		# Касательная безье длиной шаг/3 вдоль направления движения:
+		# кубический сегмент тогда точно повторяет прямую или дугу.
+		var t := dirs[i] * (TURTLE_STEP / 3.0)
+		_curve.set_point_in(i, -t)
+		_curve.set_point_out(i, t)
+	# Curve3D.closed появился только в 4.4 — замыкаем дублем первой точки.
+	_curve.add_point(points[0] - center)
+	_curve.set_point_in(_curve.point_count - 1, -dirs[0] * (TURTLE_STEP / 3.0))
+	_curve.set_point_out(_curve.point_count - 1, dirs[0] * (TURTLE_STEP / 3.0))
 
-	var n := points.size()
-	for i in _curve.point_count:
-		var prev: Vector3 = points[(i - 1 + n) % n]
-		var next: Vector3 = points[(i + 1) % n]
-		# Катмулл-Ром: длина касательной = 1/6 хорды между соседями.
-		var tangent := (next - prev) / 6.0
-		_curve.set_point_in(i, -tangent)
-		_curve.set_point_out(i, tangent)
+
+## Проход «черепахой» по SEGMENTS: точки оси, направления и ключи ширины.
+## free_lens — длины двух свободных прямых (по порядку их появления).
+func _walk(free_lens: Array) -> Dictionary:
+	var pos := Vector3.ZERO
+	var ang := 0.0          # курс в плане, рад
+	var dist := 0.0         # пройденный путь, м
+	var free_i := 0
+	var points: Array[Vector3] = []
+	var dirs: Array[Vector3] = []
+	var keys: Array[Vector2] = []
+	var raw_keys: Array[Vector2] = []   # [дистанция, полуширина]
+	var straights: Array[Vector2] = []  # [дистанция начала, длина] прямых
+	# Старт наследует ширину последнего участка — кольцо непрерывно.
+	raw_keys.append(Vector2(0.0, SEGMENTS[SEGMENTS.size() - 1][-1]))
+
+	for seg: Array in SEGMENTS:
+		if seg[0] == "S":
+			var length: float = seg[1]
+			if length < 0.0:
+				length = free_lens[free_i]
+				free_i += 1
+			var steps := maxi(1, int(round(length / TURTLE_STEP)))
+			var dir := Vector3(cos(ang), 0.0, sin(ang))
+			straights.append(Vector2(dist, length))
+			for _s in steps:
+				points.append(pos)
+				dirs.append(dir)
+				pos += dir * (length / steps)
+				dist += length / steps
+		else:
+			var radius: float = seg[1]
+			var sweep := deg_to_rad(float(seg[2]))
+			var arc: float = radius * absf(sweep)
+			var steps := maxi(2, int(round(arc / TURTLE_STEP)))
+			var da := sweep / steps
+			# Точки — строго на окружности радиуса R: касательная в точке
+			# по ТЕКУЩЕМУ курсу, а шаг — по ХОРДЕ, которая идёт под
+			# половиной угла шага. Если шагать по новому курсу (а
+			# касательную писать по старому), точка и её касательная
+			# расходятся на полшага, безье «водит» — эффективный радиус
+			# получается меньше заданного, и трасса выходит изломанной.
+			var chord: float = 2.0 * radius * sin(absf(da) * 0.5)
+			for _s in steps:
+				points.append(pos)
+				dirs.append(Vector3(cos(ang), 0.0, sin(ang)))
+				var mid := ang + da * 0.5
+				pos += Vector3(cos(mid), 0.0, sin(mid)) * chord
+				ang += da
+				dist += arc / steps
+		raw_keys.append(Vector2(dist, seg[-1]))
+
+	# Ключи ширины — в долях круга (кривая печётся своей длиной).
+	for k in raw_keys:
+		keys.append(Vector2(k.x / dist, k.y))
+	# Прямые тоже в долях: [доля начала, доля конца].
+	var straight_ratios: Array[Vector2] = []
+	for s in straights:
+		straight_ratios.append(Vector2(s.x / dist, (s.x + s.y) / dist))
+
+	# Профиль высот (сейчас плоско) — по доле круга.
+	for i in points.size():
+		points[i].y = _profile_height(float(i) / points.size())
+
+	return {
+		"points": points, "dirs": dirs, "width_keys": keys,
+		"straights": straight_ratios,
+	}
+
+
+## Длины двух свободных прямых, при которых кольцо замыкается точно.
+## Итоговое смещение ЛИНЕЙНО зависит от этих длин (углы фиксированы), так
+## что достаточно решить систему 2×2 по трём пробным проходам.
+func _solve_free_lengths() -> Array:
+	var e0 := _closure_error([0.0, 0.0])
+	var e1 := _closure_error([1.0, 0.0]) - e0
+	var e2 := _closure_error([0.0, 1.0]) - e0
+	var det := e1.x * e2.y - e2.x * e1.y
+	if absf(det) < 1e-6:
+		push_error("TrackBuilder: свободные прямые параллельны — не замкнуть")
+		return [60.0, 60.0]
+	var l1 := (-e0.x * e2.y + e2.x * e0.y) / det
+	var l2 := (-e1.x * e0.y + e0.x * e1.y) / det
+	if l1 < 5.0 or l2 < 5.0:
+		push_error("TrackBuilder: конфигурация не замыкается (прямая < 5 м)")
+	return [l1, l2]
+
+
+## Насколько «не сошлись» концы кольца при заданных свободных длинах.
+func _closure_error(free_lens: Array) -> Vector2:
+	var walk := _walk(free_lens)
+	var points: Array[Vector3] = walk["points"]
+	var last: Vector3 = points[points.size() - 1]
+	var first: Vector3 = points[0]
+	# Последняя точка — начало последнего шага, поэтому добавляем сам шаг.
+	var dirs: Array[Vector3] = walk["dirs"]
+	last += dirs[dirs.size() - 1] * TURTLE_STEP
+	return Vector2(last.x - first.x, last.z - first.z)
+
+
+## Полуширина полотна на доле круга t (плавные переходы между участками).
+func half_width_at_ratio(t: float) -> float:
+	if _width_keys.is_empty():
+		return TRACK_HALF_WIDTH
+	var f := fposmod(t, 1.0)
+	for i in range(_width_keys.size() - 1):
+		var k0 := _width_keys[i]
+		var k1 := _width_keys[i + 1]
+		if f >= k0.x and f <= k1.x and k1.x > k0.x:
+			return lerpf(k0.y, k1.y,
+					smoothstep(0.0, 1.0, (f - k0.x) / (k1.x - k0.x)))
+	return _width_keys[_width_keys.size() - 1].y
+
+
+## Полуширина полотна в точке кривой (offset вдоль оси, м).
+func half_width_at_offset(off: float) -> float:
+	var length := _curve.get_baked_length()
+	if length <= 0.0:
+		return TRACK_HALF_WIDTH
+	return half_width_at_ratio(off / length)
+
+
+## Полуширина полотна напротив мировой точки — для порогов вылета,
+## ведения у стены и т.п.
+func half_width_at_pos(world_pos: Vector3) -> float:
+	return half_width_at_offset(_curve.get_closest_offset(world_pos))
 
 
 ## Равномерно сэмплирует кривую: позиции и перпендикуляры к ходу трассы.
@@ -116,6 +296,7 @@ func _sample_frames() -> void:
 		_pts.append(pos)
 		_rights.append(Vector3(dir.x, 0, dir.z).normalized().cross(Vector3.UP)
 				* -1.0)
+		_widths.append(half_width_at_ratio(float(i) / SAMPLES))
 
 
 ## Квад двумя треугольниками с заданной нормалью.
@@ -220,10 +401,10 @@ func _build_road() -> void:
 
 	for i in SAMPLES:
 		var j := (i + 1) % SAMPLES
-		var li := _pts[i] - _rights[i] * TRACK_HALF_WIDTH + lift
-		var ri := _pts[i] + _rights[i] * TRACK_HALF_WIDTH + lift
-		var lj := _pts[j] - _rights[j] * TRACK_HALF_WIDTH + lift
-		var rj := _pts[j] + _rights[j] * TRACK_HALF_WIDTH + lift
+		var li := _pts[i] - _rights[i] * _widths[i] + lift
+		var ri := _pts[i] + _rights[i] * _widths[i] + lift
+		var lj := _pts[j] - _rights[j] * _widths[j] + lift
+		var rj := _pts[j] + _rights[j] * _widths[j] + lift
 		var normal := (rj - li).cross(lj - ri).normalized()
 		if normal.y < 0.0:
 			normal = -normal
@@ -265,8 +446,8 @@ func _build_walls() -> void:
 			var j := (i + 1) % SAMPLES
 			var ni := _rights[i] * side
 			var nj := _rights[j] * side
-			var ci := _pts[i] + ni * TRACK_HALF_WIDTH - skirt
-			var cj := _pts[j] + nj * TRACK_HALF_WIDTH - skirt
+			var ci := _pts[i] + ni * _widths[i] - skirt
+			var cj := _pts[j] + nj * _widths[j] - skirt
 			var ai := ci - ni * half_t   # грань к трассе
 			var bi := ci + ni * half_t   # внешняя грань
 			var aj := cj - nj * half_t
@@ -312,15 +493,27 @@ func _build_walls() -> void:
 	add_child(body)
 
 
+## Доли круга для трамплинов: середины двух самых длинных прямых, кроме
+## стартовой (первый участок, там стартовая решётка и финишный створ).
+func _ramp_ratios() -> Array:
+	var pool := _straights.slice(1)
+	pool.sort_custom(func(a: Vector2, b: Vector2) -> bool:
+			return (a.y - a.x) > (b.y - b.x))
+	var res: Array = []
+	for i in mini(2, pool.size()):
+		res.append((pool[i].x + pool[i].y) * 0.5)
+	return res
+
+
 ## Пара трамплинов на прямых участках — для фирменных прыжков.
 func _build_ramps() -> void:
 	var ramp_mat := StandardMaterial3D.new()
 	ramp_mat.albedo_color = Color(0.9, 0.75, 0.1)
 
 	var length := _curve.get_baked_length()
-	# Трамплины — на кромках обрывов (см. HEIGHT_KEYS): с них слетаешь вниз
-	# на следующее плато, как в RnRR.
-	for t: float in [0.44, 0.875]:
+	# Трамплины — посреди самых длинных ПРЯМЫХ (кроме стартовой, где стоит
+	# решётка): на дуге трамплин сбрасывал бы машину в ограждение.
+	for t: float in _ramp_ratios():
 		var offset := length * t
 		var pos := _curve.sample_baked(offset)
 		var ahead := _curve.sample_baked(fmod(offset + 2.0, length))
@@ -363,8 +556,10 @@ func _build_start_line() -> void:
 	gate.look_at(pos + (ahead - pos).normalized())
 
 	# Шахматная лента на асфальте: 14 клеток поперёк × 2 ряда вдоль.
+	# Ширина — фактическая в точке старта (полотно переменной ширины).
+	var half := half_width_at_offset(0.0)
 	var cols := 14
-	var cell := TRACK_HALF_WIDTH * 2.0 / cols
+	var cell := half * 2.0 / cols
 	for row in 2:
 		for c in cols:
 			var tile := MeshInstance3D.new()
@@ -373,8 +568,7 @@ func _build_start_line() -> void:
 			tile.mesh = box
 			tile.material_override = white if (c + row) % 2 == 0 else black
 			tile.position = Vector3(
-				-TRACK_HALF_WIDTH + cell * (c + 0.5), 0.09,
-				(row - 0.5) * cell)
+				-half + cell * (c + 0.5), 0.09, (row - 0.5) * cell)
 			gate.add_child(tile)
 
 

@@ -1,12 +1,13 @@
 extends Node3D
-## Автотест подрыва: машине наносят смертельный урон и следят, чтобы она
-## НЕ исчезала (visible всё время true) и вернулась в гонку.
+## Автотест уничтожения (ракета/лазер/авиаудар): destroy() тут же ставит
+## машину на трассу с нулевой скоростью и делает «призраком» — она мигает,
+## НЕ сталкивается с другими машинами, но может ехать; после ghost_time
+## коллизии и видимость полностью возвращаются.
 
 var _main: Node3D
 var _frame := 0
-var _went_invisible := false
-var _was_dead := false
-var _hp_on_revive := -1.0
+var _blinked := false          # видимость хоть раз гасла (моргание)
+var _speed_after := -1.0
 
 
 func _ready() -> void:
@@ -17,25 +18,32 @@ func _ready() -> void:
 func _physics_process(_delta: float) -> void:
 	_frame += 1
 	var car: Car = _main._car
-	if _frame > 200:
-		if not car.visible:
-			_went_invisible = true
-		if not car.alive:
-			_was_dead = true
-		elif _was_dead and _hp_on_revive < 0.0:
-			# Первый кадр после возрождения: ИИ ещё не успел снова подстрелить.
-			_hp_on_revive = car.hp
+	if _frame > 200 and not car.visible:
+		_blinked = true
 	match _frame:
 		200:
-			car.take_damage(999.0, Vector3.UP)
-			print("blown up: hp=%.0f alive=%s" % [car.hp, car.alive])
-		230:
-			print("после взрыва: visible=%s alive=%s y=%.2f" % [
-				car.visible, car.alive, car.global_position.y])
-		360:  # ~2.6 c спустя — должна снова ехать
-			var ok := car.visible and car.alive and not _went_invisible \
-					and _was_dead and _hp_on_revive > 90.0
-			print("EXPLOSION TEST: %s (visible=%s alive=%s hp_на_возрождении=%.0f, исчезала=%s)" % [
-				"PASS" if ok else "FAIL", car.visible, car.alive,
-				_hp_on_revive, _went_invisible])
+			car.linear_velocity = -car.global_transform.basis.z * 20.0
+			car.destroy()
+			_speed_after = car.linear_velocity.length()
+			var ghost_ok := car.is_ghost() and car.collision_layer == 0 \
+					and (car.collision_mask & 0b100) == 0
+			print("destroy: v=%.2f ghost=%s слои_сняты=%s dist=%.2f" % [
+				_speed_after, car.is_ghost(), ghost_ok,
+				_main._track.distance_from_axis(car.global_position)])
+			if not ghost_ok or _speed_after > 0.01:
+				print("EXPLOSION TEST: FAIL (призрак не включился или скорость не обнулилась)")
+				get_tree().quit(1)
+		260:
+			# Середина призрака: машина может разгоняться (ИИ уже газует).
+			print("призрак: ghost=%s v=%.1f мигала=%s" % [
+				car.is_ghost(), car.linear_velocity.length(), _blinked])
+		380:  # 3 c спустя (ghost_time 2.0) — всё как раньше
+			var back_ok: bool = not car.is_ghost() and car.visible \
+					and car.collision_layer == 0b100 \
+					and car.collision_mask == 0b111
+			var on_track: bool = _main._track.distance_from_axis(
+					car.global_position) < TrackBuilder.TRACK_HALF_WIDTH
+			var ok: bool = back_ok and on_track and _blinked and car.alive
+			print("EXPLOSION TEST: %s (вернулась=%s на_трассе=%s мигала=%s)" % [
+				"PASS" if ok else "FAIL", back_ok, on_track, _blinked])
 			get_tree().quit(0 if ok else 1)

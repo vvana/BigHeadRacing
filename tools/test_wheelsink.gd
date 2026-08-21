@@ -34,6 +34,7 @@ func _physics_process(_d: float) -> void:
 	if _frame == 5:
 		var car: Car = _main._car
 		car.is_player = false
+		car.weapon = -1  # случайный «буст» со старта исказил бы замеры
 		for i in range(1, _main._cars.size()):
 			var extra: Car = _main._cars[i]
 			extra.controls_enabled = false
@@ -41,8 +42,7 @@ func _physics_process(_d: float) -> void:
 			# секунду вернёт «вылетевшего» соперника с угла карты обратно
 			# на трассу, и тест-машина будет его таранить.
 			extra.alive = false
-			extra.ammo = 0
-			extra.mines = 0
+			extra.weapon = -1
 			extra.global_transform = Transform3D(Basis.IDENTITY,
 					Vector3(110.0 + i * 6.0, 2.0, 110.0))
 			extra.linear_velocity = Vector3.ZERO

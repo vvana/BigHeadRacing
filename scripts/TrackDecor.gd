@@ -68,25 +68,24 @@ func _build_start_area() -> void:
 	# Ферма стартовых огней (мультяшная): столб за правым ограждением,
 	# консоль с тремя светодиодными панелями нависает над полотном.
 	# У модели консоль уходит в +Z от столба — разворачиваем её К трассе.
-	var gantry_pos := _axis_at_dist(-9.0) + out * (TrackBuilder.TRACK_HALF_WIDTH + 2.0)
+	var gantry_pos := _axis_at_dist(-9.0) + out * (_half(0.0) + 2.0)
 	gantry_pos.y = _ground_y(gantry_pos)
 	_spawn(CDIR + "prop_startlights.FBX", gantry_pos, -out, 1.0, false)
 
 	# Башня комментаторов и тент-паддок — снаружи стартовой прямой.
-	var tower_pos := _axis_at_dist(18.0) + out * (TrackBuilder.TRACK_HALF_WIDTH + 14.0)
+	var tower_pos := _axis_at_dist(18.0) + out * (_half(0.0) + 14.0)
 	tower_pos.y = _ground_y(tower_pos)
 	_spawn(CDIR + "prop_tower.FBX", tower_pos, -out, 0.55, false)
 	_occupy(tower_pos, 7.0)
 
-	var tent_pos := _axis_at_dist(32.0) + out * (TrackBuilder.TRACK_HALF_WIDTH + 10.0)
+	var tent_pos := _axis_at_dist(32.0) + out * (_half(0.0) + 10.0)
 	tent_pos.y = _ground_y(tent_pos)
 	_spawn(CDIR + "prop_tent.FBX", tent_pos, -out, 1.0, false)
 	_occupy(tent_pos, 6.0)
 
 	# Таблички команд вдоль стартовой прямой.
 	for i in 4:
-		var p := _axis_at_dist(-16.0 - 6.0 * i) \
-				+ out * (TrackBuilder.TRACK_HALF_WIDTH + 1.6)
+		var p := _axis_at_dist(-16.0 - 6.0 * i) + out * (_half(0.0) + 1.6)
 		p.y = _ground_y(p)
 		_spawn(CDIR + "prop_team_%d.FBX" % (i + 1), p, -out, 1.0, false)
 
@@ -104,14 +103,14 @@ func _build_tribunes() -> void:
 		var t: float = item[0]
 		var pos := _axis(t)
 		var out := _outward(t)
-		var p := pos + out * (TrackBuilder.TRACK_HALF_WIDTH + float(item[3]))
+		var p := pos + out * (_half(t) + float(item[3]))
 		p.y = _ground_y(p)
 		var facing := out if bool(item[5]) else -out
 		var node := _spawn(String(item[1]), p, facing, float(item[2]),
 				bool(item[4]))
 		if node:
 			_push_outside(node, out,
-					TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.WALL_THICKNESS + 1.5)
+					_half(t) + TrackBuilder.WALL_THICKNESS + 1.5)
 			_occupy(node.position, 10.0)
 
 
@@ -151,7 +150,7 @@ func _build_roadside() -> void:
 		var t := d / length
 		var pos := _axis(t)
 		var side := _outward(t) if i % 2 == 0 else -_outward(t)
-		var p := pos + side * (TrackBuilder.TRACK_HALF_WIDTH + 1.7)
+		var p := pos + side * (_half(t) + 1.7)
 		p.y = _ground_y(p)
 		var kind: Array = kinds[i % kinds.size()]
 		_spawn(String(kind[0]), p, -side, float(kind[1]), bool(kind[2]))
@@ -211,7 +210,7 @@ func _build_turn_signs() -> void:
 		# Внешняя сторона поворота: поворот влево (угол > 0) — знак справа.
 		var right := _right(t)
 		var side := right if pair[1] > 0.0 else -right
-		var p := pos + side * (TrackBuilder.TRACK_HALF_WIDTH + 1.6)
+		var p := pos + side * (_half(t) + 1.6)
 		p.y = _ground_y(p)
 		_spawn(DIR + "Sign_free.fbx", p, -_forward(t), 1.2, true)
 
@@ -317,11 +316,28 @@ func _right(t: float) -> Vector3:
 	return _forward(t).cross(Vector3.UP) * -1.0
 
 
-## Наружу от центра трассы (кольцо вокруг начала координат).
+## Наружу от полотна. Раньше бралось просто направление от начала координат
+## — это верно только для почти круглой трассы; на контуре с шиканами и
+## шпилькой (см. TrackBuilder.SEGMENTS) декор так уезжал ВНУТРЬ кольца.
+## Теперь пробуем обе стороны: наружу та, где дальше до полотна (с другой
+## стороны рядом соседний виток). Если обе свободны — от центра контура.
 func _outward(t: float) -> Vector3:
 	var pos := _axis(t)
+	var right := _right(t)
+	const PROBE := 26.0
+	var d_right := _track.distance_from_axis(pos + right * PROBE)
+	var d_left := _track.distance_from_axis(pos - right * PROBE)
+	if absf(d_right - d_left) > 2.0:
+		return right if d_right > d_left else -right
 	var o := Vector3(pos.x, 0, pos.z)
-	return o.normalized() if o.length_squared() > 1.0 else Vector3.RIGHT
+	if o.length_squared() < 1.0:
+		return right
+	return right if right.dot(o.normalized()) >= 0.0 else -right
+
+
+## Полуширина полотна на доле круга t (полотно переменной ширины).
+func _half(t: float) -> float:
+	return _track.half_width_at_ratio(t)
 
 
 func _ground_y(p: Vector3) -> float:

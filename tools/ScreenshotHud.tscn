@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_screenshothud"]
+
+[ext_resource type="Script" path="res://tools/screenshot_hud.gd" id="1_screenshothud"]
+
+[node name="ScreenshotHud" type="Node3D"]
+script = ExtResource("1_screenshothud")

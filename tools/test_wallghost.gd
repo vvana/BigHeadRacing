@@ -29,8 +29,8 @@ func _physics_process(_d: float) -> void:
 		for i in range(1, _main._cars.size()):
 			var extra: Car = _main._cars[i]
 			extra.controls_enabled = false
-			extra.ammo = 0
-			extra.mines = 0
+			extra.alive = false  # и от автовозврата на трассу
+			extra.weapon = -1
 			extra.global_transform = Transform3D(Basis.IDENTITY,
 					Vector3(110.0 + i * 6.0, 2.0, 110.0))
 			extra.linear_velocity = Vector3.ZERO
@@ -52,7 +52,8 @@ func _physics_process(_d: float) -> void:
 	else:
 		Input.action_press("steer_right")
 
-	var wall_face: float = TrackBuilder.TRACK_HALF_WIDTH 			- TrackBuilder.WALL_THICKNESS * 0.5
+	# Полотно переменной ширины — грань стены берём в точке машины.
+	var wall_face: float = _main._track.half_width_at_pos(car.global_position) 			- TrackBuilder.WALL_THICKNESS * 0.5
 	var dist: float = _main._track.distance_from_axis(car.global_position)
 	_dist_sum += dist
 	if dist < wall_face - 2.0:

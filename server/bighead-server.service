@@ -1,0 +1,23 @@
+[Unit]
+Description=Big Head Racing — выделенный сервер гонки
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Отдельный непривилегированный пользователь: сервер слушает порт из
+# интернета, root ему не нужен.
+User=bighead
+Group=bighead
+WorkingDirectory=/opt/bighead
+ExecStart=/usr/local/bin/godot --headless --path /opt/bighead res://scenes/Main.tscn -- --server
+Restart=always
+RestartSec=3
+# Godot пишет пользовательские данные в ~/.local/share/godot — без HOME
+# он ругается и падает при старте из systemd.
+Environment=HOME=/home/bighead
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

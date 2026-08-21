@@ -8,8 +8,13 @@ extends Node3D
 ## Меряем, на сколько метров машина ушла в сторону руля за 1.5 с.
 ## Если A/B заметно хуже C — виновато ведение у стены.
 
-const START_T := 0.06           # доля круга — место пуска
 const RUN_FRAMES := 90          # 1.5 с манёвра
+# Место пуска считается по трассе (см. _pick_start_t): нужен ПРЯМОЙ
+# участок без трамплина. На дуге замер бессмысленен — там машину к
+# внешней стене прижимает центробежной силой (на 28 м/с в повороте
+# R=45 это 17 м/с², больше сцепления), и тест мерил бы снос, а не
+# «прилипание к ограждению», ради которого он написан.
+var _start_t := 0.16
 
 var _main: Node3D
 var _frame := 0
@@ -26,12 +31,33 @@ var _names := ["A: правый борт", "B: левый борт", "C: сер�
 func _ready() -> void:
 	_main = (load("res://scenes/Main.tscn") as PackedScene).instantiate()
 	add_child(_main)
+	_start_t = _pick_start_t()
+
+
+## Начало самой длинной прямой без трамплина (с небольшим отступом).
+func _pick_start_t() -> float:
+	var track: TrackBuilder = _main._track
+	var ramps: Array = track._ramp_ratios()
+	var best := 0.16
+	var best_len := 0.0
+	for s: Vector2 in track._straights:
+		var has_ramp := false
+		for r: float in ramps:
+			if r > s.x - 0.01 and r < s.y + 0.01:
+				has_ramp = true
+		if has_ramp:
+			continue
+		# Манёвр длится 1.5 с — это ~40 м пути; прямая должна их вместить.
+		if s.y - s.x > best_len:
+			best_len = s.y - s.x
+			best = s.x + 0.004
+	return best
 
 
 func _launch(offset_from_axis: float, wall_side: Vector3) -> void:
 	var car: Car = _main._car
 	var curve: Curve3D = _main._track._curve
-	var off := curve.get_baked_length() * START_T
+	var off := curve.get_baked_length() * _start_t
 	var pos := curve.sample_baked(off)
 	var tangent := curve.sample_baked(off + 1.0) - pos
 	tangent.y = 0.0
@@ -87,13 +113,17 @@ func _physics_process(_delta: float) -> void:
 	var local := _frame - 160 - _phase * (RUN_FRAMES + 20)
 	if local == 0:
 		var curve: Curve3D = _main._track._curve
-		var off := curve.get_baked_length() * START_T
+		var off := curve.get_baked_length() * _start_t
 		var tangent := curve.sample_baked(off + 1.0) - curve.sample_baked(off)
 		tangent.y = 0.0
 		var right := tangent.normalized().cross(Vector3.UP).normalized()
+		# «Вплотную к борту» — от ФАКТИЧЕСКОЙ кромки (полотно переменной
+		# ширины): центр в 1.2 м от неё, кузов уже касается ограждения.
+		var near_wall: float = \
+				_main._track.half_width_at_offset(off) - 1.2
 		match _phase:
-			0: _launch(7.8, right)
-			1: _launch(7.8, -right)
+			0: _launch(near_wall, right)
+			1: _launch(near_wall, -right)
 			2: _launch(0.5, right)
 		print("--- %s ---" % _names[_phase])
 	elif local > 0 and local <= RUN_FRAMES:

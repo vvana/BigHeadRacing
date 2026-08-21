@@ -1,10 +1,21 @@
 class_name Mine
 extends Area3D
-## Мина (сбрасывается за корму, как slime/мины в RnRR). Взводится с задержкой,
-## чтобы не подорвать хозяина, живёт ограниченное время.
+## Мина (сбрасывается за корму). При наезде ВЗРЫВАЕТСЯ и РАСТАЛКИВАЕТ все
+## машины поблизости во все стороны (не уничтожает): подбрасывает,
+## закручивает и отшвыривает — попадание должно сбивать гонку.
+## Взводится с задержкой, чтобы не подорвать хозяина, живёт
+## ограниченное время.
 
+const BLAST_RADIUS := 10.0
+const BLAST_SPEED := 18.0   # горизонтальный импульс в эпицентре, м/с
+const BLAST_SPIN := 3.2     # закрутка в эпицентре, рад/с
+const BLAST_LIFT := 0.45    # доля подброса вверх от импульса
+
+## inert — «только картинка»: такую копию порождает КЛИЕНТ по событию с
+## сервера. Считает попадания и толчки сервер, его результат приезжает
+## в снимках; работай копия по-настоящему, машину било бы дважды.
+var inert := false
 var dropper: Car = null
-var damage := 35.0
 
 var _arm := 0.7
 var _armed := false
@@ -16,6 +27,11 @@ var _fall_speed := 0.0
 
 
 func _ready() -> void:
+	# Ловит только машины (слой 4).
+	collision_layer = 0
+	collision_mask = 0b100
+	monitorable = false
+
 	var col := CollisionShape3D.new()
 	var sphere := SphereShape3D.new()
 	sphere.radius = 0.7
@@ -47,13 +63,18 @@ func _ready() -> void:
 	dot.material_override = dot_mat
 	add_child(dot)
 
-	body_entered.connect(_try_trigger)
+	if inert:
+		set_deferred("monitoring", false)
+	else:
+		body_entered.connect(_try_trigger)
 
 
 func _physics_process(delta: float) -> void:
 	if not _grounded:
 		_fall(delta)
-	if not _armed:
+	# Инертная копия (клиент) не взводится вовсе: у неё выключен monitoring,
+	# и get_overlapping_bodies() на нём ругается в лог каждый кадр.
+	if not _armed and not inert:
 		_arm -= delta
 		if _arm <= 0.0:
 			_armed = true
@@ -87,7 +108,26 @@ func _fall(delta: float) -> void:
 func _try_trigger(body: Node3D) -> void:
 	if not _armed:
 		return
-	if body is Car and (body as Car).alive:
-		(body as Car).take_damage(damage, Vector3.UP)
-		FlashFx.spawn(get_parent(), global_position, 1.4, Color(1.0, 0.4, 0.1))
-		queue_free()
+	var trigger := body as Car
+	if trigger == null or not trigger.alive or trigger.is_ghost():
+		return
+	# Взрыв: расталкивание всех машин в радиусе, сила тает с расстоянием.
+	for node in get_tree().get_nodes_in_group("cars"):
+		var car := node as Car
+		if car == null or not car.alive or car.is_ghost():
+			continue
+		var away := car.global_position - global_position
+		away.y = 0.0
+		var dist := away.length()
+		if dist > BLAST_RADIUS:
+			continue
+		var dir := away / dist if dist > 0.01 else Vector3.FORWARD
+		# Спад силы КВАДРАТИЧНЫЙ, а не линейный: рядом с эпицентром взрыв
+		# держит почти полную мощь (там он и должен быть страшным), и
+		# только к кромке радиуса сходит на нет.
+		var t := dist / BLAST_RADIUS
+		var falloff := 1.0 - t * t
+		var spin := BLAST_SPIN * falloff * (1.0 if randf() < 0.5 else -1.0)
+		car.push_from_blast(dir, BLAST_SPEED * falloff, spin, BLAST_LIFT)
+	FlashFx.spawn(get_parent(), global_position, 3.2, Color(1.0, 0.4, 0.1))
+	queue_free()

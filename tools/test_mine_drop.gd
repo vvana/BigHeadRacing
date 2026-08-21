@@ -20,13 +20,15 @@ func _physics_process(_delta: float) -> void:
 	match _frame:
 		30:
 			# Мина «в воздухе»: кладём вручную на 4 м выше машины.
-			car.drop_mine()
+			car.weapon = Weapons.MINE
+			car.use_weapon()
 			_air_mine = _find_new_mine([])
 			_air_mine.global_position = car.global_position \
 					+ car.global_transform.basis.z * 2.4 + Vector3.UP * 4.0
 			_air_y0 = _air_mine.global_position.y
 			# Наземный сброс — как обычно.
-			car.drop_mine()
+			car.weapon = Weapons.MINE
+			car.use_weapon()
 			_ground_mine = _find_new_mine([_air_mine])
 			print("сброс: воздух y=%.2f, земля y=%.2f (машина y=%.2f)" % [
 				_air_y0, _ground_mine.global_position.y, car.global_position.y])

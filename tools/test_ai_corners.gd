@@ -29,8 +29,10 @@ func _physics_process(_delta: float) -> void:
 	_t += _delta
 	for i in range(1, _main._cars.size()):
 		var car: Car = _main._cars[i]
+		# Полотно переменной ширины — порог берём в точке машины.
 		var out: bool = _main._track.distance_from_axis(car.global_position) \
-				> _main.OFFTRACK_DIST
+				> _main._track.half_width_at_pos(car.global_position) \
+				+ _main.OFFTRACK_MARGIN
 		if out:
 			if _t - _last_out[i] > MERGE_GAP:
 				_incidents[i] += 1

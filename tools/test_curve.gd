@@ -39,10 +39,20 @@ func _init() -> void:
 				worst_pitch_at = off
 		prev_flat = flat
 		prev_pitch = pitch
-	var ok := worst_yaw < 6.0 and worst_pitch < 20.0
-	print("CURVE TEST: %s (длина %.0f м, шаг %.2f м)" % [
-		"PASS" if ok else "FAIL", length, step])
-	print("  излом в плане: %.2f° на %.0f м (лимит 6°)" % [worst_yaw, worst_yaw_at])
+	# Лимит излома — от САМОГО КРУТОГО поворота конфигурации: на дуге
+	# радиуса R поворот между сэмплами = step/R, и это законная крутизна,
+	# а не дефект. Запас ×1.4 покрывает стыки прямая↔дуга; настоящий
+	# излом (разрыв касательной) даёт угол в разы больше.
+	var min_radius := 1e9
+	for seg: Array in TrackBuilder.SEGMENTS:
+		if seg[0] == "A":
+			min_radius = minf(min_radius, float(seg[1]))
+	var yaw_limit := rad_to_deg(step / min_radius) * 1.4
+	var ok := worst_yaw < yaw_limit and worst_pitch < 20.0
+	print("CURVE TEST: %s (длина %.0f м, шаг %.2f м, мин. радиус %.0f м)" % [
+		"PASS" if ok else "FAIL", length, step, min_radius])
+	print("  излом в плане: %.2f° на %.0f м (лимит %.2f°)" % [
+		worst_yaw, worst_yaw_at, yaw_limit])
 	print("  перелом профиля: %.2f° на %.0f м (лимит 20°)" % [
 		worst_pitch, worst_pitch_at])
 	quit(0 if ok else 1)

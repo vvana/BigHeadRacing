@@ -36,9 +36,18 @@ extends RigidBody3D
 @export var is_player := true
 
 @export_group("Бой")
-@export var max_hp := 100.0
-@export var ammo_max := 6               # снарядов на круг
-@export var mines_max := 3              # мин на круг
+# Длительности эффектов оружия, с.
+@export var ghost_time := 2.0           # «призрак» после уничтожения
+@export var freeze_duration := 3.0      # замедление от ледышки
+@export var boost_duration := 2.5      # ускорение
+@export var slip_duration := 2.0        # занос от масляного пятна
+@export var slip_grip := 0.3            # сцепление на масле (обычное 14)
+@export var slip_thrust := 0.35         # доля тяги на масле — колёса буксуют
+
+# Значок действующего эффекта над крышей.
+const STATUS_ICON_SIZE := 1.7           # ширина значка, м
+const STATUS_ICON_Y := 2.35             # высота над центром машины, м
+const STATUS_ICON_PLAYER_Y := 3.25      # у игрока — выше маркера-стрелки
 
 # Точки подвески в локальных координатах (x — вправо, z — назад).
 const WHEEL_POINTS: Array[Vector3] = [
@@ -49,14 +58,44 @@ const WHEEL_POINTS: Array[Vector3] = [
 ]
 
 # Состояние боя/гонки.
-var hp := 100.0
-var ammo := 6
-var mines := 3
+var weapon := -1                # текущее оружие (Weapons.*), -1 — пусто
 var alive := true
 var controls_enabled := false   # включает менеджер гонки после отсчёта
 var race_over := false          # финиш: газа нет, машина плавно тормозит
 var track: TrackBuilder = null  # ставит Main: маршрут ИИ и точки респавна
+var race: Node = null           # ставит Main: доступ к лидеру (авиаудар)
 var ai_rubber := 1.0            # «резинка»: множитель тяги/скорости ИИ
+
+# Эффекты оружия (таймеры, с).
+var _ghost_time := 0.0          # после уничтожения: не трогает машины, мигает
+var _freeze_time := 0.0         # замедление от ледышки (дебаф заразен)
+var _boost_time := 0.0          # ускорение
+var _slip_time := 0.0           # занос от масляного пятна
+## Кто ведёт эту машину. LOCAL — как в одиночной игре (игрок за клавиатурой
+## или бот). SERVER_INPUT — сервер крутит физику по вводу, присланному
+## клиентом. PUPPET — клиент НЕ считает эту машину, а тянет её к снимкам
+## сервера. OWNED — своя машина на клиенте: считается локально (иначе руль
+## отвечал бы через пинг), а снимки сервера мягко её подправляют.
+enum NetRole { LOCAL, SERVER_INPUT, PUPPET, OWNED }
+var net_role := NetRole.LOCAL
+var net_th := 0.0               # ввод, присланный клиентом: газ/тормоз
+var net_st := 0.0               # руль
+var net_hb := false             # ручник
+var net_jump := false           # разовые: гасятся сразу после применения
+var net_fire := false
+var has_marker := false         # над машиной висит стрелка-указатель
+var _snap_pos := Vector3.ZERO   # последний снимок с сервера
+var _snap_rot := Quaternion.IDENTITY
+var _snap_vel := Vector3.ZERO
+var _snap_age := 0.0            # сколько секунд назад он пришёл
+var _snap_seen := false
+
+var _status_icon: Sprite3D = null  # значок действующего эффекта над крышей
+var _status_kind := -1          # разовый значок (магнит): какой показываем
+var _status_time := 0.0         # и сколько ему осталось
+var _status_shown := -2         # что сейчас лежит в текстуре (-2 = ничего)
+var _status_age := 0.0          # возраст показа: «выпрыгивание» и покачивание
+var _ice_shell: MeshInstance3D  # визуал заморозки (голубая скорлупа)
 
 var _grounded_wheels := 0
 var _can_jump := true
@@ -77,6 +116,9 @@ var _touch_cars := {}           # машины в контакте на прош
 # Для капа боковых «пинков» о рёбра полотна на ровной езде:
 var _prev_hvel := Vector3.ZERO  # горизонтальная скорость прошлого кадра
 var _ext_push_time := 0.0       # окно после честного толчка (таран/взрыв)
+var _track_ang_abs := 0.0       # |угол носа к оси трассы|, ставит _clamp_heading
+var _side_speed := 0.0          # боковой снос с последнего кадра езды (дым)
+var _smoke: Array[CPUParticles3D] = []  # дым из-под задних колёс (занос)
 var _wheel_pivots: Array[Node3D] = []
 var _steer_visual := 0.0
 var _ai_fire_cd := 2.0
@@ -105,14 +147,33 @@ func _ready() -> void:
 	# Нужно для get_colliding_bodies() в _wall_slide.
 	contact_monitor = true
 	max_contacts_reported = 8
-	# Кузов сталкивается и с миром (слой 1), и с ограждениями (слой 2);
-	# лучи подвески при этом видят только слой 1 — по стене не ездим.
-	collision_mask = 0b11
+	# Машины живут на СВОЁМ слое 4: мир — слой 1, ограждения — слой 2.
+	# Так «призрак» после уничтожения отключает только контакты с
+	# машинами (лучи подвески видят слой 1 — по стене/машине не ездим),
+	# а снаряды/мины/боксы ловят машины по маске 0b100.
+	collision_layer = 0b100
+	collision_mask = 0b111
 	add_to_group("cars")
-	hp = max_hp
-	ammo = ammo_max
-	mines = mines_max
 	_build_collision()
+	_build_ice_shell()
+	_build_smoke()
+	_build_status_icon()
+
+
+## Значок действующего эффекта над крышей (магнит, ускорение). top_level
+## ОБЯЗАТЕЛЕН: значок не должен наследовать поворот кузова — иначе при
+## закрутке от масла и кувырке он ездит вокруг машины и уходит под землю.
+## Позиция ставится каждый кадр в _tick_status_icon.
+func _build_status_icon() -> void:
+	_status_icon = Sprite3D.new()
+	_status_icon.name = "StatusIcon"
+	_status_icon.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	_status_icon.shaded = false
+	_status_icon.double_sided = true
+	_status_icon.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_status_icon.top_level = true
+	_status_icon.visible = false
+	add_child(_status_icon)
 
 
 ## Форма корпуса — «санки»: плоское днище-упор (не даёт провалиться под
@@ -142,7 +203,87 @@ func _build_collision() -> void:
 	add_child(col)
 
 
+## Голубая полупрозрачная «скорлупа льда» — видна, пока действует
+## заморозка (машина «синеет»).
+func _build_ice_shell() -> void:
+	_ice_shell = MeshInstance3D.new()
+	_ice_shell.name = "IceShell"
+	var box := BoxMesh.new()
+	box.size = Vector3(2.0, 1.1, 3.4)
+	_ice_shell.mesh = box
+	_ice_shell.position.y = 0.45
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.45, 0.7, 1.0, 0.45)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.emission_enabled = true
+	mat.emission = Color(0.3, 0.55, 1.0)
+	mat.emission_energy_multiplier = 0.7
+	_ice_shell.material_override = mat
+	_ice_shell.visible = false
+	add_child(_ice_shell)
+
+
+## Дым из-под задних колёс — виден при сильном заносе (ручник в повороте,
+## масло). Два CPUParticles3D у задних колёс; включаются в _physics_process.
+## Клуб — билборд с мультяшной текстурой облачка (Epic Toon FX, атлас
+## 2×2: каждой частице достаётся случайный кадр — клубы разной формы).
+## Случайный поворот и рост клуба со временем жизни.
+func _build_smoke() -> void:
+	var tex: Texture2D = load("res://assets/fx/smoke_cloud_2x2.png")
+	# Клуб рождается небольшим, быстро набухает и слегка дорастает.
+	var growth := Curve.new()
+	growth.add_point(Vector2(0.0, 0.4))
+	growth.add_point(Vector2(0.35, 1.0))
+	growth.add_point(Vector2(1.0, 1.2))
+	# Эмиттеры — строго ЗА задними колёсами, внутри колеи (x ±0.55):
+	# на краю корпуса (±0.85) крупные клубы торчали по бокам машины.
+	# Шлейф короткий: жизнь 0.5 с и слабый разлёт.
+	for sx: float in [-0.55, 0.55]:
+		var p := CPUParticles3D.new()
+		p.emitting = false
+		p.amount = 16
+		p.lifetime = 0.5
+		p.local_coords = false   # клубы остаются позади машины
+		p.direction = Vector3.UP
+		p.spread = 25.0
+		p.gravity = Vector3(0.0, 1.2, 0.0)
+		p.initial_velocity_min = 0.5
+		p.initial_velocity_max = 1.2
+		p.angle_min = 0.0        # случайный поворот билборда
+		p.angle_max = 360.0
+		p.scale_amount_min = 0.55
+		p.scale_amount_max = 0.95
+		p.scale_amount_curve = growth
+		# Случайный кадр атласа 2×2 на всю жизнь частицы (анимация не
+		# крутится — у частицы случайный anim_offset).
+		p.anim_offset_min = 0.0
+		p.anim_offset_max = 1.0
+		var quad := QuadMesh.new()
+		quad.size = Vector2(0.7, 0.7)
+		var mat := StandardMaterial3D.new()
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+		mat.particles_anim_h_frames = 2
+		mat.particles_anim_v_frames = 2
+		mat.particles_anim_loop = false
+		mat.vertex_color_use_as_albedo = true
+		mat.albedo_texture = tex
+		quad.material = mat
+		p.mesh = quad
+		var grad := Gradient.new()
+		grad.set_color(0, Color(0.92, 0.92, 0.92, 0.75))
+		grad.set_color(1, Color(0.85, 0.85, 0.85, 0.0))
+		p.color_ramp = grad
+		p.position = Vector3(sx, 0.12, 1.5)
+		add_child(p)
+		_smoke.append(p)
+
+
 func _physics_process(delta: float) -> void:
+	if net_role == NetRole.PUPPET:
+		_follow_snapshot(delta)
+		return
 	_apply_suspension(delta)
 	var on_ground := _grounded_wheels >= 2
 	var hh := linear_velocity
@@ -158,7 +299,9 @@ func _physics_process(delta: float) -> void:
 		if _recent_hspeed > 1.0:
 			_recent_hdir = hh / _recent_hspeed
 	if alive and controls_enabled:
-		if is_player:
+		if net_role == NetRole.SERVER_INPUT:
+			_net_control(delta, on_ground)
+		elif is_player:
 			_player_control(delta, on_ground)
 		else:
 			_ai_control(delta, on_ground)
@@ -252,10 +395,35 @@ func _physics_process(delta: float) -> void:
 	if alive:
 		_wall_slide(delta)
 		_clamp_heading(delta)
+	_tick_effects(delta)
+	# Дым из-под задних колёс: только СИЛЬНОЕ боковое скольжение (ручник
+	# в повороте на скорости, занос от масла) — лёгкое подруливание и
+	# небольшие сносы дымить не должны.
+	var smoking := alive and on_ground and (
+			(absf(_side_speed) > 5.0 and hh.length() > 8.0)
+			or (_slip_time > 0.0 and hh.length() > 3.0))
+	for p in _smoke:
+		p.emitting = smoking
 	_ext_push_time = maxf(0.0, _ext_push_time - delta)
 	# Память для капа боковых пинков — в самом конце, после всех правок.
 	_prev_hvel = linear_velocity
 	_prev_hvel.y = 0.0
+
+
+## Таймеры эффектов оружия: заморозка, ускорение, занос, «призрак».
+func _tick_effects(delta: float) -> void:
+	_freeze_time = maxf(0.0, _freeze_time - delta)
+	_boost_time = maxf(0.0, _boost_time - delta)
+	_slip_time = maxf(0.0, _slip_time - delta)
+	if _ice_shell:
+		_ice_shell.visible = _freeze_time > 0.0
+	if _ghost_time > 0.0:
+		_ghost_time -= delta
+		if _ghost_time <= 0.0:
+			# «Призрак» кончился: контакты с машинами снова включены.
+			collision_layer = 0b100
+			collision_mask = 0b111
+			visible = true
 
 
 ## Анимация колёс — в _process, а не _physics_process: кадр рисуется ПОСЛЕ
@@ -264,6 +432,13 @@ func _physics_process(delta: float) -> void:
 ## и колёса на кадр-два всё же ныряли под асфальт).
 func _process(delta: float) -> void:
 	_animate_wheels(delta)
+	_tick_status_icon(delta)
+	if _ghost_time > 0.0:
+		# Три моргания за время призрака: полпериода погашен — полпериода
+		# виден (последний отрезок всегда «виден» — не застрять невидимым).
+		var elapsed := ghost_time - _ghost_time
+		var phase := int(elapsed / (ghost_time / 6.0))
+		visible = phase % 2 == 1 or phase >= 5
 
 
 ## Приземление не должно замедлять: 0.25 с после касания не даём модулю
@@ -312,6 +487,10 @@ func _bounce_off_cars() -> void:
 			continue
 		var id := other.get_instance_id()
 		now[id] = true
+		# Заморозка заразна: коснулся «синей» машины — перенял остаток
+		# её дебафа (и дальше передаёшь сам).
+		if other._freeze_time > 0.2 and _freeze_time <= 0.0:
+			_freeze_time = other._freeze_time
 		var away := global_position - other.global_position
 		away.y = 0.0
 		var dist := away.length()
@@ -330,6 +509,12 @@ func _bounce_off_cars() -> void:
 		var closing := (other.linear_velocity - linear_velocity).dot(away)
 		if closing > 0.5:
 			apply_central_impulse(away * closing * 0.4 * mass)
+			# Искры в точке удара. Обе машины видят один и тот же контакт —
+			# спавнит только одна из пары (меньший instance id), не обе.
+			if closing > 2.0 and get_instance_id() < id:
+				SparksFx.spawn(get_parent(),
+						(global_position + other.global_position) * 0.5
+						+ Vector3.UP * 0.45, closing)
 		# Нецентральный удар ЗАКРУЧИВАЕТ: точка контакта — у соперника,
 		# плечо — от центра к нему (не длиннее полукорпуса), момент =
 		# плечо × относительная скорость соперника. Продольный таран мимо
@@ -361,10 +546,80 @@ func _player_control(delta: float, on_ground: bool) -> void:
 	var handbraking := Input.is_action_pressed("handbrake")
 	var jumping := Input.is_action_just_pressed("jump")
 	_drive(delta, on_ground, throttle, steer, handbraking, jumping)
-	if Input.is_action_just_pressed("fire"):
-		shoot()
-	if Input.is_action_just_pressed("drop"):
-		drop_mine()
+	# Ехать своей машиной клиент считает сам (отклик руля без пинга), а
+	# вот СТРЕЛЯТЬ — нет: оружие тратит сервер. Локальный выстрел породил
+	# бы вторую ракету и списал бокс дважды. Клиент шлёт нажатие в
+	# Main._client_tick.
+	if net_role != NetRole.LOCAL:
+		return
+	if Input.is_action_just_pressed("fire") \
+			or Input.is_action_just_pressed("drop"):
+		use_weapon()
+
+
+## Сервер ведёт машину по вводу, присланному клиентом. Разовые нажатия
+## (прыжок, выстрел) гасим сразу: RPC приходит между кадрами физики, и без
+## сброса одно нажатие сработало бы несколько кадров подряд.
+func _net_control(delta: float, on_ground: bool) -> void:
+	_drive(delta, on_ground, net_th, net_st, net_hb, net_jump)
+	net_jump = false
+	if net_fire:
+		net_fire = false
+		use_weapon()
+
+
+## Клиент получил снимок этой машины с сервера.
+func net_apply_snapshot(pos: Vector3, rot: Quaternion, vel: Vector3) -> void:
+	_snap_pos = pos
+	_snap_rot = rot
+	_snap_vel = vel
+	_snap_age = 0.0
+	if not _snap_seen:
+		_snap_seen = true
+		global_position = pos
+		global_transform.basis = Basis(rot)
+
+
+## Марионетка: физику не считаем вовсе, тянемся к снимку. Снимки идут
+## ~20 раз в секунду, а кадров 60 — поэтому цель ЭКСТРАПОЛИРУЕТСЯ по
+## скорости из снимка, иначе машина едет рывками. Большая невязка
+## (респавн, телепорт после уничтожения) — не догоняем, а переставляем.
+func _follow_snapshot(delta: float) -> void:
+	if not _snap_seen:
+		return
+	_snap_age += delta
+	var target := _snap_pos + _snap_vel * _snap_age
+	if global_position.distance_to(target) > 8.0:
+		global_position = target
+	else:
+		global_position = global_position.lerp(target, 0.35)
+	var cur := global_transform.basis.get_rotation_quaternion()
+	global_transform.basis = Basis(cur.slerp(_snap_rot, 0.35))
+	linear_velocity = _snap_vel
+
+
+## Своя машина на клиенте: она честно считается локально (иначе руль
+## отвечал бы через пинг), а сервер её мягко подтягивает. Резкий рывок
+## только при большой невязке — иначе машина «дрожала» бы на каждом снимке.
+func net_correct(pos: Vector3, rot: Quaternion, vel: Vector3) -> void:
+	if global_position.distance_to(pos) > 4.0:
+		global_position = pos
+		global_transform.basis = Basis(rot)
+		linear_velocity = vel
+		reset_speed_memory()
+		return
+	global_position = global_position.lerp(pos, 0.12)
+	linear_velocity = linear_velocity.lerp(vel, 0.12)
+
+
+## Перевод машины в режим марионетки (клиент): своя физика выключается.
+func net_make_puppet() -> void:
+	net_role = NetRole.PUPPET
+	is_player = false
+	freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+	freeze = true
+	for p in _smoke:
+		p.emitting = false
 
 
 ## ИИ: едет к точке на оси трассы впереди себя, стреляет по машине в прицеле,
@@ -396,12 +651,23 @@ func _ai_control(delta: float, on_ground: bool) -> void:
 	_drive(delta, on_ground, throttle, steer, false, false)
 
 	_ai_fire_cd -= delta
-	if _ai_fire_cd <= 0.0:
+	if _ai_fire_cd <= 0.0 and weapon >= 0:
 		_ai_fire_cd = randf_range(1.6, 3.2)
-		if _enemy_ahead():
-			shoot()
-		elif _enemy_behind() and randf() < 0.5:
-			drop_mine()
+		match weapon:
+			Weapons.ROCKET, Weapons.LASER, Weapons.FREEZE:
+				if _enemy_ahead():
+					use_weapon()
+			Weapons.MINE, Weapons.OIL:
+				if _enemy_behind() and randf() < 0.6:
+					use_weapon()
+			Weapons.MAGNET:
+				if _enemy_near(12.0):
+					use_weapon()
+			Weapons.AIRSTRIKE:
+				use_weapon()
+			Weapons.BOOST:
+				if throttle > 0.5:
+					use_weapon()
 
 
 ## Сколько ИИ можно ехать прямо сейчас, чтобы вписаться во всё, что впереди.
@@ -458,14 +724,23 @@ func _drive(
 
 	var forward := -global_transform.basis.z
 	var speed := linear_velocity.dot(forward)
-	var eff_max := max_speed * ai_rubber
+	# Эффекты оружия: заморозка режет предел скорости и тягу, буст — растит.
+	var fx_mult := 1.0
+	if _freeze_time > 0.0:
+		fx_mult = 0.55
+	elif _boost_time > 0.0:
+		fx_mult = 1.45
+	var eff_max := max_speed * ai_rubber * fx_mult
 
 	if on_ground:
-		# Тяга/тормоз.
+		# Тяга/тормоз. На масле колёса буксуют: и разогнаться, и оттормозиться
+		# почти нельзя — машину просто несёт юзом, пока занос не кончится.
 		if absf(speed) < eff_max or signf(throttle) != signf(speed):
 			var power := engine_power if throttle > 0.0 else brake_power
+			if _slip_time > 0.0:
+				power *= slip_thrust
 			apply_central_force(
-					forward * throttle * power * ai_rubber * mass * 0.1)
+					forward * throttle * power * ai_rubber * fx_mult * mass * 0.1)
 
 		# Руль: почти не слабеет на скорости (RnRR-манёвренность).
 		# После тарана (_bump_spin_time) руль слабый: жёсткий lerp съел бы
@@ -476,7 +751,13 @@ func _drive(
 			var turn_rate: float = lerpf(steer_speed, steer_speed_min, speed_t)
 			# Скорость поворота коррелирует со скоростью машины: почти
 			# стоя не развернёшься, полная сила руля — от steer_full_speed.
-			turn_rate *= clampf(absf(speed) / steer_full_speed, 0.0, 1.0)
+			# НО: если нос сильно поперёк трассы (после перпендикулярного
+			# удара в отбойник машина почти стоит) — руль работает и на
+			# малой скорости, иначе не развернуться, не разогнавшись в стену.
+			var speed_factor := clampf(absf(speed) / steer_full_speed, 0.0, 1.0)
+			if _track_ang_abs > deg_to_rad(35.0):
+				speed_factor = maxf(speed_factor, 0.6)
+			turn_rate *= speed_factor
 			# Задний ход — руль зеркалится, как в жизни.
 			var direction := signf(speed)
 			_yaw_cmd_sign = signf(steer) * direction
@@ -493,7 +774,11 @@ func _drive(
 		# Гашение бокового сноса (аркадное сцепление).
 		var right := global_transform.basis.x
 		var side_speed := linear_velocity.dot(right)
+		_side_speed = side_speed  # для дыма из-под колёс на заносе
 		var current_grip := grip_handbrake if handbraking else grip
+		# Масляное пятно: сцепления почти нет — машину несёт юзом.
+		if _slip_time > 0.0:
+			current_grip = slip_grip
 		apply_central_force(-right * side_speed * current_grip * mass * 0.1)
 
 		# Прыжок — фирменная механика Rock'n'Roll Racing.
@@ -506,6 +791,7 @@ func _drive(
 				func() -> void: _can_jump = true
 			)
 	else:
+		_side_speed = 0.0  # в полёте колёса не скользят — дыма нет
 		# В полёте руль тоже работает: рысканье как на земле, но мягче.
 		# Без руля цель — ноль: случайная закрутка на взлёте/приземлении
 		# гасится, машина не разворачивается сама.
@@ -595,7 +881,10 @@ func _wall_slide(delta: float) -> void:
 		reach += 1.5 * absf(fwd_h.normalized().dot(n))
 	if right_h.length_squared() > 1e-6:
 		reach += 0.85 * absf(right_h.normalized().dot(n))
-	var wall_face := TrackBuilder.TRACK_HALF_WIDTH \
+	# Полотно переменной ширины — грань ограждения берём в ТЕКУЩЕЙ точке
+	# трассы, иначе в узких местах (шпилька) ведение включалось бы уже
+	# внутри стены, а на широких — в нескольких метрах от неё.
+	var wall_face := track.half_width_at_offset(off) \
 			- TrackBuilder.WALL_THICKNESS * 0.5
 	var guiding := touching or (
 			v_out > 0.05 and dist + reach + v_out * delta * 1.2 > wall_face)
@@ -612,13 +901,14 @@ func _wall_slide(delta: float) -> void:
 	# памяти до полной — машину «выстреливало» в случайную сторону
 	# («внезапно меняет направление»). Фантомные броски гасят капы ниже.
 	if guiding and (v_out > 0.0 or h.length() < 0.1):
-		# Вся горизонтальная скорость — вдоль стены, но с лёгким штрафом:
-		# ограждение направляет и ЧУТЬ притормаживает — четверть скорости
-		# сближения при перехвате + слабый скрежет, пока есть контакт.
+		# Вся горизонтальная скорость — вдоль стены, но со штрафом:
+		# ограждение направляет и ГАСИТ удар — 40% скорости сближения
+		# при перехвате + слабый скрежет, пока есть контакт. Скользящий
+		# удар почти не теряет (v_out мал), перпендикулярный — ощутимо.
 		# Перепрыгнуть стену по-прежнему можно: выше кромки ведение
 		# отключается (см. проверку высоты выше).
 		var s := maxf(h.length(), _recent_hspeed)
-		s -= 0.25 * maxf(v_out, 0.0)
+		s -= 0.4 * maxf(v_out, 0.0)
 		if touching:
 			s -= 2.5 * delta
 		s = maxf(s, 0.0)
@@ -647,15 +937,19 @@ func _wall_slide(delta: float) -> void:
 	# Стена — тримеш из сотен сегментов, и кузов-коробка, скользя вдоль,
 	# иногда цепляет ВНУТРЕННЕЕ ребро стыка — решатель швыряет машину к
 	# оси («еду вдоль ограждения и будто на что-то наезжаю») или вверх.
-	# Пока машина в пристенке и руль НЕ просит прочь, скорости ОТ стены
-	# взяться неоткуда — ограничиваем её 1.2 м/с (плавный отход за счёт
-	# кривизны трассы остаётся). Подскок режем в том же окне.
-	if not steering_away and (touching or _wall_align_time > 0.0):
+	# Кап скорости ОТ стены теперь ВСЕГДА в пристенке: без руля прочь —
+	# 1.2 м/с (скорости от стены взяться неоткуда, фантомные отбросы
+	# решателя режем), с рулём прочь — 3.0 м/с (отойти от стены можно,
+	# «выстрелить» — нет: раньше выпуск под 22° на полной памяти скорости
+	# и отбросы депенетрации при нажатом руле не капались вовсе — машина
+	# ОТЛЕТАЛА от ограждения). Подскок режем в том же окне.
+	if touching or _wall_align_time > 0.0:
+		var out_cap := 3.0 if steering_away else 1.2
 		var h_now := linear_velocity
 		h_now.y = 0.0
 		var out_now := h_now.dot(n)
-		if out_now < -1.2:
-			linear_velocity -= n * (out_now + 1.2)
+		if out_now < -out_cap:
+			linear_velocity -= n * (out_now + out_cap)
 	if _jump_time <= 0.0 and (touching or _wall_align_time > 0.0):
 		# Клапан подскока: депенетрация вклиненного угла/ребра не должна
 		# закидывать кузов на стену (после прыжка отключён).
@@ -718,6 +1012,19 @@ func _clamp_heading(delta: float) -> void:
 	if absf(ang) > limit:
 		rotate(Vector3.UP, -(ang - signf(ang) * limit))
 		ang = signf(ang) * limit
+	# Помощь развороту после перпендикулярного удара в отбойник: машина
+	# почти стоит носом поперёк трассы, руль на нулевой скорости бессилен
+	# (turn_rate ~ скорости) — раньше приходилось биться в стену ещё
+	# несколько раз. Пока нос сильно поперёк (> 40°) и скорость мала,
+	# корпус сам плавно доворачивается вдоль трассы.
+	var h := linear_velocity
+	h.y = 0.0
+	if _grounded_wheels >= 2 and absf(ang) > deg_to_rad(35.0) \
+			and h.length() < 8.0:
+		var step := minf(2.4 * delta, absf(ang) - deg_to_rad(35.0))
+		rotate(Vector3.UP, -signf(ang) * step)
+		ang -= signf(ang) * step
+	_track_ang_abs = absf(ang)
 	# Положительное рысканье крутит нос туда же, куда растёт ang.
 	var next := ang + angular_velocity.y * delta
 	if absf(next) > limit:
@@ -769,70 +1076,288 @@ func _apply_suspension(_delta: float) -> void:
 
 # ---------- Бой ----------
 
-func shoot() -> void:
-	if not alive or ammo <= 0:
+func is_ghost() -> bool:
+	return _ghost_time > 0.0
+
+
+## Применить текущее оружие (у машины в руках всегда не больше одного;
+## новое берётся из боксов на трассе). Оружие тратится при использовании.
+func use_weapon() -> void:
+	if not alive or weapon < 0:
 		return
-	ammo -= 1
-	var dir := -global_transform.basis.z
-	var p := Projectile.new()
-	p.shooter = self
-	p.direction = dir
-	get_parent().add_child(p)
-	p.global_position = global_position + dir * 2.3 + Vector3.UP * 0.55
+	var kind := weapon
+	weapon = -1
+	# По сети выстрел считает сервер, но клиенты должны его УВИДЕТЬ:
+	# просим менеджера гонки разослать событие (вне сети — пустышка).
+	if race != null and race.has_method("net_broadcast_weapon"):
+		race.net_broadcast_weapon(self, kind)
+	var fwd := -global_transform.basis.z
+	fwd.y = 0.0
+	fwd = fwd.normalized() if fwd.length_squared() > 1e-6 else Vector3.FORWARD
+	match kind:
+		Weapons.MINE:
+			var m := Mine.new()
+			m.dropper = self
+			get_parent().add_child(m)
+			m.global_position = global_position \
+					+ global_transform.basis.z * 2.4 + Vector3.UP * 0.1
+		Weapons.ROCKET, Weapons.FREEZE:
+			var p := Projectile.new()
+			p.shooter = self
+			p.direction = fwd
+			p.freeze = kind == Weapons.FREEZE
+			get_parent().add_child(p)
+			p.global_position = global_position + fwd * 2.3 + Vector3.UP * 0.55
+		Weapons.OIL:
+			var oil := OilSlick.new()
+			oil.dropper = self
+			get_parent().add_child(oil)
+			oil.global_position = global_position \
+					+ global_transform.basis.z * 3.0 + Vector3.UP * 0.12
+		Weapons.MAGNET:
+			_use_magnet()
+		Weapons.LASER:
+			_use_laser(fwd)
+		Weapons.AIRSTRIKE:
+			_use_airstrike()
+		Weapons.BOOST:
+			_boost_time = boost_duration
+			FlashFx.spawn(get_parent(),
+					global_position + Vector3.UP * 0.5, 1.2,
+					Color(0.3, 0.9, 1.0))
 
 
-func drop_mine() -> void:
-	if not alive or mines <= 0:
+## Магнит: все машины разово получают сильный импульс К этой машине —
+## соперников «откидывает назад», к использовавшему. Рывок ЖЕСТОЧАЙШИЙ:
+## вблизи он почти в max_speed, машину сдёргивает с траектории и
+## разворачивает; далёких тянет слабее (спад с расстоянием, но не до
+## нуля — магнит достаёт всю трассу). Подброса почти нет: магнит волочит
+## по земле, а не подкидывает.
+func _use_magnet() -> void:
+	const MAGNET_PULL := 32.0     # импульс вблизи, м/с (почти max_speed)
+	const MAGNET_FAR := 18.0      # к чему сходит на дальней дистанции
+	const MAGNET_RANGE := 45.0    # дистанция, на которой спад завершён
+	const MAGNET_SPIN := 3.6      # закрутка от рывка, рад/с
+	const MAGNET_ICON_TIME := 1.5 # сколько над жертвой висит значок магнита
+	FlashFx.spawn(get_parent(), global_position + Vector3.UP * 0.5, 3.2,
+			Color(0.8, 0.3, 1.0))
+	for node in get_tree().get_nodes_in_group("cars"):
+		var other := node as Car
+		if other == self or not other.alive or other.is_ghost():
+			continue
+		var dir := global_position - other.global_position
+		dir.y = 0.0
+		var dist := dir.length()
+		if dist < 0.1:
+			continue
+		var t: float = clampf(dist / MAGNET_RANGE, 0.0, 1.0)
+		var power: float = lerpf(MAGNET_PULL, MAGNET_FAR, t)
+		var spin := MAGNET_SPIN * (1.0 - t) * (1.0 if randf() < 0.5 else -1.0)
+		other.push_from_blast(dir / dist, power, spin, 0.12)
+		other.show_effect_icon(Weapons.MAGNET, MAGNET_ICON_TIME)
+
+
+## Лазер: один луч вперёд, уничтожает ВСЕ машины на пути.
+func _use_laser(fwd: Vector3) -> void:
+	const RANGE := 70.0
+	const HALF_WIDTH := 1.6
+	var from := global_position + Vector3.UP * 0.5
+	LaserFx.spawn(get_parent(), from, fwd, RANGE)
+	for node in get_tree().get_nodes_in_group("cars"):
+		var other := node as Car
+		if other == self or not other.alive or other.is_ghost():
+			continue
+		var to := other.global_position - global_position
+		to.y = 0.0
+		var along := to.dot(fwd)
+		if along < 0.0 or along > RANGE:
+			continue
+		var side := (to - fwd * along).length()
+		if side <= HALF_WIDTH:
+			other.destroy()
+
+
+## Авиаудар: цель — ЛИДЕР гонки (спрашиваем у менеджера Main; без него —
+## тесты/стенды — бьём по себе).
+func _use_airstrike() -> void:
+	var target: Car = self
+	if race != null and race.has_method("leader_car"):
+		target = race.leader_car()
+	var strike := Airstrike.new()
+	strike.track = track
+	strike.target = target
+	get_parent().add_child(strike)
+
+
+## Уничтожение (ракета/лазер/авиаудар): вспышка, машина тут же появляется
+## на трассе с нулевой скоростью и на ghost_time становится «призраком» —
+## мигает, не взаимодействует с другими машинами, но может ехать и
+## набирать скорость. Потом всё как раньше.
+func destroy() -> void:
+	if not alive or is_ghost():
 		return
-	mines -= 1
-	var m := Mine.new()
-	m.dropper = self
-	get_parent().add_child(m)
-	m.global_position = global_position \
-			+ global_transform.basis.z * 2.4 + Vector3.UP * 0.1
-
-
-func take_damage(amount: float, dir: Vector3) -> void:
-	if not alive:
-		return
-	hp -= amount
-	# Толчок от попадания — машину шатает, как в RnRR. Кап боковых
-	# пинков на это окно отключаем — толчок честный.
-	_ext_push_time = 0.3
-	apply_central_impulse((dir.normalized() + Vector3.UP * 0.4) * mass * 1.5)
-	if hp <= 0.0:
-		_explode()
-
-
-## Подрыв: машину подбрасывает и крутит, управление отключается на пару
-## секунд, потом она сама встаёт на трассу. Машина всё время видима —
-## исчезновение выглядело как баг.
-func _explode() -> void:
-	alive = false
-	hp = 0.0
 	FlashFx.spawn(get_parent(), global_position, 2.4, Color(1.0, 0.45, 0.1))
-	# Подброс и закрутка — эффектно и сразу понятно, что тебя подорвали.
-	apply_central_impulse(Vector3.UP * 5.5 * mass)
-	apply_torque_impulse(Vector3(
-		randf_range(-1.0, 1.0), randf_range(-0.6, 0.6), randf_range(-1.0, 1.0)
-	) * mass * 2.0)
-
-	await get_tree().create_timer(1.6).timeout
-	if not is_inside_tree():
-		return
 	if track:
 		global_transform = track.respawn_transform(global_position)
 	linear_velocity = Vector3.ZERO
 	angular_velocity = Vector3.ZERO
 	reset_speed_memory()
-	hp = max_hp
-	alive = true
+	_freeze_time = 0.0
+	_slip_time = 0.0
+	_boost_time = 0.0
+	_ghost_time = ghost_time
+	# Призрак не сталкивается с машинами (слой 4 убран с обеих сторон);
+	# дорога (1) и стены (2) остаются.
+	collision_layer = 0
+	collision_mask = 0b011
 
 
-## Пополнение боезапаса (менеджер гонки зовёт на каждом новом круге).
-func refill_ammo() -> void:
-	ammo = ammo_max
-	mines = mines_max
+## Значок эффекта над машиной: что показывать и как он живёт.
+## Два источника: РАЗОВЫЕ эффекты (магнит — его applier зовёт
+## show_effect_icon) и ДЛЯЩИЕСЯ (ускорение — читаем прямо _boost_time,
+## а не заводим свой таймер: destroy() обнуляет буст, и отдельный таймер
+## оставил бы значок висеть над машиной, которую уже отбросило).
+## Магнит важнее буста: «по тебе только что применили» — новость.
+func _tick_status_icon(delta: float) -> void:
+	if _status_icon == null:
+		return
+	_status_time = maxf(0.0, _status_time - delta)
+	var kind := -1
+	var left := 0.0
+	if alive:
+		if _status_time > 0.0:
+			kind = _status_kind
+			left = _status_time
+		elif _boost_time > 0.0:
+			kind = Weapons.BOOST
+			left = _boost_time
+	if kind < 0:
+		_status_icon.visible = false
+		_status_shown = -2
+		return
+	if kind != _status_shown:
+		_status_shown = kind
+		_status_age = 0.0
+		var tex := Weapons.icon(kind)
+		_status_icon.texture = tex
+		if tex != null:
+			_status_icon.pixel_size = STATUS_ICON_SIZE / float(tex.get_width())
+	_status_age += delta
+	_status_icon.visible = true
+	# Где висит стрелка-указатель (Main, высота 2.4 + конус 0.6), значок
+	# поднимаем над ней. Смотрим на ФАКТ маркера, а не на is_player: по
+	# сети маркеры есть у обоих живых игроков, а is_player там только у
+	# своей машины.
+	var height := STATUS_ICON_PLAYER_Y if has_marker else STATUS_ICON_Y
+	_status_icon.global_position = global_position 			+ Vector3.UP * (height + 0.09 * sin(_status_age * 4.5))
+	# «Выпрыгивание» при появлении и затухание в последние 0.3 с.
+	var pop: float = clampf(_status_age / 0.16, 0.0, 1.0)
+	_status_icon.scale = Vector3.ONE * (1.0 + 0.6 * (1.0 - pop))
+	_status_icon.modulate.a = clampf(left / 0.3, 0.0, 1.0)
+
+
+## Показать над машиной значок РАЗОВОГО эффекта (магнит). Длящиеся
+## эффекты значок берёт сам, см. _tick_status_icon.
+func show_effect_icon(kind: int, duration: float) -> void:
+	if not alive:
+		return
+	_status_kind = kind
+	_status_time = maxf(_status_time, duration)
+
+
+## Заморозка: машина «синеет» и едет медленнее. Дебаф ЗАРАЗЕН — при
+## контакте машин передаётся остаток времени (см. _bounce_off_cars).
+func apply_freeze(duration: float) -> void:
+	if not alive:
+		return
+	_freeze_time = maxf(_freeze_time, duration)
+
+
+## Масляное пятно: занос — закрутка + почти нулевое сцепление (slip_grip)
+## + буксующие колёса (slip_thrust) на slip_duration. Окно
+## _bump_spin_time не даёт рулю мгновенно съесть закрутку, окно
+## _ext_push_time — капу боковых пинков её срезать. Повторный наезд на
+## пятно во время заноса ничего не продлевает — занос и так тяжёлый.
+## Сторона закрутки случайная только НА СВОБОДНОМ ПОЛОТНЕ: у ограждения
+## машину разворачивает в разрешённую сторону — носом ОТ стены (см.
+## _spin_away_from_wall). Иначе занос втыкал нос в отбойник, где
+## _clamp_heading и ведение у стены его тут же и съедали: эффектного
+## вращения не выходило, выходил тычок в стену.
+func apply_oil_slip() -> void:
+	if not alive or _slip_time > 0.0:
+		return
+	_slip_time = slip_duration
+	_bump_spin_time = slip_duration
+	_ext_push_time = slip_duration
+	var side := _spin_away_from_wall()
+	if side == 0.0:
+		side = 1.0 if randf() < 0.5 else -1.0
+	var spin := randf_range(3.2, 4.4) * side
+	angular_velocity.y = clampf(angular_velocity.y + spin, -4.5, 4.5)
+
+
+## Разрешённая сторона закрутки у ограждения: 0.0 — стена далеко, крути
+## куда угодно; иначе знак рысканья, который уводит нос ОТ стены.
+## Стена «близко» — если кузов со своим вылетом в её сторону уже в
+## SPIN_WALL_MARGIN от грани отбойника (полотно переменной ширины, грань
+## берём в ТЕКУЩЕЙ точке трассы — как в _wall_slide).
+func _spin_away_from_wall() -> float:
+	const SPIN_WALL_MARGIN := 3.0
+	if track == null:
+		return 0.0
+	var curve: Curve3D = track._curve
+	var off := curve.get_closest_offset(global_position)
+	var axis_pos := curve.sample_baked(off)
+	# Наружу — от оси трассы к ближнему борту (работает для обоих).
+	var n := global_position - axis_pos
+	n.y = 0.0
+	var dist := n.length()
+	if dist < 0.01:
+		return 0.0
+	n /= dist
+	var fwd := -global_transform.basis.z
+	fwd.y = 0.0
+	if fwd.length_squared() < 1e-6:
+		return 0.0
+	fwd = fwd.normalized()
+	var wall_face: float = track.half_width_at_offset(off) 			- TrackBuilder.WALL_THICKNESS * 0.5
+	if dist + SPIN_WALL_MARGIN < wall_face:
+		return 0.0
+	# Знак рысканья «в стену» — тот же, что у _wall_slide (into_sign);
+	# разрешённая сторона противоположна.
+	return -signf(fwd.signed_angle_to(n, Vector3.UP))
+
+
+## Разовый толчок от взрыва мины/магнита: горизонтальный импульс, подброс
+## и закрутка. На окно толчка снимаются ВСЕ страховки, которые иначе
+## съели бы удар за пару кадров:
+##  - кап боковых пинков (_ext_push_time) — толчок честный, не «фантом»;
+##  - клапан отскока от земли (_jump_time) — иначе на ровном полотне
+##    вертикальная скорость режется до 0.6 м/с и подброса не видно;
+##  - жёсткий lerp рысканья (_bump_spin_time) — иначе руль гасит
+##    закрутку в тот же кадр, и разворота от взрыва не будет.
+func push_from_blast(dir: Vector3, power: float, spin := 0.0,
+		lift := 0.35) -> void:
+	if not alive:
+		return
+	_ext_push_time = maxf(_ext_push_time, 0.7)
+	apply_central_impulse((dir + Vector3.UP * lift).normalized()
+			* power * mass)
+	if lift > 0.05:
+		_jump_time = maxf(_jump_time, 0.4)
+	if absf(spin) > 0.01:
+		_bump_spin_time = maxf(_bump_spin_time, 0.8)
+		angular_velocity.y = clampf(angular_velocity.y + spin, -4.0, 4.0)
+
+
+func _enemy_near(radius: float) -> bool:
+	for node in get_tree().get_nodes_in_group("cars"):
+		var other := node as Car
+		if other == self or not other.alive:
+			continue
+		if (other.global_position - global_position).length() < radius:
+			return true
+	return false
 
 
 func _enemy_ahead() -> bool:

@@ -59,6 +59,31 @@ func _run() -> void:
 	var t75 := track._curve.sample_baked(track._curve.get_baked_length() * 0.75)
 	var out75 := Vector3(t75.x, 0, t75.z).normalized()
 	await _shot(t75 + out75 * 42.0 + Vector3(0, 22, 0), t75, "tribune75.png")
+	# ШПИЛЬКА и узкое место: самая крутая дуга конфигурации (см.
+	# TrackBuilder.SEGMENTS) — тут полотно сужается до 6 м полуширины.
+	var length := track._curve.get_baked_length()
+	var hairpin := track._curve.sample_baked(length * 0.345)
+	await _shot(hairpin + Vector3(0, 46, 46), hairpin, "hairpin.png")
+	# Переход «широкая прямая → узкий крутой поворот» (сужение видно).
+	var narrow := track._curve.sample_baked(length * 0.70)
+	await _shot(narrow + Vector3(0, 40, 40), narrow, "narrowing.png")
+	# ГОРКА (единственный перепад высот, см. TrackBuilder.HEIGHT_KEYS):
+	# сбоку — виден силуэт подъёма и спуска; с подножия — как её видит
+	# гонщик. Доли берём из профиля, а не «на глаз».
+	var foot := track._curve.sample_baked(length * 0.140)
+	var top := track._curve.sample_baked(length * 0.184)
+	var side := (top - foot)
+	side.y = 0.0
+	side = side.normalized().cross(Vector3.UP) * 48.0
+	await _shot(top + side + Vector3(0, 7, 0), top, "hill_side.png")
+	# Вид «как у гонщика» — камеру ставим ПО КРИВОЙ на 26 м до подножия.
+	# Прямая экстраполяция по касательной тут не годится: подъём начинается
+	# на выходе из дуги, и камера уезжала ЗА ограждение (в кадре был только
+	# красный борт).
+	var behind := track._curve.sample_baked(
+			fposmod(length * 0.140 - 26.0, length))
+	await _shot(behind + Vector3(0, 3.2, 0), top + Vector3(0, 1.0, 0),
+			"hill_drive.png")
 	# Игровой ракурс — как видит игрок (изометрия).
 	var cam := IsoCamera.new()
 	var p := start + fwd * 6.0

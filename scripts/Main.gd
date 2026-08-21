@@ -5,9 +5,17 @@ extends Node3D
 
 const LAPS := 4
 const AI_COUNT := 3
-# Машина на полотне отстоит от оси максимум на ~6.2 м (полуширина трассы 7
-# минус полукорпус), поэтому всё, что дальше 7.5 м, — уже за ограждением.
-const OFFTRACK_DIST := TrackBuilder.TRACK_HALF_WIDTH + 0.5
+# По сети машин всегда 4: слоты 0 и 1 — живые игроки (пустой слот до
+# подключения ведёт бот), 2 и 3 — боты.
+const NET_CARS := 4
+const SNAP_HZ := 20.0           # снимков состояния в секунду (сервер → клиенты)
+# Сколько ждать ВТОРОГО живого игрока после подключения первого.
+# Не дождались — едем по старинке, пустой слот берёт бот.
+const LOBBY_WAIT := 5.0
+# Полотно переменной ширины, поэтому порог вылета считается в точке машины:
+# полуширина здесь + 0.5 м (машина у самой стены отстоит от оси почти ровно
+# на полуширину, дальше — уже за ограждением).
+const OFFTRACK_MARGIN := 0.5
 const OFFTRACK_WAIT_PLAYER := 2.0
 const OFFTRACK_WAIT_AI := 1.0
 # Переворот: «верх» кузова завалился больше чем на ~70° от вертикали.
@@ -28,19 +36,38 @@ var _flip_time: Array[float] = []
 var _stall_time: Array[float] = []
 var _finished := false
 
-var _player_marker: Node3D          # стрелка-указатель над машиной игрока
+var _player_marker: Node3D          # стрелка-указатель над своей машиной
+var _rival_marker: Node3D           # и над машиной живого соперника
 var _marker_time := 0.0
+
+var _net_started := false           # сервер: гонка идёт (иначе лобби)
+var _snap_accum := 0.0              # накопитель до следующего снимка
+var _lobby_wait := -1.0             # сервер: остаток ожидания, <0 — не идёт
+var _roster := PackedStringArray()  # id моделей машин по слотам
+var _lobby_label: Label             # «ждём игроков» на клиенте
 
 var _speed_label: Label
 var _lap_label: Label
 var _pos_label: Label
-var _ammo_label: Label
-var _hp_fill: ColorRect
+var _weapon_icon: TextureRect   # иконка оружия в круглом слоте
+var _weapon_name: Label
+var _q_mark_tex: Texture2D      # «?» в пустом слоте
+var _last_weapon := -2          # чтобы не перезагружать иконку каждый кадр
+var _warn_panel: Panel
 var _warn_label: Label
-var _center_label: Label
+var _count_label: Label         # отсчёт 3-2-1-GO
+var _finish_root: Control       # баннер финиша
+var _finish_label: Label
+var _ui_font: FontFile          # Softie Cyr — мультяшный шрифт (с кириллицей)
 
 
 func _ready() -> void:
+	# Выделенный сервер: тот же Main, но без камеры, HUD и своей машины.
+	# Запуск: godot --headless --path . res://scenes/Main.tscn -- --server
+	if Net.wants_server() and not Net.is_online():
+		if not Net.start_server():
+			get_tree().quit(1)
+			return
 	_setup_environment()
 
 	_track = TrackBuilder.new()
@@ -48,49 +75,72 @@ func _ready() -> void:
 	add_child(_track)
 
 	_spawn_cars()
+	_spawn_weapon_boxes()
 
-	var cam := IsoCamera.new()
-	cam.name = "IsoCamera"
-	cam.target = _car
-	add_child(cam)
-	cam.make_current()
+	if not Net.is_server():
+		var cam := IsoCamera.new()
+		cam.name = "IsoCamera"
+		cam.target = _car
+		add_child(cam)
+		cam.make_current()
+		_setup_hud()
 
-	_setup_hud()
-	_countdown()
+	if Net.is_server():
+		Net.player_joined.connect(_on_peer_joined)
+		Net.player_left.connect(_on_peer_left)
+		print("[net] трасса готова, ждём игроков")
+		# Сцена могла быть перезагружена после прошлого заезда — тогда
+		# игроки УЖЕ подключены, и peer_connected по ним больше не придёт.
+		# Возвращаем их машины на присланный ввод руками.
+		for pid: int in Net.slot_of_peer.keys():
+			_on_peer_joined(pid, Net.slot_of_peer[pid])
+	elif Net.is_client():
+		# Клиент ничего не начинает сам: представляемся серверу и ждём
+		# от него слот, ростер машин и команду отсчёта. Если рукопожатие
+		# ещё не закончилось (сцену могли открыть сразу), ждём сигнала —
+		# RPC, отправленный до соединения, просто пропадёт.
+		_lobby_label.visible = true
+		var peer := multiplayer.multiplayer_peer
+		if peer != null and peer.get_connection_status() 				== MultiplayerPeer.CONNECTION_CONNECTED:
+			_say_hello()
+		else:
+			Net.joined.connect(_say_hello, CONNECT_ONE_SHOT)
+	else:
+		_countdown()
 
 
-## Стартовая решётка: 2 колонны, игрок — впереди слева.
+## Стартовая решётка: 2 колонны. Оффлайн — игрок впереди слева и 3 бота.
+## По сети — 4 машины: слоты 0 и 1 держатся за живыми игроками, 2 и 3 всегда
+## боты. Пустой слот игрока до подключения ведёт бот (net_role LOCAL), при
+## подключении сервер переключает машину на присланный ввод — так гонка
+## идёт и с одним игроком, и никто не ждёт второго впустую.
 func _spawn_cars() -> void:
 	var st := _track.start_transform()
 	var dir := -st.basis.z
 	var right := st.basis.x
-	var ai_ids := _pick_ai_ids()
+	var count := NET_CARS if Net.is_online() else AI_COUNT + 1
+	var ids := _pick_car_ids(count)
 
-	for i in AI_COUNT + 1:
-		var is_p := i == 0
+	for i in count:
+		var is_p := i == 0 and not Net.is_online()
 		var car := Car.new()
 		car.is_player = is_p
-		car.name = "PlayerCar" if is_p else "AiCar%d" % i
+		car.name = "Car%d" % i
 		car.track = _track
+		car.race = self
+		# На старте у каждого одно случайное оружие; дальше — боксы.
+		car.weapon = Weapons.random_weapon()
 		if not is_p:
 			# Лёгкий разброс характеристик, чтобы ИИ не ехали строем.
 			car.max_speed += randf_range(-1.2, 1.2)
 			car.engine_power += randf_range(-8.0, 8.0)
 
-		var id: String = GameState.selected_car_id if is_p else ai_ids[i - 1]
-		var model := CarModelLibrary.build(id)
-		if model:
-			car.add_child(model)
-			car.collect_wheels(model)
-		else:
-			_build_placeholder_visual(car)
-
 		var row := i / 2
 		var col := i % 2
-		var pos: Vector3 = st.origin - dir * (2.0 + row * 5.0) \
-				+ right * (2.2 if col == 1 else -2.2)
+		var pos: Vector3 = st.origin - dir * (2.0 + row * 5.0) 				+ right * (2.2 if col == 1 else -2.2)
 		car.transform = Transform3D(st.basis, pos)
 		add_child(car)
+		_set_car_model(car, ids[i])
 
 		_cars.append(car)
 		_progress.append(0.0)
@@ -100,9 +150,15 @@ func _spawn_cars() -> void:
 		_stall_time.append(0.0)
 		_last_offset.append(0.0)
 
+	_roster = ids
 	_car = _cars[0]
-	_player_marker = _build_player_marker()
-	_car.add_child(_player_marker)
+	if Net.is_client():
+		# Пока сервер не выдал слот, СВОЕЙ машины нет — все марионетки.
+		for c in _cars:
+			c.net_make_puppet()
+	elif not Net.is_server():
+		_attach_marker(0)
+
 	var length := _track._curve.get_baked_length()
 	for i in _cars.size():
 		var off := _track._curve.get_closest_offset(_cars[i].global_position)
@@ -114,32 +170,118 @@ func _spawn_cars() -> void:
 		_progress[i] = off - length if off > length * 0.5 else off
 
 
-## Случайные машины соперников (не совпадающие с машиной игрока).
-func _pick_ai_ids() -> Array[String]:
+## Заменить визуальную модель машины (при получении ростера с сервера
+## модель может смениться — каждый игрок выбирает свою).
+func _set_car_model(car: Car, id: String) -> void:
+	var old := car.get_node_or_null("CarModel")
+	if old:
+		car.remove_child(old)
+		old.queue_free()
+	var model := CarModelLibrary.build(id)
+	if model:
+		model.name = "CarModel"
+		car.add_child(model)
+		car.collect_wheels(model)
+	else:
+		_build_placeholder_visual(car)
+
+
+## Стрелка-указатель над машиной: своя — зелёная, живой соперник — оранжевая
+## (боты без маркера). Именно так «реальный игрок» отличается от ботов.
+func _attach_marker(index: int, rival := false) -> void:
+	if index < 0 or index >= _cars.size():
+		return
+	var marker := _build_player_marker(
+			Color(1.0, 0.55, 0.1) if rival else Color(0.15, 0.95, 0.25))
+	_cars[index].add_child(marker)
+	_cars[index].has_marker = true
+	if rival:
+		_rival_marker = marker
+	else:
+		_player_marker = marker
+
+
+## Боксы с оружием: ПО ОДНОМУ на отметку, посреди полотна. Раньше их
+## ставили тройками поперёк трассы, и бокс исчезал после подбора — кто
+## успел, тот и съел. Теперь бокс один, не исчезает, и каждый проехавший
+## забирает свой случайный бонус (см. WeaponBox).
+func _spawn_weapon_boxes() -> void:
+	var curve: Curve3D = _track._curve
+	var length := curve.get_baked_length()
+	for t: float in [0.12, 0.3, 0.52, 0.7, 0.92]:
+		var off := length * t
+		var box := WeaponBox.new()
+		add_child(box)
+		box.global_position = curve.sample_baked(off) + Vector3.UP * 0.85
+
+
+## Лидер гонки (по прогрессу) — цель авиаудара.
+func leader_car() -> Car:
+	var best := 0
+	for i in range(1, _cars.size()):
+		if _progress[i] > _progress[best]:
+			best = i
+	return _cars[best]
+
+
+## Модели для всех машин заезда. Оффлайн: нулевая — выбранная игроком,
+## остальные — случайные другие. По сети сервер раздаёт всем одинаковый
+## ростер (клиенты присылают свой выбор в _rx_hello), иначе игроки видели
+## бы у соперника не ту машину, что он выбрал.
+func _pick_car_ids(count: int) -> PackedStringArray:
 	var pool := CarModelLibrary.CAR_IDS.duplicate()
 	pool.shuffle()
-	var res: Array[String] = []
+	var res := PackedStringArray()
+	if not Net.is_online():
+		res.append(GameState.selected_car_id)
 	for id: String in pool:
-		if id != GameState.selected_car_id:
-			res.append(id)
-		if res.size() == AI_COUNT:
+		if res.size() >= count:
 			break
+		if not res.has(id):
+			res.append(id)
+	while res.size() < count:
+		res.append(pool[res.size() % pool.size()])
 	return res
 
 
+## Отсчёт. Оффлайн — сразу при загрузке. На сервере тот же код гоняет
+## таймеры и РАССЫЛАЕТ цифры клиентам (своего HUD у него нет). Клиент
+## отсчёт сам не запускает: он показывает то, что пришло в _rx_count.
 func _countdown() -> void:
-	_center_label.visible = true
+	# Кадр на раскладку HUD: pivot отсчёта берётся из размера full-rect.
+	await get_tree().process_frame
+	if not is_inside_tree():
+		return
+	if _count_label:
+		_count_label.visible = true
 	for txt in ["3", "2", "1"]:
-		_center_label.text = txt
+		_pop_count(txt, Color(1, 0.85, 0.25))
+		if Net.is_server():
+			_rx_count.rpc(txt)
 		await get_tree().create_timer(0.8).timeout
 		if not is_inside_tree():
 			return
-	_center_label.text = "GO!"
+	_pop_count("GO!", Color(0.5, 1.0, 0.35))
+	if Net.is_server():
+		_rx_count.rpc("GO!")
 	for c in _cars:
 		c.controls_enabled = true
 	await get_tree().create_timer(0.7).timeout
-	if is_inside_tree():
-		_center_label.visible = false
+	if is_inside_tree() and _count_label:
+		_count_label.visible = false
+
+
+## Цифра отсчёта «выпрыгивает»: масштаб 1.6 → 1.0 с пружинкой.
+func _pop_count(txt: String, color: Color) -> void:
+	if _count_label == null:
+		return   # на сервере HUD не собирается
+	_count_label.text = txt
+	_count_label.add_theme_color_override("font_color", color)
+	_count_label.pivot_offset = _count_label.size * 0.5
+	_count_label.scale = Vector2(1.6, 1.6)
+	var tw := _count_label.create_tween()
+	tw.tween_property(_count_label, "scale", Vector2.ONE, 0.3) \
+			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 
 ## Прогресс, круги, рефилл боезапаса, «резинка» ИИ.
@@ -162,19 +304,34 @@ func _physics_process(_delta: float) -> void:
 		var lap := int(floorf(_progress[i] / length))
 		if lap > _laps_done[i]:
 			_laps_done[i] = lap
-			_cars[i].refill_ammo()
-			if i == 0 and lap >= LAPS and not _finished:
+			# Круги клиент считает сам (позиции ему и так шлют), но
+			# ЗАВЕРШАЕТ гонку только сервер — иначе у двоих игроков она
+			# кончилась бы в разные моменты. Оффлайн — как раньше: заезд
+			# заканчивает машина игрока.
+			if lap >= LAPS and not _finished and not Net.is_client() 					and (Net.is_online() or i == 0):
 				_finish_race()
 
 	# «Резинка»: отстающий ИИ едет бодрее, убежавший — спокойнее.
-	for i in range(1, _cars.size()):
-		var diff := _progress[0] - _progress[i]
-		_cars[i].ai_rubber = clampf(1.0 + diff / 120.0, 0.85, 1.3)
+	# Мерим от ЛИДЕРА, а не от машины 0: по сети машина 0 — просто один
+	# из слотов, и привязка к ней сделала бы резинку бессмысленной.
+	if not Net.is_client():
+		var lead := _progress[0]
+		for i in _cars.size():
+			lead = maxf(lead, _progress[i])
+		for i in _cars.size():
+			if _cars[i].net_role == Car.NetRole.LOCAL and not _cars[i].is_player:
+				_cars[i].ai_rubber = clampf(
+						1.0 + (lead - _progress[i]) / 120.0, 0.85, 1.3)
+
+	if Net.is_server():
+		_server_tick(_delta)
+	elif Net.is_client():
+		_client_tick(_delta)
 
 
-## Маркер игрока: ярко-жёлтая стрелка (конус остриём вниз) над машиной.
+## Стрелка-указатель (конус остриём вниз) над машиной.
 ## Материал unshaded + emission — видна при любом освещении.
-func _build_player_marker() -> Node3D:
+func _build_player_marker(color: Color) -> Node3D:
 	var marker := MeshInstance3D.new()
 	marker.name = "PlayerMarker"
 	var cone := CylinderMesh.new()
@@ -184,53 +341,79 @@ func _build_player_marker() -> Node3D:
 	marker.mesh = cone
 	marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.15, 0.95, 0.25)
+	mat.albedo_color = color
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.emission_enabled = true
-	mat.emission = Color(0.1, 0.8, 0.2)
+	mat.emission = color * 0.85
 	marker.material_override = mat
 	marker.position = Vector3(0, 2.4, 0)
 	return marker
 
 
 func _process(delta: float) -> void:
+	# Лёгкое покачивание по высоте (без вращения — оно отвлекало).
+	_marker_time += delta
+	var bob := 2.4 + 0.12 * sin(_marker_time * 3.0)
 	if _player_marker:
-		# Лёгкое покачивание по высоте (без вращения — оно отвлекало).
-		_marker_time += delta
-		_player_marker.position.y = 2.4 + 0.12 * sin(_marker_time * 3.0)
-	if _car:
-		_speed_label.text = "%d км/ч" % int(_car.speed_kmh())
-		_ammo_label.text = "Снаряды %d   Мины %d" % [_car.ammo, _car.mines]
-		var ratio := _car.hp / _car.max_hp
-		_hp_fill.size.x = 180.0 * clampf(ratio, 0.0, 1.0)
-		if ratio > 0.5:
-			_hp_fill.color = Color(0.2, 0.85, 0.3)
-		elif ratio > 0.25:
-			_hp_fill.color = Color(0.95, 0.8, 0.15)
-		else:
-			_hp_fill.color = Color(0.9, 0.2, 0.15)
-		_lap_label.text = "Круг %d/%d" % [clampi(_laps_done[0] + 1, 1, LAPS), LAPS]
-		_pos_label.text = "Позиция %d/%d" % [_player_place(), _cars.size()]
+		_player_marker.position.y = bob
+	if _rival_marker:
+		_rival_marker.position.y = bob
+	if _car and _speed_label:
+		_speed_label.text = str(int(_car.speed_kmh()))
+		if _car.weapon != _last_weapon:
+			_last_weapon = _car.weapon
+			if _car.weapon >= 0:
+				_weapon_icon.texture = Weapons.icon(_car.weapon)
+				_weapon_icon.modulate = Color.WHITE
+				_weapon_name.text = Weapons.display_name(_car.weapon)
+			else:
+				_weapon_icon.texture = _q_mark_tex
+				_weapon_icon.modulate = Color(1, 1, 1, 0.4)
+				_weapon_name.text = "возьми бокс"
+		_lap_label.text = "КРУГ %d/%d" % [
+				clampi(_laps_done[_my_index()] + 1, 1, LAPS), LAPS]
+		_pos_label.text = "МЕСТО %d/%d" % [_player_place(), _cars.size()]
+
+	if Net.is_server():
+		# У сервера нет ни ввода, ни HUD — только автовозврат машин.
+		_check_recovery(delta)
+		return
 
 	# Ввод опрашиваем напрямую (как езду в Car), а не через события —
 	# надёжнее: событие может не дойти до _unhandled_input.
 	if Input.is_action_just_pressed("ui_cancel"):
+		Net.leave()
 		get_tree().change_scene_to_file("res://scenes/CarSelect.tscn")
 		return
 	if _finished and Input.is_action_just_pressed("ui_accept"):
+		Net.leave()
 		get_tree().change_scene_to_file("res://scenes/CarSelect.tscn")
+		return
+	if Net.is_client():
+		# В лобби пробел просит сервер начать, не дожидаясь второго игрока.
+		if _lobby_label != null and _lobby_label.visible 				and Input.is_action_just_pressed("ui_accept"):
+			_rx_start_request.rpc_id(1)
 		return
 	if Input.is_action_just_pressed("respawn"):
 		_respawn_car(0)
 	_check_recovery(delta)
 
 
-func _player_place() -> int:
+## Индекс МОЕЙ машины: оффлайн это всегда 0, по сети — выданный слот.
+func _my_index() -> int:
+	return Net.my_slot if Net.is_client() and Net.my_slot >= 0 else 0
+
+
+func _place_of(idx: int) -> int:
 	var place := 1
-	for j in range(1, _cars.size()):
-		if _progress[j] > _progress[0]:
+	for j in _cars.size():
+		if j != idx and _progress[j] > _progress[idx]:
 			place += 1
 	return place
+
+
+func _player_place() -> int:
+	return _place_of(_my_index())
 
 
 func _finish_race() -> void:
@@ -240,9 +423,15 @@ func _finish_race() -> void:
 	for c in _cars:
 		c.controls_enabled = false
 		c.race_over = true
-	_center_label.text = "ФИНИШ! Место: %d из %d\nEnter — в гараж" \
+	if Net.is_server():
+		_rx_finish.rpc()
+		_reset_server_after_race()
+		return
+	if _count_label:
+		_count_label.visible = false
+	_finish_label.text = "ФИНИШ!  Место: %d из %d" \
 			% [_player_place(), _cars.size()]
-	_center_label.visible = true
+	_finish_root.visible = true
 
 
 ## Возврат i-й машины на ось трассы (+6 м вперёд), скорость в ноль.
@@ -255,8 +444,8 @@ func _respawn_car(i: int) -> void:
 	_offtrack_time[i] = 0.0
 	_flip_time[i] = 0.0
 	_stall_time[i] = 0.0
-	if i == 0:
-		_warn_label.visible = false
+	if _warn_panel and i == _my_index():
+		_warn_panel.visible = false
 
 
 ## Автовозврат на трассу по трём причинам: вылет за ограждение, переворот
@@ -274,7 +463,7 @@ func _check_recovery(delta: float) -> void:
 		var left := 0.0
 
 		var dist := _track.distance_from_axis(car.global_position)
-		if dist > OFFTRACK_DIST:
+		if dist > _track.half_width_at_pos(car.global_position) + OFFTRACK_MARGIN:
 			_offtrack_time[i] += delta
 			var wait := OFFTRACK_WAIT_PLAYER if i == 0 else OFFTRACK_WAIT_AI
 			reason = "Вне трассы!"
@@ -316,13 +505,14 @@ func _check_recovery(delta: float) -> void:
 		else:
 			_stall_time[i] = 0.0
 
-		if i == 0:
+		# Плашку показываем только у СВОЕЙ машины; у сервера HUD нет вовсе.
+		if _warn_panel and i == _my_index():
 			if reason == "":
-				_warn_label.visible = false
+				_warn_panel.visible = false
 			else:
 				_warn_label.text = "%s Возврат через %d…" \
 						% [reason, maxi(1, ceili(left))]
-				_warn_label.visible = true
+				_warn_panel.visible = true
 
 
 func _setup_environment() -> void:
@@ -386,63 +576,508 @@ func _build_placeholder_visual(car: Car) -> void:
 	car.add_child(nose)
 
 
+## Плоская скруглённая панель с тонкой рамкой. Именно плоская: у всех
+## «прямоугольников» GUI Pack Cartoon края пузатые (гуляют до 12-19 px),
+## и растянутая 9-slice панель выходит «облаком с выпуклостями».
+func _make_panel(parent: Node, pos: Vector2, panel_size: Vector2,
+		bg := Color(0.09, 0.13, 0.25, 0.82)) -> Panel:
+	var p := Panel.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = bg
+	sb.set_corner_radius_all(16)
+	sb.set_border_width_all(2)
+	sb.border_color = Color(1, 1, 1, 0.22)
+	p.add_theme_stylebox_override("panel", sb)
+	p.position = pos
+	p.size = panel_size
+	parent.add_child(p)
+	return p
+
+
+## Надпись мультяшным шрифтом Softie Cyr (есть кириллица) с обводкой.
+func _make_label(parent: Node, txt: String, font_size: int,
+		color := Color.WHITE, outline := 0) -> Label:
+	var l := Label.new()
+	l.text = txt
+	l.add_theme_font_size_override("font_size", font_size)
+	if _ui_font:
+		l.add_theme_font_override("font", _ui_font)
+	l.add_theme_color_override("font_color", color)
+	if outline > 0:
+		l.add_theme_constant_override("outline_size", outline)
+		l.add_theme_color_override("font_outline_color", Color(0.09, 0.1, 0.17))
+	parent.add_child(l)
+	return l
+
+
 func _setup_hud() -> void:
 	var canvas := CanvasLayer.new()
 	add_child(canvas)
+	_ui_font = load("res://assets/ui/Softie.ttf")
+	_q_mark_tex = load("res://assets/ui/q_mark.png")
+	# Скорость: крупные цифры.
+	var speed_panel := _make_panel(canvas, Vector2(16, 12), Vector2(190, 66))
+	_speed_label = _make_label(speed_panel, "0", 40, Color.WHITE, 6)
+	_speed_label.position = Vector2(20, 5)
+	_speed_label.size = Vector2(100, 56)
+	_speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	var kmh := _make_label(speed_panel, "км/ч", 15,
+			Color(1, 1, 1, 0.75), 4)
+	kmh.position = Vector2(130, 36)
 
-	_speed_label = Label.new()
-	_speed_label.position = Vector2(20, 14)
-	_speed_label.add_theme_font_size_override("font_size", 30)
-	canvas.add_child(_speed_label)
+	# Круг и место.
+	var info_panel := _make_panel(canvas, Vector2(16, 86), Vector2(190, 78))
+	_lap_label = _make_label(info_panel, "КРУГ 1/%d" % LAPS, 20,
+			Color(1, 0.9, 0.45), 5)
+	_lap_label.position = Vector2(22, 12)
+	_pos_label = _make_label(info_panel, "МЕСТО 1/4", 20,
+			Color.WHITE, 5)
+	_pos_label.position = Vector2(22, 42)
 
-	_lap_label = Label.new()
-	_lap_label.position = Vector2(20, 54)
-	_lap_label.add_theme_font_size_override("font_size", 20)
-	canvas.add_child(_lap_label)
+	# Слот оружия: тёмный глянцевый круг + иконка + подпись.
+	var slot := TextureRect.new()
+	slot.texture = load("res://assets/ui/circle_dark.png")
+	# expand_mode СТРОГО до size: при дефолтном KEEP_SIZE присвоение size
+	# клампится к размеру текстуры (512) и слот выходит гигантским.
+	slot.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	slot.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	slot.position = Vector2(24, 178)
+	slot.size = Vector2(96, 96)
+	canvas.add_child(slot)
+	_weapon_icon = TextureRect.new()
+	_weapon_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_weapon_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_weapon_icon.position = Vector2(17, 15)
+	_weapon_icon.size = Vector2(62, 62)
+	slot.add_child(_weapon_icon)
+	_weapon_name = _make_label(canvas, "", 15, Color(1, 0.9, 0.45), 4)
+	_weapon_name.position = Vector2(0, 276)
+	_weapon_name.size = Vector2(144, 22)
+	_weapon_name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
-	_pos_label = Label.new()
-	_pos_label.position = Vector2(20, 80)
-	_pos_label.add_theme_font_size_override("font_size", 20)
-	canvas.add_child(_pos_label)
-
-	var hp_bg := ColorRect.new()
-	hp_bg.position = Vector2(20, 110)
-	hp_bg.size = Vector2(184, 16)
-	hp_bg.color = Color(0, 0, 0, 0.55)
-	canvas.add_child(hp_bg)
-	_hp_fill = ColorRect.new()
-	_hp_fill.position = Vector2(2, 2)
-	_hp_fill.size = Vector2(180, 12)
-	_hp_fill.color = Color(0.2, 0.85, 0.3)
-	hp_bg.add_child(_hp_fill)
-
-	_ammo_label = Label.new()
-	_ammo_label.position = Vector2(20, 132)
-	_ammo_label.add_theme_font_size_override("font_size", 17)
-	canvas.add_child(_ammo_label)
-
-	_warn_label = Label.new()
-	_warn_label.add_theme_font_size_override("font_size", 28)
-	_warn_label.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	# Предупреждение (вылет/переворот/застрял) — красная плашка сверху.
+	_warn_panel = _make_panel(canvas, Vector2.ZERO, Vector2(440, 56),
+			Color(0.82, 0.16, 0.2, 0.92))
+	_warn_panel.anchor_left = 0.5
+	_warn_panel.anchor_right = 0.5
+	_warn_panel.offset_left = -220
+	_warn_panel.offset_right = 220
+	_warn_panel.offset_top = 84
+	_warn_panel.offset_bottom = 140
+	_warn_panel.visible = false
+	# ВАЖНО: set_anchors_and_offsets_preset, не set_anchors_preset —
+	# последний подгоняет offsets под ТЕКУЩИЙ размер контрола (лейбл
+	# остаётся крошечным у левого верха), а нужен реальный full rect.
+	_warn_label = _make_label(_warn_panel, "", 22, Color.WHITE, 6)
+	_warn_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_warn_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_warn_label.position.y = 100
-	_warn_label.modulate = Color(1.0, 0.85, 0.2)
-	_warn_label.visible = false
-	canvas.add_child(_warn_label)
+	_warn_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
-	_center_label = Label.new()
-	_center_label.add_theme_font_size_override("font_size", 56)
-	_center_label.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_center_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_center_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_center_label.visible = false
-	canvas.add_child(_center_label)
+	# Отсчёт 3-2-1-GO: огромные цифры с «выпрыгиванием» (см. _pop_count).
+	_count_label = _make_label(canvas, "", 120, Color(1, 0.85, 0.25), 16)
+	_count_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_count_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_count_label.visible = false
+
+	# Финиш: розовый баннер-лента + текст.
+	_finish_root = Control.new()
+	_finish_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_finish_root.visible = false
+	canvas.add_child(_finish_root)
+	var banner := TextureRect.new()
+	banner.texture = load("res://assets/ui/flag_banner.png")
+	banner.anchor_left = 0.5
+	banner.anchor_right = 0.5
+	banner.anchor_top = 0.5
+	banner.anchor_bottom = 0.5
+	banner.offset_left = -310
+	banner.offset_right = 310
+	banner.offset_top = -170
+	banner.offset_bottom = 28
+	banner.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	banner.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_finish_root.add_child(banner)
+	_finish_label = _make_label(banner, "", 30, Color.WHITE, 8)
+	_finish_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_finish_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_finish_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var finish_hint := _make_label(_finish_root, "Enter — в гараж", 18,
+			Color(1, 1, 1, 0.85), 5)
+	finish_hint.anchor_left = 0.5
+	finish_hint.anchor_right = 0.5
+	finish_hint.anchor_top = 0.5
+	finish_hint.anchor_bottom = 0.5
+	finish_hint.offset_left = -150
+	finish_hint.offset_right = 150
+	finish_hint.offset_top = 44
+	finish_hint.offset_bottom = 72
+	finish_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
 	var help := Label.new()
 	help.text = "WASD — движение | Space — ручник | Shift — прыжок | " \
-			+ "Ctrl/J — огонь | L/C — мина | R — на трассу | Esc — меню"
+			+ "E — оружие | R — на трассу | Esc — меню"
 	help.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	help.position = Vector2(20, -30)
 	help.add_theme_font_size_override("font_size", 14)
+	if _ui_font:
+		help.add_theme_font_override("font", _ui_font)
 	help.modulate = Color(1, 1, 1, 0.7)
 	canvas.add_child(help)
+
+	# Сетевое лобби: видно только клиенту, пока сервер не дал отсчёт.
+	_lobby_label = _make_label(canvas, "Подключение…", 30,
+			Color(1, 0.95, 0.7), 5)
+	_lobby_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	_lobby_label.offset_left = -320
+	_lobby_label.offset_right = 320
+	_lobby_label.offset_top = 120
+	_lobby_label.offset_bottom = 220
+	_lobby_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_lobby_label.visible = false
+
+
+# ════════════════════ СЕТЕВАЯ ЧАСТЬ ════════════════════
+# Модель — выделенный сервер. Он один считает физику и рассылает снимки;
+# клиенты шлют ввод и рисуют. Исключение — СВОЯ машина на клиенте: она
+# считается локально (иначе руль отвечал бы через пинг), а снимок сервера
+# её мягко подправляет (Car.net_correct).
+
+
+## Сервер: подключился игрок — слот ему уже выдал Net, здесь переводим
+## машину этого слота с бота на присланный ввод.
+func _on_peer_joined(_id: int, slot: int) -> void:
+	if slot < 0 or slot >= _cars.size():
+		return
+	var car := _cars[slot]
+	car.net_role = Car.NetRole.SERVER_INPUT
+	car.is_player = false
+	car.net_th = 0.0
+	car.net_st = 0.0
+	if _net_started:
+		_rx_lobby.rpc(Net.slot_of_peer.size(), 0)
+		return
+	if Net.slot_of_peer.size() >= Net.PLAYER_SLOTS:
+		# Второй приехал — ждать больше некого, стартуем сразу.
+		_lobby_wait = -1.0
+		_start_net_race()
+		return
+	# Первый игрок: даём LOBBY_WAIT секунд на то, чтобы подтянулся второй.
+	if _lobby_wait < 0.0:
+		_lobby_wait = LOBBY_WAIT
+	_rx_lobby.rpc(Net.slot_of_peer.size(), ceili(_lobby_wait))
+
+
+## Сервер: игрок ушёл — его машину снова ведёт бот, гонка продолжается.
+func _on_peer_left(_id: int, slot: int) -> void:
+	if slot < 0 or slot >= _cars.size():
+		return
+	# Машину бросил живой игрок — возвращаем её боту. Иначе она осталась
+	# бы с последним присланным вводом (например, газ в пол) навсегда.
+	var car := _cars[slot]
+	car.net_role = Car.NetRole.LOCAL
+	car.is_player = false
+	car.net_th = 0.0
+	car.net_st = 0.0
+	car.net_hb = false
+	_rx_lobby.rpc(Net.slot_of_peer.size(), maxi(ceili(_lobby_wait), 0))
+	# Ушли все — заезд некому доигрывать. Перезапускаем трассу, чтобы
+	# следующая пара получила чистую гонку, а не догоняла ботов.
+	if Net.slot_of_peer.is_empty() and _net_started:
+		print("[net] игроков не осталось, перезапуск трассы")
+		get_tree().reload_current_scene()
+
+
+## После заезда сервер перезапускает сцену: следующая пара игроков должна
+## получить чистую гонку, а не доехавшие машины на финишной прямой.
+func _reset_server_after_race() -> void:
+	await get_tree().create_timer(8.0).timeout
+	if is_inside_tree():
+		print("[net] заезд окончен, перезапуск трассы")
+		get_tree().reload_current_scene()
+
+
+func _say_hello() -> void:
+	_rx_hello.rpc_id(1, GameState.selected_car_id)
+
+
+func _start_net_race() -> void:
+	if _net_started:
+		return
+	_net_started = true
+	print("[net] старт заезда, игроков: %d" % Net.slot_of_peer.size())
+	_countdown()
+
+
+## Сервер: раз в 1/SNAP_HZ рассылаем состояние всех машин.
+func _server_tick(delta: float) -> void:
+	_tick_lobby(delta)
+	_snap_accum += delta
+	if _snap_accum < 1.0 / SNAP_HZ:
+		return
+	_snap_accum = 0.0
+	var packed := _pack_state()
+	_rx_state.rpc(packed[0], packed[1])
+
+
+## Ожидание второго игрока. Истекло — стартуем «по старинке»: свободный
+## слот так и остаётся за ботом (см. _spawn_cars), и заезд ничем не хуже
+## одиночного. Подсевший позже игрок просто заберёт машину у бота.
+func _tick_lobby(delta: float) -> void:
+	if _net_started or _lobby_wait < 0.0:
+		return
+	var before := ceili(_lobby_wait)
+	_lobby_wait -= delta
+	if _lobby_wait <= 0.0:
+		_lobby_wait = -1.0
+		print("[net] второго игрока не дождались — старт с ботами")
+		_start_net_race()
+	elif ceili(_lobby_wait) != before:
+		_rx_lobby.rpc(Net.slot_of_peer.size(), ceili(_lobby_wait))
+
+
+## Клиент: свой ввод — каждый кадр физики. Непрерывные оси идут НЕнадёжным
+## пакетом (потерять один кадр газа не страшно, а ждать переотправки —
+## страшно), разовые нажатия — надёжным: потерянный выстрел не восстановить.
+func _client_tick(_delta: float) -> void:
+	if Net.my_slot < 0 or _car == null or not _car.controls_enabled:
+		return
+	_rx_input.rpc_id(1,
+			Input.get_axis("brake", "accelerate"),
+			Input.get_axis("steer_right", "steer_left"),
+			Input.is_action_pressed("handbrake"))
+	var jump := Input.is_action_just_pressed("jump")
+	var fire := Input.is_action_just_pressed("fire") \
+			or Input.is_action_just_pressed("drop")
+	if jump or fire:
+		_rx_press.rpc_id(1, jump, fire)
+
+
+## Снимок: на машину 10 float (позиция, кватернион, скорость) и 3 байта
+## (оружие+1, живость с «призраком», значок эффекта+2). Кватернион, а не
+## базис: 4 числа вместо 9 и корректная интерполяция поворота.
+func _pack_state() -> Array:
+	var xf := PackedFloat32Array()
+	var flags := PackedByteArray()
+	for c in _cars:
+		var q := c.global_transform.basis.get_rotation_quaternion()
+		var p := c.global_position
+		var v := c.linear_velocity
+		xf.append_array(PackedFloat32Array([
+				p.x, p.y, p.z, q.x, q.y, q.z, q.w, v.x, v.y, v.z]))
+		flags.append(c.weapon + 1)
+		flags.append((1 if c.alive else 0) | (2 if c.is_ghost() else 0))
+		flags.append(c._status_shown + 2)
+	return [xf, flags]
+
+
+# ── клиент → сервер ──
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rx_hello(car_id: String) -> void:
+	if not Net.is_server():
+		return
+	var id := multiplayer.get_remote_sender_id()
+	var slot: int = Net.slot_of_peer.get(id, -1)
+	if slot < 0 or slot >= _roster.size():
+		return
+	# Игрок приехал на своей машине — ставим её в его слот и раздаём
+	# ростер всем, иначе соперник видел бы не ту модель.
+	_roster[slot] = car_id
+	_set_car_model(_cars[slot], car_id)
+	_rx_welcome.rpc_id(id, slot, _roster)
+	_rx_roster.rpc(_roster)
+	_rx_lobby.rpc(Net.slot_of_peer.size(),
+			0 if _net_started else maxi(ceili(_lobby_wait), 0))
+
+
+@rpc("any_peer", "call_remote", "unreliable_ordered")
+func _rx_input(th: float, st: float, hb: bool) -> void:
+	if not Net.is_server():
+		return
+	var slot: int = Net.slot_of_peer.get(multiplayer.get_remote_sender_id(), -1)
+	if slot < 0 or slot >= _cars.size():
+		return
+	_cars[slot].net_th = clampf(th, -1.0, 1.0)
+	_cars[slot].net_st = clampf(st, -1.0, 1.0)
+	_cars[slot].net_hb = hb
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rx_press(jump: bool, fire: bool) -> void:
+	if not Net.is_server():
+		return
+	var slot: int = Net.slot_of_peer.get(multiplayer.get_remote_sender_id(), -1)
+	if slot < 0 or slot >= _cars.size():
+		return
+	if jump:
+		_cars[slot].net_jump = true
+	if fire:
+		_cars[slot].net_fire = true
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rx_start_request() -> void:
+	if Net.is_server():
+		_start_net_race()
+
+
+# ── сервер → клиенты ──
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_welcome(slot: int, roster: PackedStringArray) -> void:
+	Net.my_slot = slot
+	_apply_roster(roster)
+	if slot < 0 or slot >= _cars.size():
+		return
+	# Своя машина перестаёт быть марионеткой: считаем её локально.
+	var car := _cars[slot]
+	car.freeze = false
+	car.net_role = Car.NetRole.OWNED
+	car.is_player = true
+	_car = car
+	var cam := get_node_or_null("IsoCamera") as IsoCamera
+	if cam:
+		cam.target = _car
+	# Маркеры: своя машина зелёная, второй ЖИВОЙ игрок — оранжевый.
+	# Боты без маркера — так «реальный игрок» виден с первого взгляда.
+	_attach_marker(slot)
+	_attach_marker(1 - slot, true)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_roster(roster: PackedStringArray) -> void:
+	_apply_roster(roster)
+
+
+func _apply_roster(roster: PackedStringArray) -> void:
+	for i in mini(roster.size(), _cars.size()):
+		if i < _roster.size() and _roster[i] == roster[i]:
+			continue
+		_set_car_model(_cars[i], roster[i])
+	_roster = roster
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_lobby(players: int, secs: int) -> void:
+	if _lobby_label == null:
+		return
+	if _net_started:
+		_lobby_label.visible = false
+		return
+	_lobby_label.visible = true
+	var txt := "Игроков: %d/%d" % [players, Net.PLAYER_SLOTS]
+	if secs > 0:
+		txt += "
+Ждём второго: %d…  (пробел — сразу с ботами)" % secs
+	_lobby_label.text = txt
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_count(txt: String) -> void:
+	_net_started = true
+	if _lobby_label:
+		_lobby_label.visible = false
+	if _count_label:
+		_count_label.visible = true
+	_pop_count(txt, Color(0.5, 1.0, 0.35) if txt == "GO!"
+			else Color(1, 0.85, 0.25))
+	if txt != "GO!":
+		return
+	# Управление включается по команде сервера: до GO! ввод не шлём.
+	for c in _cars:
+		c.controls_enabled = true
+	await get_tree().create_timer(0.7).timeout
+	if is_inside_tree() and _count_label:
+		_count_label.visible = false
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray) -> void:
+	for i in _cars.size():
+		var o := i * 10
+		var f := i * 3
+		if o + 9 >= xf.size() or f + 2 >= flags.size():
+			break
+		var c := _cars[i]
+		var pos := Vector3(xf[o], xf[o + 1], xf[o + 2])
+		var rot := Quaternion(
+				xf[o + 3], xf[o + 4], xf[o + 5], xf[o + 6]).normalized()
+		var vel := Vector3(xf[o + 7], xf[o + 8], xf[o + 9])
+		if c.net_role == Car.NetRole.OWNED:
+			c.net_correct(pos, rot, vel)
+		else:
+			c.net_apply_snapshot(pos, rot, vel)
+		c.weapon = int(flags[f]) - 1
+		c.alive = (int(flags[f + 1]) & 1) != 0
+		# «Призрак» держим прямым присвоением: у марионетки не крутится
+		# _tick_effects, и таймер сам бы не убывал.
+		c._ghost_time = 0.3 if (int(flags[f + 1]) & 2) != 0 else 0.0
+		var kind := int(flags[f + 2]) - 2
+		if kind >= 0:
+			c.show_effect_icon(kind, 0.25)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_finish() -> void:
+	_finish_race()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_weapon_fx(idx: int, kind: int, pos: Vector3, dir: Vector3) -> void:
+	if idx < 0 or idx >= _cars.size():
+		return
+	_spawn_weapon_visual(kind, pos, dir)
+
+
+## Сервер зовёт это из Car.use_weapon — чтобы клиенты УВИДЕЛИ выстрел.
+func net_broadcast_weapon(car: Car, kind: int) -> void:
+	if not Net.is_server():
+		return
+	var idx := _cars.find(car)
+	if idx < 0:
+		return
+	var fwd := -car.global_transform.basis.z
+	fwd.y = 0.0
+	if fwd.length_squared() < 1e-6:
+		fwd = Vector3.FORWARD
+	_rx_weapon_fx.rpc(idx, kind, car.global_position, fwd.normalized())
+
+
+## Клиентская КОПИЯ выстрела — только картинка. Мины, масло и снаряды
+## здесь ИНЕРТНЫ: попадания и толчки считает сервер, а его результат и так
+## приезжает в снимках. Если бы копии работали по-настоящему, машину било
+## бы дважды — и по-разному на каждом экране.
+func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3) -> void:
+	match kind:
+		Weapons.MINE:
+			var m := Mine.new()
+			m.inert = true
+			add_child(m)
+			m.global_position = pos - dir * 2.4 + Vector3.UP * 0.1
+		Weapons.ROCKET, Weapons.FREEZE:
+			var pr := Projectile.new()
+			pr.inert = true
+			pr.direction = dir
+			pr.freeze = kind == Weapons.FREEZE
+			add_child(pr)
+			pr.global_position = pos + dir * 2.3 + Vector3.UP * 0.55
+		Weapons.OIL:
+			var oil := OilSlick.new()
+			oil.inert = true
+			add_child(oil)
+			oil.global_position = pos - dir * 3.0 + Vector3.UP * 0.12
+		Weapons.MAGNET:
+			FlashFx.spawn(self, pos + Vector3.UP * 0.5, 3.2,
+					Color(0.8, 0.3, 1.0))
+		Weapons.LASER:
+			LaserFx.spawn(self, pos + Vector3.UP * 0.5, dir, 70.0)
+		Weapons.AIRSTRIKE:
+			var strike := Airstrike.new()
+			strike.inert = true
+			strike.track = _track
+			strike.target = leader_car()
+			add_child(strike)
+		Weapons.BOOST:
+			FlashFx.spawn(self, pos + Vector3.UP * 0.5, 1.2,
+					Color(0.3, 0.9, 1.0))

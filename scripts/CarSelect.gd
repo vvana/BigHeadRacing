@@ -35,9 +35,12 @@ var _model: Node3D
 var _name_label: Label
 var _count_label: Label
 var _buttons: Array[Button] = []
+var _host_edit: LineEdit          # адрес сетевого сервера
+var _net_status: Label
 var _scroll: ScrollContainer
 var _style_normal: StyleBoxFlat
 var _style_selected: StyleBoxFlat
+var _ui_font: FontFile  # Softie Cyr — мультяшный шрифт (с кириллицей)
 
 
 func _ready() -> void:
@@ -68,8 +71,131 @@ func _process(delta: float) -> void:
 
 
 func _start_race() -> void:
+	Net.leave()   # вдруг остались хвосты прошлого сетевого заезда
 	GameState.selected_car_id = CarModelLibrary.CAR_IDS[_index]
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
+
+
+## Панель сетевой игры: адрес сервера и кнопка подключения. Сама гонка
+## начнётся, когда сервер подтвердит соединение (сигнал Net.joined).
+func _build_net_ui(canvas: Node) -> void:
+	_net_status = Label.new()
+	_net_status.text = ""
+	if _ui_font:
+		_net_status.add_theme_font_override("font", _ui_font)
+	_net_status.add_theme_font_size_override("font_size", 18)
+	_net_status.add_theme_constant_override("outline_size", 5)
+	_net_status.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	_net_status.add_theme_color_override("font_color", Color(1, 0.95, 0.75))
+	canvas.add_child(_net_status)
+	# Панель жмётся к левой половине экрана: справа от 685 px начинается
+	# сетка машин, и на анкере 0.75 кнопка уезжала ПОД неё — в кадре её
+	# было не видно вовсе (поймано скриншот-стендом ScreenshotSelect).
+	_net_status.anchor_left = 0.0
+	_net_status.anchor_right = 0.0
+	_net_status.anchor_top = 1.0
+	_net_status.anchor_bottom = 1.0
+	_net_status.offset_left = 450
+	_net_status.offset_right = 690
+	_net_status.offset_top = -196
+	_net_status.offset_bottom = -172
+	_net_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+
+	_host_edit = LineEdit.new()
+	_host_edit.text = "%s:%d" % [Net.host, Net.port]
+	_host_edit.placeholder_text = "адрес:порт"
+	_host_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	if _ui_font:
+		_host_edit.add_theme_font_override("font", _ui_font)
+	_host_edit.add_theme_font_size_override("font_size", 20)
+	_host_edit.anchor_left = 0.0
+	_host_edit.anchor_right = 0.0
+	_host_edit.anchor_top = 1.0
+	_host_edit.anchor_bottom = 1.0
+	_host_edit.offset_left = 470
+	_host_edit.offset_right = 670
+	_host_edit.offset_top = -166
+	_host_edit.offset_bottom = -130
+	canvas.add_child(_host_edit)
+
+	var net_btn := Button.new()
+	net_btn.text = "ПО СЕТИ"
+	if _ui_font:
+		net_btn.add_theme_font_override("font", _ui_font)
+	net_btn.add_theme_font_size_override("font_size", 28)
+	net_btn.add_theme_constant_override("outline_size", 7)
+	net_btn.add_theme_color_override("font_outline_color", Color(0.06, 0.2, 0.35))
+	net_btn.focus_mode = Control.FOCUS_NONE
+	net_btn.anchor_left = 0.0
+	net_btn.anchor_right = 0.0
+	net_btn.anchor_top = 1.0
+	net_btn.anchor_bottom = 1.0
+	net_btn.offset_left = 460
+	net_btn.offset_right = 680
+	net_btn.offset_top = -122
+	net_btn.offset_bottom = -52
+	var tex: Texture2D = load("res://assets/ui/btn_rect_blue.png")
+	for state in ["normal", "hover", "pressed"]:
+		var st := StyleBoxTexture.new()
+		st.texture = tex
+		st.set_texture_margin_all(34.0)
+		if state == "hover":
+			st.modulate_color = Color(1.15, 1.15, 1.15)
+		elif state == "pressed":
+			st.modulate_color = Color(0.8, 0.8, 0.8)
+		net_btn.add_theme_stylebox_override(state, st)
+	for state in ["font_color", "font_hover_color", "font_pressed_color"]:
+		net_btn.add_theme_color_override(state, Color.WHITE)
+	net_btn.pressed.connect(_join_pressed)
+	canvas.add_child(net_btn)
+
+	Net.joined.connect(_on_joined)
+	Net.join_failed.connect(_on_join_failed)
+
+
+func _join_pressed() -> void:
+	var text := _host_edit.text.strip_edges()
+	var addr := text
+	var port := Net.PORT
+	# Порт можно дописать через двоеточие: 1.2.3.4:9977. Режем ПОСЛЕДНЕЕ
+	# двоеточие — в IPv6-адресе их много.
+	var colon := text.rfind(":")
+	if colon > 0:
+		addr = text.substr(0, colon)
+		port = int(text.substr(colon + 1))
+		if port <= 0:
+			port = Net.PORT
+	if addr.is_empty():
+		_net_status.text = "Укажите адрес сервера"
+		return
+	GameState.selected_car_id = CarModelLibrary.CAR_IDS[_index]
+	_net_status.text = "Подключение к %s:%d…" % [addr, port]
+	if Net.join_server(addr, port):
+		_watch_connect_timeout()
+
+
+## ENet сам по себе может молчать очень долго, поэтому ограничиваем
+## ожидание вручную: не ответил за CONNECT_TIMEOUT — рвём и говорим об этом,
+## чтобы не сидеть на экране «Подключение…» неизвестно сколько.
+func _watch_connect_timeout() -> void:
+	await get_tree().create_timer(Net.CONNECT_TIMEOUT).timeout
+	if not is_inside_tree() or not Net.is_client():
+		return
+	var peer := multiplayer.multiplayer_peer
+	if peer != null and peer.get_connection_status() 			== MultiplayerPeer.CONNECTION_CONNECTED:
+		return
+	Net.leave()
+	if _net_status:
+		_net_status.text = "Сервер не ответил за %d с — можно играть с ботами" 				% int(Net.CONNECT_TIMEOUT)
+
+
+func _on_joined() -> void:
+	get_tree().change_scene_to_file("res://scenes/Main.tscn")
+
+
+func _on_join_failed(reason: String) -> void:
+	if _net_status:
+		_net_status.text = reason
 
 
 func _set_index(i: int) -> void:
@@ -249,65 +375,125 @@ func _setup_podium() -> void:
 func _setup_hud() -> void:
 	var canvas := CanvasLayer.new()
 	add_child(canvas)
+	_ui_font = load("res://assets/ui/Softie.ttf")
 
-	# Левая половина: заголовок, имя машины, счётчик, подсказка.
+	# Заголовок — розовый баннер-лента (GUI Pack Cartoon) с обводным текстом.
+	var banner := TextureRect.new()
+	banner.texture = load("res://assets/ui/flag_banner.png")
+	# expand_mode до offsets: при KEEP_SIZE размеры клампятся к текстуре.
+	banner.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	banner.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	banner.anchor_left = 0.25
+	banner.anchor_right = 0.25
+	banner.offset_left = -210
+	banner.offset_right = 210
+	banner.offset_top = 10
+	banner.offset_bottom = 128
+	canvas.add_child(banner)
 	var title := Label.new()
 	title.text = "ВЫБОР МАШИНЫ"
-	title.add_theme_font_size_override("font_size", 34)
-	title.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	title.anchor_right = 0.5
+	if _ui_font:
+		title.add_theme_font_override("font", _ui_font)
+	title.add_theme_font_size_override("font_size", 30)
+	title.add_theme_constant_override("outline_size", 7)
+	title.add_theme_color_override("font_outline_color", Color(0.45, 0.1, 0.25))
+	banner.add_child(title)
+	# and_offsets: обычный set_anchors_preset сохранил бы крошечный размер.
+	title.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.position.y = 22
-	canvas.add_child(title)
+	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
+	# Имя машины — мультяшным шрифтом Softie на плоской скруглённой панели
+	# (кнопки-«желе» пака при растяжении дают бугры — юзеру не нравилось).
+	var name_panel := Panel.new()
+	var name_sb := StyleBoxFlat.new()
+	name_sb.bg_color = Color(0.09, 0.13, 0.25, 0.82)
+	name_sb.set_corner_radius_all(16)
+	name_sb.set_border_width_all(2)
+	name_sb.border_color = Color(1, 1, 1, 0.22)
+	name_panel.add_theme_stylebox_override("panel", name_sb)
+	name_panel.anchor_left = 0.25
+	name_panel.anchor_right = 0.25
+	name_panel.anchor_top = 1.0
+	name_panel.anchor_bottom = 1.0
+	name_panel.offset_left = -190
+	name_panel.offset_right = 190
+	name_panel.offset_top = -216
+	name_panel.offset_bottom = -146
+	canvas.add_child(name_panel)
 	_name_label = Label.new()
-	_name_label.add_theme_font_size_override("font_size", 40)
-	_name_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	_name_label.anchor_right = 0.5
+	if _ui_font:
+		_name_label.add_theme_font_override("font", _ui_font)
+	_name_label.add_theme_font_size_override("font_size", 34)
+	_name_label.add_theme_constant_override("outline_size", 6)
+	_name_label.add_theme_color_override("font_outline_color", Color(0.09, 0.1, 0.17))
+	name_panel.add_child(_name_label)
+	_name_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_name_label.position.y = -186
-	canvas.add_child(_name_label)
+	_name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
 	_count_label = Label.new()
-	_count_label.add_theme_font_size_override("font_size", 20)
+	if _ui_font:
+		_count_label.add_theme_font_override("font", _ui_font)
+	_count_label.add_theme_font_size_override("font_size", 16)
 	_count_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	_count_label.anchor_right = 0.5
 	_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_count_label.position.y = -138
-	_count_label.modulate = Color(1, 1, 1, 0.6)
+	_count_label.position.y = -144
+	_count_label.modulate = Color(1, 1, 1, 0.7)
 	canvas.add_child(_count_label)
 
-	# Кнопка «СТАРТ» — по центру левой зоны, над строкой подсказки.
+	# Стрелки листания по бокам подиума — мультяшные, с «нажатием».
+	_make_arrow(canvas, "res://assets/ui/arrow_left.png", 0.06,
+			func() -> void: _set_index(
+					(_index - 1 + CarModelLibrary.CAR_IDS.size())
+					% CarModelLibrary.CAR_IDS.size()))
+	_make_arrow(canvas, "res://assets/ui/arrow_right.png", 0.44,
+			func() -> void: _set_index(
+					(_index + 1) % CarModelLibrary.CAR_IDS.size()))
+
+	# Кнопка «СТАРТ» — глянцевая зелёная кнопка из пака.
 	var start_btn := Button.new()
 	start_btn.text = "СТАРТ"
-	start_btn.add_theme_font_size_override("font_size", 26)
+	if _ui_font:
+		start_btn.add_theme_font_override("font", _ui_font)
+	start_btn.add_theme_font_size_override("font_size", 30)
+	start_btn.add_theme_constant_override("outline_size", 7)
+	start_btn.add_theme_color_override("font_outline_color", Color(0.1, 0.3, 0.08))
 	start_btn.focus_mode = Control.FOCUS_NONE
 	start_btn.anchor_left = 0.25
 	start_btn.anchor_right = 0.25
 	start_btn.anchor_top = 1.0
 	start_btn.anchor_bottom = 1.0
-	start_btn.offset_left = -120
-	start_btn.offset_right = 120
-	start_btn.offset_top = -110
-	start_btn.offset_bottom = -56
-	var st_normal := StyleBoxFlat.new()
-	st_normal.bg_color = Color(0.95, 0.8, 0.1)
-	st_normal.set_corner_radius_all(10)
-	var st_hover := st_normal.duplicate()
-	st_hover.bg_color = Color(1.0, 0.88, 0.25)
-	var st_pressed := st_normal.duplicate()
-	st_pressed.bg_color = Color(0.8, 0.66, 0.05)
+	start_btn.offset_left = -130
+	start_btn.offset_right = 130
+	start_btn.offset_top = -122
+	start_btn.offset_bottom = -52
+	var tex_btn: Texture2D = load("res://assets/ui/btn_rect_green.png")
+	var st_normal := StyleBoxTexture.new()
+	st_normal.texture = tex_btn
+	st_normal.set_texture_margin_all(34.0)
+	var st_hover := StyleBoxTexture.new()
+	st_hover.texture = tex_btn
+	st_hover.set_texture_margin_all(34.0)
+	st_hover.modulate_color = Color(1.15, 1.15, 1.15)
+	var st_pressed := StyleBoxTexture.new()
+	st_pressed.texture = tex_btn
+	st_pressed.set_texture_margin_all(34.0)
+	st_pressed.modulate_color = Color(0.8, 0.8, 0.8)
 	start_btn.add_theme_stylebox_override("normal", st_normal)
 	start_btn.add_theme_stylebox_override("hover", st_hover)
 	start_btn.add_theme_stylebox_override("pressed", st_pressed)
-	start_btn.add_theme_color_override("font_color", Color(0.12, 0.1, 0.02))
-	start_btn.add_theme_color_override("font_hover_color", Color(0.12, 0.1, 0.02))
-	start_btn.add_theme_color_override("font_pressed_color", Color(0.12, 0.1, 0.02))
+	for state in ["font_color", "font_hover_color", "font_pressed_color"]:
+		start_btn.add_theme_color_override(state, Color.WHITE)
 	start_btn.pressed.connect(_start_race)
 	canvas.add_child(start_btn)
+	_build_net_ui(canvas)
 
 	var help := Label.new()
 	help.text = "←→↑↓ / AD — выбор  |  клик — выбрать, ещё раз — старт  |  Enter — в гонку"
+	if _ui_font:
+		help.add_theme_font_override("font", _ui_font)
 	help.add_theme_font_size_override("font_size", 15)
 	help.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	help.anchor_right = 0.5
@@ -317,6 +503,29 @@ func _setup_hud() -> void:
 	canvas.add_child(help)
 
 	_setup_grid(canvas)
+
+
+## Мультяшная кнопка-стрелка листания (позиция — доля ширины экрана).
+func _make_arrow(canvas: CanvasLayer, tex_path: String, anchor_x: float,
+		on_press: Callable) -> void:
+	var btn := TextureButton.new()
+	btn.texture_normal = load(tex_path)
+	btn.ignore_texture_size = true
+	btn.stretch_mode = TextureButton.STRETCH_KEEP_ASPECT_CENTERED
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.anchor_left = anchor_x
+	btn.anchor_right = anchor_x
+	btn.anchor_top = 0.5
+	btn.anchor_bottom = 0.5
+	btn.offset_left = 0
+	btn.offset_right = 76
+	btn.offset_top = -38
+	btn.offset_bottom = 38
+	btn.modulate = Color(1, 1, 1, 0.92)
+	btn.pressed.connect(on_press)
+	btn.button_down.connect(func() -> void: btn.modulate = Color(0.75, 0.75, 0.75))
+	btn.button_up.connect(func() -> void: btn.modulate = Color(1, 1, 1, 0.92))
+	canvas.add_child(btn)
 
 
 ## Правая половина: прокручиваемая сетка миниатюр всех машин.

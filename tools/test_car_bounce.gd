@@ -87,8 +87,7 @@ func _park_extras() -> void:
 	var curve: Curve3D = _main._track._curve
 	for i in range(1, _main._cars.size()):
 		var car: Car = _main._cars[i]
-		car.ammo = 0
-		car.mines = 0
+		car.weapon = -1
 		if i >= 2:
 			car.controls_enabled = false
 			var off := curve.get_baked_length() * 0.5 + i * 6.0

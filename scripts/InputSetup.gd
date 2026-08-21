@@ -9,9 +9,9 @@ const ACTIONS := {
 	"steer_left": [KEY_LEFT, KEY_A],
 	"steer_right": [KEY_RIGHT, KEY_D],
 	"handbrake": [KEY_SPACE],
-	"fire": [KEY_CTRL, KEY_J],   # снаряд вперёд
+	"fire": [KEY_E],             # использовать текущее оружие
 	"jump": [KEY_SHIFT, KEY_K],  # прыжок как в RnRR
-	"drop": [KEY_L, KEY_C],      # мина назад
+	"drop": [KEY_L, KEY_C],      # тоже использует оружие (привычный палец)
 	"respawn": [KEY_R],          # вернуться на трассу, если застрял
 }
 

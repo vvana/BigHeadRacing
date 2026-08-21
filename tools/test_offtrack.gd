@@ -23,13 +23,15 @@ func _physics_process(_delta: float) -> void:
 			var pos := curve.sample_baked(off)
 			var ahead := curve.sample_baked(off + 1.0)
 			var right := (ahead - pos).normalized().cross(Vector3.UP)
-			var outside: Vector3 = pos + right \
-					* (TrackBuilder.TRACK_HALF_WIDTH + 1.1) + Vector3.UP * 0.6
+			# Полотно переменной ширины — отступ от ФАКТИЧЕСКОЙ кромки.
+			var half := track.half_width_at_offset(off)
+			var outside: Vector3 = pos + right * (half + 1.1) + Vector3.UP * 0.6
 			_main._car.global_position = outside
 			_main._car.linear_velocity = Vector3.ZERO
 			_dist_when_placed = track.distance_from_axis(outside)
 			print("placed outside wall: dist_to_axis=%.2f (порог %.2f)" % [
-				_dist_when_placed, load("res://scripts/Main.gd").OFFTRACK_DIST])
+				_dist_when_placed,
+				half + load("res://scripts/Main.gd").OFFTRACK_MARGIN])
 		240:  # ~4 секунды при 60 Гц — авто-возврат должен был сработать
 			var dist := track.distance_from_axis(_main._car.global_position)
 			print("OFFTRACK TEST: %s (dist_to_axis=%.2f)" % [
