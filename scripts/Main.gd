@@ -48,6 +48,9 @@ var _marker_time := 0.0
 
 var _net_started := false           # сервер: гонка идёт (иначе лобби)
 var _snap_accum := 0.0              # накопитель до следующего снимка
+var _net_lost := false              # клиент: связь пропала, уходим в гараж
+var _kicked := false                # клиент: сервер отказал (версии и т.п.)
+var _last_state_time := 0.0         # клиент: когда пришёл последний снимок
 var _lobby_wait := -1.0             # сервер: остаток ожидания, <0 — не идёт
 var _roster := PackedStringArray()  # id моделей машин по слотам
 var _lobby_label: Label             # «ждём игроков» на клиенте
@@ -106,6 +109,7 @@ func _ready() -> void:
 		# от него слот, ростер машин и команду отсчёта. Если рукопожатие
 		# ещё не закончилось (сцену могли открыть сразу), ждём сигнала —
 		# RPC, отправленный до соединения, просто пропадёт.
+		Net.left.connect(_on_net_lost)
 		_lobby_label.visible = true
 		var peer := multiplayer.multiplayer_peer
 		if peer != null and peer.get_connection_status() 				== MultiplayerPeer.CONNECTION_CONNECTED:
@@ -405,6 +409,13 @@ func _process(delta: float) -> void:
 		get_tree().change_scene_to_file("res://scenes/CarSelect.tscn")
 		return
 	if Net.is_client():
+		# Watchdog снимков: соединение может числиться живым, а сервер
+		# завис или канал умер — сам ENet заметит только через десятки
+		# секунд, всё это время машины стояли бы статуями без объяснений.
+		if _net_started and not _finished and not _net_lost and not _kicked \
+				and Net.my_slot >= 0 and _last_state_time > 0.0 \
+				and Time.get_ticks_msec() / 1000.0 - _last_state_time > 5.0:
+			_on_net_lost()
 		# В лобби пробел просит сервер начать, не дожидаясь второго игрока.
 		if _lobby_label != null and _lobby_label.visible 				and Input.is_action_just_pressed("ui_accept"):
 			_rx_start_request.rpc_id(1)
@@ -852,6 +863,27 @@ func _on_peer_left(_id: int, slot: int) -> void:
 		get_tree().reload_current_scene()
 
 
+## Связь с сервером пропала посреди заезда (сервер умер, канал упал) —
+## классика сетевых игр: без обработки клиент навсегда оставался бы с
+## замершими марионетками. Говорим прямо и возвращаемся в гараж.
+## После финиша не дёргаемся: результат уже на экране, Enter — в гараж.
+func _on_net_lost() -> void:
+	if _net_lost or _kicked or _finished or not is_inside_tree():
+		return
+	_net_lost = true
+	print("[net] связь с сервером потеряна — возвращаемся в гараж")
+	if _car != null:
+		_car.controls_enabled = false
+	if _lobby_label:
+		_lobby_label.text = "Связь с сервером потеряна.
+Возвращаемся в гараж…"
+		_lobby_label.visible = true
+	await get_tree().create_timer(3.0).timeout
+	if is_inside_tree():
+		Net.leave()
+		get_tree().change_scene_to_file("res://scenes/CarSelect.tscn")
+
+
 ## После заезда сервер перезапускает сцену: следующая пара игроков должна
 ## получить чистую гонку, а не доехавшие машины на финишной прямой.
 func _reset_server_after_race() -> void:
@@ -869,14 +901,16 @@ func _reset_server_after_race() -> void:
 ## при проверке: подключился сразу после чужого финиша — и завис.
 func _say_hello() -> void:
 	for attempt in 12:
-		if Net.my_slot >= 0 or not Net.is_client():
+		# −1 «ещё не выдан» — повторяем; −2 «сервер отказал» — уже нет.
+		if Net.my_slot != -1 or not Net.is_client():
 			return
-		_rx_hello.rpc_id(1, GameState.selected_car_id)
+		_rx_hello.rpc_id(1, GameState.selected_car_id, Net.PROTOCOL)
 		await get_tree().create_timer(1.0).timeout
 		if not is_inside_tree():
 			return
 	if Net.my_slot < 0 and _lobby_label:
 		_lobby_label.text = "Сервер не выдал слот.
+Возможно, версии игры различаются — обнови игру (git pull).
 Esc — в гараж"
 
 
@@ -971,10 +1005,25 @@ func _pack_state() -> Array:
 # ── клиент → сервер ──
 
 @rpc("any_peer", "call_remote", "reliable")
-func _rx_hello(car_id: String) -> void:
+func _rx_hello(car_id: String, proto: int) -> void:
 	if not Net.is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
+	# Проверка версии протокола — первым делом. Несовпадающие версии НЕ
+	# играют: RPC с другой сигнатурой молча отбрасываются, и рассинхрон
+	# выглядел бы как куча загадочных багов. Клиент со СТАРЫМ hello (один
+	# аргумент) сюда даже не попадёт — его вызов отбросит сам Godot, и
+	# после 12 попыток он увидит подсказку про версии в _say_hello.
+	if proto != Net.PROTOCOL:
+		print("[net] пир %d: протокол %d, наш %d — отказ" % [id, proto, Net.PROTOCOL])
+		_rx_kick.rpc_id(id, "Версии игры не совпадают
+(у сервера %d, у тебя %d). Обнови игру: git pull." % [Net.PROTOCOL, proto])
+		# Рвём соединение с задержкой, чтобы сообщение успело дойти.
+		get_tree().create_timer(0.5).timeout.connect(func() -> void:
+			if multiplayer.multiplayer_peer != null \
+					and Net.slot_of_peer.has(id):
+				multiplayer.multiplayer_peer.disconnect_peer(id))
+		return
 	var slot: int = Net.slot_of_peer.get(id, -1)
 	if slot < 0 or slot >= _roster.size():
 		return
@@ -988,6 +1037,10 @@ func _rx_hello(car_id: String) -> void:
 		# Заезд уже идёт: отсчёт этот игрок пропустил, и без отдельной
 		# команды он навсегда остался бы в лобби с выключенным управлением.
 		_rx_race_running.rpc_id(id)
+		# И прогресс всех машин: иначе подсевший считал бы круги с нуля,
+		# и его HUD (круг, место) врал бы до конца заезда.
+		_rx_progress.rpc_id(id, PackedFloat32Array(_progress),
+				PackedInt32Array(_laps_done))
 	_rx_lobby.rpc(Net.slot_of_peer.size(),
 			0 if _net_started else maxi(ceili(_lobby_wait), 0))
 
@@ -995,7 +1048,7 @@ func _rx_hello(car_id: String) -> void:
 ## Клиент прислал состояние СВОЕЙ машины (она клиент-авторитетна). Сервер
 ## ведёт её марионеткой: _follow_snapshot экстраполирует между пакетами и
 ## сглаживает их неровный приход — как у марионеток на клиенте.
-@rpc("any_peer", "call_remote", "unreliable_ordered")
+@rpc("any_peer", "call_remote", "unreliable_ordered", 1)
 func _rx_pstate(xf: PackedFloat32Array) -> void:
 	if not Net.is_server() or xf.size() < 10:
 		return
@@ -1007,9 +1060,12 @@ func _rx_pstate(xf: PackedFloat32Array) -> void:
 		return
 	var pos := Vector3(xf[0], xf[1], xf[2])
 	var vel := Vector3(xf[7], xf[8], xf[9])
-	# Битые данные (NaN/бесконечность) отравили бы марионетку и снимки
-	# ВСЕМ клиентам — молча выбрасываем пакет.
-	if not (pos.is_finite() and vel.is_finite()):
+	# Санитария клиент-авторитетных данных — сервер обязан не доверять
+	# слепо: битые (NaN/бесконечность) и заведомо невозможные значения
+	# (за пределами мира, скорость много выше максимума машины) отравили
+	# бы марионетку и снимки ВСЕМ клиентам. Молча выбрасываем пакет.
+	if not (pos.is_finite() and vel.is_finite()) \
+			or pos.length() > 600.0 or vel.length() > 60.0:
 		return
 	car.net_apply_snapshot(pos,
 			Quaternion(xf[3], xf[4], xf[5], xf[6]).normalized(), vel)
@@ -1122,8 +1178,13 @@ func _rx_count(txt: String) -> void:
 		_count_label.visible = false
 
 
-@rpc("authority", "call_remote", "unreliable_ordered")
+## Канал 1 — отдельный от reliable-событий (выстрелы, эффекты, лобби):
+## на канале 0 потерянный reliable-пакет задерживал бы и поток состояния
+## (head-of-line blocking) — стандартная практика сетевых игр: развести
+## высокочастотный поток и редкие надёжные события по каналам.
+@rpc("authority", "call_remote", "unreliable_ordered", 1)
 func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray) -> void:
+	_last_state_time = Time.get_ticks_msec() / 1000.0
 	for i in _cars.size():
 		var o := i * 10
 		var f := i * 3
@@ -1192,6 +1253,33 @@ func _rx_slot_taken(slot: int, taken: bool) -> void:
 	_rival_marker.visible = taken
 	if _minimap:
 		_minimap.rival_index = slot if taken else -1
+
+
+## Сервер отказал (несовпадение версий и т.п.) — показываем причину и
+## больше не стучимся. Соединение рвёт сервер, ретраи глушим слотом-«−2».
+@rpc("authority", "call_remote", "reliable")
+func _rx_kick(reason: String) -> void:
+	Net.my_slot = -2   # не −1: _say_hello перестаёт повторять hello
+	_kicked = true     # чтобы «связь потеряна» не перетёрло причину
+	if _lobby_label:
+		_lobby_label.text = reason + "
+Esc — в гараж"
+		_lobby_label.visible = true
+
+
+## Прогресс всех машин для подсевшего к идущему заезду: без него круги и
+## место считались бы с нуля и HUD врал бы до конца заезда.
+@rpc("authority", "call_remote", "reliable")
+func _rx_progress(progress: PackedFloat32Array, laps: PackedInt32Array) -> void:
+	for i in mini(progress.size(), _progress.size()):
+		_progress[i] = progress[i]
+	for i in mini(laps.size(), _laps_done.size()):
+		_laps_done[i] = laps[i]
+	# _last_offset — по фактическим позициям, иначе первый же кадр счёта
+	# прибавил бы к прогрессу разницу «ноль → текущая точка трассы».
+	for i in _cars.size():
+		_last_offset[i] = _track._curve.get_closest_offset(
+				_cars[i].global_position)
 
 
 ## Клиент подсел к уже идущему заезду — отсчёта не будет, включаемся сразу.

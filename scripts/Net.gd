@@ -10,6 +10,13 @@ extends Node
 enum Mode { OFFLINE, SERVER, CLIENT }
 
 const PORT := 9977
+## Версия сетевого протокола. ПОДНИМАТЬ при любом несовместимом изменении
+## RPC (сигнатуры, формат снимка, каналы): сервер не пускает клиента с
+## другой версией с внятным сообщением — иначе рассинхрон версий выглядит
+## как загадочные «игра сломалась» (RPC молча отбрасываются). История:
+## 1 — сервер считает всех, 2 — клиент-авторитетные машины игроков,
+## 3 — проверка версии + канал состояния + прогресс позднего входа.
+const PROTOCOL := 3
 const PLAYER_SLOTS := 2      # столько машин отдаётся живым игрокам
 const CONFIG_PATH := "user://net.cfg"
 const CONNECT_TIMEOUT := 5.0   # столько ждём ответа сервера, потом сдаёмся
@@ -66,7 +73,10 @@ func start_server() -> bool:
 	var peer := ENetMultiplayerPeer.new()
 	# Слотов PLAYER_SLOTS, но пускаем чуть больше: лишний коннект получит
 	# отказ осмысленно, а не молча повиснет на таймауте.
-	var err := peer.create_server(port, PLAYER_SLOTS + 2)
+	# Каналов 8: поток состояния идёт по каналу 1, отдельно от reliable-
+	# событий (см. Main._rx_state) — каналы надо выделить явно, иначе
+	# отправка с transfer_channel > 0 молча не уйдёт.
+	var err := peer.create_server(port, PLAYER_SLOTS + 2, 8)
 	if err != OK:
 		push_error("Не удалось поднять сервер на порту %d: %s" % [port, error_string(err)])
 		return false
@@ -84,7 +94,8 @@ func join_server(address: String, p: int) -> bool:
 	port = p
 	save_config()
 	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_client(address, p)
+	# Каналов столько же, сколько у сервера (ENet берёт минимум из двух).
+	var err := peer.create_client(address, p, 8)
 	if err != OK:
 		join_failed.emit("Не удалось начать подключение: %s" % error_string(err))
 		return false
