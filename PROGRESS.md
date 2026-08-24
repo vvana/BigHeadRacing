@@ -2169,6 +2169,22 @@ shot_net подвинут под 20 с.
 `scripts/Net.gd`, `tools/test_net.gd`, `tools/test_finish.gd`,
 `tools/shot_net.gd`, `export_presets.cfg`, `dist/*`, `README.md`.
 
+## Шум «Attempt to disconnect a nonexistent connection» в exe — не наш (2026-08-24)
+В логе TestWeapons из СОБРАННОГО exe (dist/) сыпятся ошибки
+«Attempt to disconnect a nonexistent connection from 'CarN'. Signal:
+'tree_entered'/'tree_exiting', callable: ''». Проверено сборкой pck из
+коммита 6f202f8 (ДО лобби/ленты/финиша) и прогоном тем же exe
+(`BigHeadRacing.exe --main-pack old.pck --headless res://tools/...`):
+шум ТОТ ЖЕ — к правкам 24.08 отношения не имеет. Это движок: Area3D
+(снаряд/мина/бокс) при удалении, пока машина ещё в зоне пересечения
+(queue_free при попадании, teardown при выходе), дважды чистит свои
+связи с tree_entered/tree_exiting тела — известная безвредная
+особенность Godot 4.x. В редакторском бинарнике не печатается, в
+экспортном debug-шаблоне — печатается. Тесты PASS, на игру не влияет.
+Приём для будущих проверок «виноват ли новый код»: exe умеет
+`--main-pack <старый.pck>`, а pck собирается без шаблонов экспорта
+(`--export-pack "Windows Desktop" out.pck` в worktree старого коммита).
+
 ## Регрессионные тесты (все PASS)
 `godot --headless --path . res://tools/TestX.tscn`, X = Ramp | Respawn |
 Offtrack | Flip | Lap | Explosion | Heading | WallSlide | AirSpin |
