@@ -17,6 +17,7 @@ const AHEAD := [10.0, 16.0, 22.0, 28.0]  # тени вдоль оси перед
 var inert := false
 var track: TrackBuilder = null
 var target: Car = null
+var attacker: Car = null   # кто вызвал удар — для ленты событий
 
 var _spots: Array[Vector3] = []
 var _shadows: Array[MeshInstance3D] = []
@@ -179,5 +180,6 @@ func _physics_process(delta: float) -> void:
 			d.y = 0.0
 			if d.length() <= HIT_RADIUS:
 				if not inert:
+					car.notify_hit_by(attacker, Weapons.AIRSTRIKE)
 					car.destroy()
 	queue_free()

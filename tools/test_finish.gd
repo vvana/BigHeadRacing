@@ -34,8 +34,10 @@ func _physics_process(_delta: float) -> void:
 		print("t=%.1f fin=%s | %s" % [_t, _main._finished, " | ".join(info)])
 
 	if _finish_t < 0.0:
-		if _t > 150.0:
-			print("FINISH TEST: FAIL (гонка не финишировала за 150 с)")
+		# Финиш теперь ПОФИНИШНЫЙ: _finished ждёт, пока доедут ВСЕ
+		# (или таймаут 40 с после первого) — лимит поднят с запасом.
+		if _t > 220.0:
+			print("FINISH TEST: FAIL (гонка не финишировала за 220 с)")
 			get_tree().quit(1)
 		return
 

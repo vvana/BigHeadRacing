@@ -60,4 +60,8 @@ func _on_body(body: Node3D) -> void:
 		return
 	if car == dropper and _arm > 0.0:
 		return
+	# В ленту — только если занос реально начнётся (повторный наезд во
+	# время заноса apply_oil_slip игнорирует, событие было бы ложным).
+	if car._slip_time <= 0.0:
+		car.notify_hit_by(dropper, Weapons.OIL)
 	car.apply_oil_slip()

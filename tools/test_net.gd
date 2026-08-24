@@ -27,13 +27,17 @@ extends Node
 ## По умолчанию бьёт в 127.0.0.1; чужой адрес — аргументом после `--`:
 ##   godot --headless --path . res://tools/TestNet.tscn -- 139.100.234.166
 
-const RUN_TIME := 16.0
 const MOVE_MIN := 15.0     # сколько метров должна проехать машина
+const RACE_TIME := 9.0     # сколько секунд едем после старта заезда
+# Крайний срок самостоятельного старта: LOBBY_WAIT (20) + отсчёт + запас.
+const START_DEADLINE := 28.0
 
 var _t := 0.0
+var _end_t := 0.0          # когда снимать итоги (ставится при старте заезда)
 var _main: Node3D
 var _start_pos := []
 var _asked_start := false
+var _started_at := -1.0    # момент старта заезда (controls_enabled)
 var _ok := {}
 # Замер плавности марионетки (машины, которую считает сервер, а клиент
 # только рисует). Дёрганость видна двумя признаками: шаг назад против
@@ -77,18 +81,25 @@ func _physics_process(delta: float) -> void:
 		for c: Car in _main._cars:
 			_start_pos.append(c.global_position)
 	# Стартовать НЕ просим: проверяем как раз то, что сервер сам подождёт
-	# второго игрока LOBBY_WAIT секунд и начнёт с ботом.
+	# второго игрока LOBBY_WAIT секунд и начнёт с ботом. Тайминги теста
+	# АДАПТИВНЫЕ (от фактического старта): LOBBY_WAIT менялся уже дважды,
+	# и фиксированные окна каждый раз ломали стенд.
 	if not _asked_start and _main._car != null and _main._car.controls_enabled:
 		_asked_start = true
-		_ok["старт без второго игрока"] = _t < 12.0
+		_started_at = _t
+		_end_t = _t + RACE_TIME
+		_ok["старт без второго игрока"] = _t < START_DEADLINE
 		print("  заезд начался на %.1f с" % _t)
-	if _t > 9.0 and _t <= RUN_TIME:
+	if _started_at < 0.0:
+		if _t > START_DEADLINE + 4.0:
+			_fail("заезд не начался за %.0f с" % (START_DEADLINE + 4.0))
+		return
+	if _t > _started_at + 2.0 and _t <= _end_t:
 		_sample_smoothness(delta)
 	# Газ в пол ЧЕРЕЗ Input: своя машина клиент-авторитетна — её физику
 	# целиком считает клиент и сам шлёт серверу состояние (_client_tick).
-	if _main._car != null and _main._car.controls_enabled:
-		Input.action_press("accelerate")
-	if _t < RUN_TIME:
+	Input.action_press("accelerate")
+	if _t < _end_t:
 		return
 
 	var me: Car = _main._cars[Net.my_slot]

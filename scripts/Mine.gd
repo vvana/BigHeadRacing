@@ -128,6 +128,7 @@ func _try_trigger(body: Node3D) -> void:
 		var t := dist / BLAST_RADIUS
 		var falloff := 1.0 - t * t
 		var spin := BLAST_SPIN * falloff * (1.0 if randf() < 0.5 else -1.0)
+		car.notify_hit_by(dropper, Weapons.MINE)
 		car.push_from_blast(dir, BLAST_SPEED * falloff, spin, BLAST_LIFT)
 	FlashFx.spawn(get_parent(), global_position, 3.2, Color(1.0, 0.4, 0.1))
 	queue_free()

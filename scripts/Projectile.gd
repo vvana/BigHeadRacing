@@ -69,6 +69,8 @@ func _on_body_entered(body: Node3D) -> void:
 		return
 	var car := body as Car
 	if car != null and car.alive and not car.is_ghost():
+		car.notify_hit_by(shooter,
+				Weapons.FREEZE if freeze else Weapons.ROCKET)
 		if freeze:
 			car.apply_freeze(3.0)
 		else:

@@ -17,7 +17,10 @@ const NET_CARS := 4
 const SNAP_HZ := 60.0
 # Сколько ждать ВТОРОГО живого игрока после подключения первого.
 # Не дождались — едем по старинке, пустой слот берёт бот.
-const LOBBY_WAIT := 5.0
+# 5 с оказалось мало в жизни: у второго игрока игра грузится дольше
+# (первый вход — компиляция шейдеров), и первый успевал уехать с ботами.
+# Пробел по-прежнему стартует сразу, ждать 20 с никто не заставляет.
+const LOBBY_WAIT := 20.0
 # Полотно переменной ширины, поэтому порог вылета считается в точке машины:
 # полуширина здесь + 0.5 м (машина у самой стены отстоит от оси почти ровно
 # на полуширину, дальше — уже за ограждением).
@@ -40,7 +43,13 @@ var _laps_done: Array[int] = []
 var _offtrack_time: Array[float] = []
 var _flip_time: Array[float] = []
 var _stall_time: Array[float] = []
-var _finished := false
+var _finished := false              # заезд окончен ЦЕЛИКОМ (все или таймаут)
+var _my_finished := false           # моя машина пересекла финиш (баннер показан)
+var _finish_order: Array[int] = []  # индексы машин в порядке пересечения финиша
+var _first_finish_time := -1.0      # когда финишировал первый (для таймаута)
+# Доезжать дают всем, но не вечно: спустя столько секунд после первого
+# финишёра заезд закрывается принудительно (места — по текущему прогрессу).
+const FINISH_TIMEOUT := 40.0
 
 var _player_marker: Node3D          # стрелка-указатель над своей машиной
 var _rival_marker: Node3D           # и над машиной живого соперника
@@ -53,7 +62,10 @@ var _kicked := false                # клиент: сервер отказал 
 var _last_state_time := 0.0         # клиент: когда пришёл последний снимок
 var _lobby_wait := -1.0             # сервер: остаток ожидания, <0 — не идёт
 var _roster := PackedStringArray()  # id моделей машин по слотам
-var _lobby_label: Label             # «ждём игроков» на клиенте
+var _lobby: Lobby                   # полноэкранное лобби на клиенте
+# Клиент: какие слоты заняты живыми игроками (для экрана лобби).
+var _slot_taken: Array[bool] = [false, false]
+var _feed_box: VBoxContainer        # лента «кто кого чем» (события оружия)
 
 var _speed_label: Label
 var _lap_label: Label
@@ -110,7 +122,8 @@ func _ready() -> void:
 		# ещё не закончилось (сцену могли открыть сразу), ждём сигнала —
 		# RPC, отправленный до соединения, просто пропадёт.
 		Net.left.connect(_on_net_lost)
-		_lobby_label.visible = true
+		if _lobby:
+			_lobby.show_screen()
 		var peer := multiplayer.multiplayer_peer
 		if peer != null and peer.get_connection_status() 				== MultiplayerPeer.CONNECTION_CONNECTED:
 			_say_hello()
@@ -323,12 +336,20 @@ func _physics_process(_delta: float) -> void:
 		var lap := int(floorf(_progress[i] / length))
 		if lap > _laps_done[i]:
 			_laps_done[i] = lap
-			# Круги клиент считает сам (позиции ему и так шлют), но
-			# ЗАВЕРШАЕТ гонку только сервер — иначе у двоих игроков она
-			# кончилась бы в разные моменты. Оффлайн — как раньше: заезд
-			# заканчивает машина игрока.
-			if lap >= LAPS and not _finished and not Net.is_client() 					and (Net.is_online() or i == 0):
-				_finish_race()
+			# Финиш ПОФИНИШНЫЙ: доехавшая машина останавливается и
+			# получает место по порядку пересечения, остальные ДОЕЗЖАЮТ
+			# (раньше первый финишёр обрывал заезд всем — «3 и 4 не
+			# доехали»). Решает не клиент, а сервер/оффлайн — иначе у
+			# двоих игроков места раздались бы по-разному.
+			if lap >= LAPS and not Net.is_client() \
+					and not _cars[i].race_over:
+				_car_finished(i)
+
+	# Таймаут доезда: не ждать вечно застрявшего/уничтоженного.
+	if not Net.is_client() and _first_finish_time >= 0.0 and not _finished \
+			and Time.get_ticks_msec() / 1000.0 - _first_finish_time \
+			> FINISH_TIMEOUT:
+		_finish_race()
 
 	# «Резинка»: отстающий ИИ едет бодрее, убежавший — спокойнее.
 	# Мерим от ЛИДЕРА, а не от машины 0: по сети машина 0 — просто один
@@ -404,7 +425,7 @@ func _process(delta: float) -> void:
 		Net.leave()
 		get_tree().change_scene_to_file("res://scenes/CarSelect.tscn")
 		return
-	if _finished and Input.is_action_just_pressed("ui_accept"):
+	if (_finished or _my_finished) and Input.is_action_just_pressed("ui_accept"):
 		Net.leave()
 		get_tree().change_scene_to_file("res://scenes/CarSelect.tscn")
 		return
@@ -417,7 +438,8 @@ func _process(delta: float) -> void:
 				and Time.get_ticks_msec() / 1000.0 - _last_state_time > 5.0:
 			_on_net_lost()
 		# В лобби пробел просит сервер начать, не дожидаясь второго игрока.
-		if _lobby_label != null and _lobby_label.visible 				and Input.is_action_just_pressed("ui_accept"):
+		if _lobby != null and _lobby.visible and not _net_lost \
+				and not _kicked and Input.is_action_just_pressed("ui_accept"):
 			_rx_start_request.rpc_id(1)
 		# Своя машина клиент-авторитетна — и возврат на трассу (R и
 		# автовозврат) для неё делаем мы, сервер её не двигает.
@@ -448,9 +470,41 @@ func _player_place() -> int:
 	return _place_of(_my_index())
 
 
+## Машина i пересекла финиш (сервер или оффлайн): останавливается, место
+## фиксируется по порядку пересечения. Остальные продолжают доезжать.
+func _car_finished(i: int) -> void:
+	var car := _cars[i]
+	car.race_over = true
+	car.controls_enabled = false
+	_finish_order.append(i)
+	if _first_finish_time < 0.0:
+		_first_finish_time = Time.get_ticks_msec() / 1000.0
+	var place := _finish_order.size()
+	if Net.is_server():
+		_rx_car_finished.rpc(i, place)
+	elif i == 0:
+		_show_finish(place)
+	# Все доехали — заезд окончен целиком.
+	if _finish_order.size() >= _cars.size():
+		_finish_race()
+
+
+## Баннер «ФИНИШ! Место N». Место зафиксировано в момент пересечения —
+## кто доехал позже, на него уже не влияет.
+func _show_finish(place: int) -> void:
+	_my_finished = true
+	if _count_label:
+		_count_label.visible = false
+	_finish_label.text = "ФИНИШ!  Место: %d из %d" % [place, _cars.size()]
+	_finish_root.visible = true
+
+
+## Полное окончание заезда: все доехали или вышел FINISH_TIMEOUT.
 func _finish_race() -> void:
+	if _finished:
+		return
 	_finished = true
-	# Гонка окончена для всех: управление снято, машины плавно тормозят
+	# Управление снято у всех, недоехавшие плавно тормозят
 	# (см. ветку race_over в Car._physics_process).
 	for c in _cars:
 		c.controls_enabled = false
@@ -459,11 +513,9 @@ func _finish_race() -> void:
 		_rx_finish.rpc()
 		_reset_server_after_race()
 		return
-	if _count_label:
-		_count_label.visible = false
-	_finish_label.text = "ФИНИШ!  Место: %d из %d" \
-			% [_player_place(), _cars.size()]
-	_finish_root.visible = true
+	# Сам не доехал, а заезд кончился (таймаут) — место по прогрессу.
+	if not _my_finished:
+		_show_finish(_player_place())
 
 
 ## Возврат i-й машины на ось трассы (+6 м вперёд), скорость в ноль.
@@ -795,16 +847,27 @@ func _setup_hud() -> void:
 	help.modulate = Color(1, 1, 1, 0.7)
 	canvas.add_child(help)
 
-	# Сетевое лобби: видно только клиенту, пока сервер не дал отсчёт.
-	_lobby_label = _make_label(canvas, "Подключение…", 30,
-			Color(1, 0.95, 0.7), 5)
-	_lobby_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
-	_lobby_label.offset_left = -320
-	_lobby_label.offset_right = 320
-	_lobby_label.offset_top = 120
-	_lobby_label.offset_bottom = 220
-	_lobby_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_lobby_label.visible = false
+	# Лента событий оружия («кто кого чем») — правый край, под мини-картой.
+	_feed_box = VBoxContainer.new()
+	_feed_box.anchor_left = 1.0
+	_feed_box.anchor_right = 1.0
+	_feed_box.offset_left = -336
+	_feed_box.offset_right = -16
+	_feed_box.offset_top = 182
+	_feed_box.offset_bottom = 460
+	_feed_box.alignment = BoxContainer.ALIGNMENT_BEGIN
+	_feed_box.add_theme_constant_override("separation", 6)
+	_feed_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(_feed_box)
+
+	# Сетевое лобби — полноэкранный Control ПОВЕРХ всего HUD (добавлен
+	# последним, поэтому рисуется сверху). Отдельной сценой лобби быть не
+	# может: RPC адресуются по пути узла, клиент обязан сидеть в /root/Main
+	# с самого рукопожатия (грабли №1 сетевой части).
+	if Net.is_client():
+		_lobby = Lobby.new()
+		_lobby.name = "Lobby"
+		canvas.add_child(_lobby)
 
 
 # ════════════════════ СЕТЕВАЯ ЧАСТЬ ════════════════════
@@ -868,16 +931,17 @@ func _on_peer_left(_id: int, slot: int) -> void:
 ## замершими марионетками. Говорим прямо и возвращаемся в гараж.
 ## После финиша не дёргаемся: результат уже на экране, Enter — в гараж.
 func _on_net_lost() -> void:
-	if _net_lost or _kicked or _finished or not is_inside_tree():
+	if _net_lost or _kicked or _finished or _my_finished \
+			or not is_inside_tree():
 		return
 	_net_lost = true
 	print("[net] связь с сервером потеряна — возвращаемся в гараж")
 	if _car != null:
 		_car.controls_enabled = false
-	if _lobby_label:
-		_lobby_label.text = "Связь с сервером потеряна.
-Возвращаемся в гараж…"
-		_lobby_label.visible = true
+	if _lobby:
+		_lobby.set_status("Связь с сервером потеряна.
+Возвращаемся в гараж…")
+		_lobby.show_screen()
 	await get_tree().create_timer(3.0).timeout
 	if is_inside_tree():
 		Net.leave()
@@ -908,10 +972,11 @@ func _say_hello() -> void:
 		await get_tree().create_timer(1.0).timeout
 		if not is_inside_tree():
 			return
-	if Net.my_slot < 0 and _lobby_label:
-		_lobby_label.text = "Сервер не выдал слот.
+	if Net.my_slot < 0 and _lobby:
+		_lobby.set_status("Сервер не выдал слот.
 Возможно, версии игры различаются — обнови игру (git pull).
-Esc — в гараж"
+Esc — в гараж")
+		_lobby.show_screen()
 
 
 func _start_net_race() -> void:
@@ -1102,7 +1167,9 @@ func _taken_mask() -> int:
 @rpc("authority", "call_remote", "reliable")
 func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	Net.my_slot = slot
-	_apply_roster(roster)
+	for s in _slot_taken.size():
+		_slot_taken[s] = (taken & (1 << s)) != 0
+	_apply_roster(roster)   # заодно обновит машины на экране лобби
 	if slot < 0 or slot >= _cars.size():
 		return
 	# Своя машина перестаёт быть марионеткой: считаем её локально.
@@ -1142,28 +1209,29 @@ func _apply_roster(roster: PackedStringArray) -> void:
 			continue
 		_set_car_model(_cars[i], roster[i])
 	_roster = roster
+	_update_lobby_slots()
 
 
 @rpc("authority", "call_remote", "reliable")
 func _rx_lobby(players: int, secs: int) -> void:
-	if _lobby_label == null:
+	if _lobby == null:
 		return
 	if _net_started:
-		_lobby_label.visible = false
+		_lobby.hide_screen()
 		return
-	_lobby_label.visible = true
+	_lobby.show_screen()
 	var txt := "Игроков: %d/%d" % [players, Net.PLAYER_SLOTS]
 	if secs > 0:
 		txt += "
-Ждём второго: %d…  (пробел — сразу с ботами)" % secs
-	_lobby_label.text = txt
+Ждём второго: %d…" % secs
+	_lobby.set_status(txt)
 
 
 @rpc("authority", "call_remote", "reliable")
 func _rx_count(txt: String) -> void:
 	_net_started = true
-	if _lobby_label:
-		_lobby_label.visible = false
+	if _lobby:
+		_lobby.hide_screen()
 	if _count_label:
 		_count_label.visible = true
 	_pop_count(txt, Color(0.5, 1.0, 0.35) if txt == "GO!"
@@ -1248,6 +1316,9 @@ func _rx_fx(kind: int, args: Array) -> void:
 ## Слот занял или освободил живой игрок — показываем/прячем оранжевую метку.
 @rpc("authority", "call_remote", "reliable")
 func _rx_slot_taken(slot: int, taken: bool) -> void:
+	if slot >= 0 and slot < _slot_taken.size():
+		_slot_taken[slot] = taken
+		_update_lobby_slots()
 	if _rival_marker == null or Net.my_slot < 0 or slot == Net.my_slot:
 		return
 	_rival_marker.visible = taken
@@ -1261,10 +1332,10 @@ func _rx_slot_taken(slot: int, taken: bool) -> void:
 func _rx_kick(reason: String) -> void:
 	Net.my_slot = -2   # не −1: _say_hello перестаёт повторять hello
 	_kicked = true     # чтобы «связь потеряна» не перетёрло причину
-	if _lobby_label:
-		_lobby_label.text = reason + "
-Esc — в гараж"
-		_lobby_label.visible = true
+	if _lobby:
+		_lobby.set_status(reason + "
+Esc — в гараж")
+		_lobby.show_screen()
 
 
 ## Прогресс всех машин для подсевшего к идущему заезду: без него круги и
@@ -1286,12 +1357,25 @@ func _rx_progress(progress: PackedFloat32Array, laps: PackedInt32Array) -> void:
 @rpc("authority", "call_remote", "reliable")
 func _rx_race_running() -> void:
 	_net_started = true
-	if _lobby_label:
-		_lobby_label.visible = false
+	if _lobby:
+		_lobby.hide_screen()
 	if _count_label:
 		_count_label.visible = false
 	for c in _cars:
 		c.controls_enabled = true
+
+
+## Машина i финишировала (порядок пересечения решает сервер). Своя —
+## баннер и снятое управление; чужая — race_over для порядка.
+@rpc("authority", "call_remote", "reliable")
+func _rx_car_finished(i: int, place: int) -> void:
+	if i < 0 or i >= _cars.size():
+		return
+	var car := _cars[i]
+	car.race_over = true
+	if i == _my_index() and car.net_role == Car.NetRole.OWNED:
+		car.controls_enabled = false
+		_show_finish(place)
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -1357,3 +1441,93 @@ func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3) -> void:
 		Weapons.BOOST:
 			FlashFx.spawn(self, pos + Vector3.UP * 0.5, 1.2,
 					Color(0.3, 0.9, 1.0))
+
+
+## Обновить экран лобби: какие слоты заняты живыми игроками и на каких
+## машинах они приехали (ростер сервер рассылает при каждом изменении).
+func _update_lobby_slots() -> void:
+	if _lobby == null:
+		return
+	for s in _slot_taken.size():
+		var id := _roster[s] if s < _roster.size() else ""
+		_lobby.set_slot(s, _slot_taken[s], id, s == Net.my_slot)
+
+
+# ════════════════════ ЛЕНТА СОБЫТИЙ ОРУЖИЯ ════════════════════
+# «Player 1 [иконка] → Player 2»: кто по кому применил оружие. Попадания
+# знает только сервер (у клиентов оружие — инертная картинка) или
+# оффлайн-игра, поэтому события порождаются там и рассылаются RPC.
+
+const FEED_MAX := 5        # больше записей разом не держим
+const FEED_LIFETIME := 3.4 # сколько запись висит до угасания, с
+
+
+## Имя машины для ленты. Имён игроков пока нет — Player по номеру слота.
+func car_label(i: int) -> String:
+	return "Player %d" % (i + 1)
+
+
+## Оружие attacker подействовало на victim (зовёт Car.notify_hit_by).
+func report_weapon_hit(attacker: Car, victim: Car, kind: int) -> void:
+	if attacker == null or victim == null or attacker == victim:
+		return
+	var ai := _cars.find(attacker)
+	var vi := _cars.find(victim)
+	if ai < 0 or vi < 0:
+		return
+	if Net.is_server():
+		_rx_weapon_event.rpc(ai, vi, kind)
+	elif not Net.is_client():
+		_show_weapon_event(ai, vi, kind)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_weapon_event(ai: int, vi: int, kind: int) -> void:
+	_show_weapon_event(ai, vi, kind)
+
+
+## Запись в ленту: имя, иконка оружия, стрелка, жертва. Висит
+## FEED_LIFETIME и угасает; при переполнении старейшая вытесняется.
+func _show_weapon_event(ai: int, vi: int, kind: int) -> void:
+	if _feed_box == null:
+		return
+	while _feed_box.get_child_count() >= FEED_MAX:
+		_feed_box.get_child(0).free()
+	var entry := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.09, 0.13, 0.25, 0.82)
+	sb.set_corner_radius_all(10)
+	sb.content_margin_left = 12.0
+	sb.content_margin_right = 12.0
+	sb.content_margin_top = 5.0
+	sb.content_margin_bottom = 5.0
+	entry.add_theme_stylebox_override("panel", sb)
+	entry.size_flags_horizontal = Control.SIZE_SHRINK_END
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	entry.add_child(row)
+	_feed_name(row, ai)
+	var icon := TextureRect.new()
+	icon.texture = Weapons.icon(kind)
+	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon.custom_minimum_size = Vector2(26, 26)
+	icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	icon.tooltip_text = Weapons.display_name(kind)
+	row.add_child(icon)
+	var arrow := _make_label(row, "→", 16, Color(1, 1, 1, 0.7), 4)
+	arrow.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_feed_name(row, vi)
+	_feed_box.add_child(entry)
+	var tw := entry.create_tween()
+	tw.tween_interval(FEED_LIFETIME)
+	tw.tween_property(entry, "modulate:a", 0.0, 0.8)
+	tw.tween_callback(entry.queue_free)
+
+
+## Имя в ленте: своё — зелёное (как стрелка над машиной), чужие — жёлтые.
+func _feed_name(parent: Node, idx: int) -> void:
+	var l := _make_label(parent, car_label(idx), 16,
+			Color(0.45, 1.0, 0.55) if idx == _my_index()
+			else Color(1, 0.9, 0.45), 4)
+	l.size_flags_vertical = Control.SIZE_SHRINK_CENTER

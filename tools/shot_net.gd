@@ -34,17 +34,17 @@ func _shot(file: String) -> void:
 
 func _process(delta: float) -> void:
 	_t += delta
-	# Кадры: до старта, сразу после GO и на ходу.
+	# Кадры: до старта, сразу после GO и на ходу (лобби ждёт 20 с).
 	if _shots == 0 and _t > 6.0:
 		_shots = 1
 		_shot("net_lobby.png")
-	elif _shots == 1 and _t > 9.5:
+	elif _shots == 1 and _t > 24.5:
 		_shots = 2
 		_shot("net_go.png")
-	elif _shots == 2 and _t > 13.0:
+	elif _shots == 2 and _t > 28.0:
 		_shots = 3
 		_shot("net_drive.png")
-	elif _shots == 3 and _t > 16.0:
+	elif _shots == 3 and _t > 31.0:
 		_shots = 4
 		print("слот: %d" % Net.my_slot)
 		print("своя машина: %s" % [
@@ -67,7 +67,7 @@ func _process(delta: float) -> void:
 				ground.get_child_count() if ground else -1,
 				road.get_child_count() if road else -1])
 		_shot("net_drive2.png")
-	elif _shots == 4 and _t > 18.0:
+	elif _shots == 4 and _t > 33.0:
 		get_tree().quit(0)
 
 

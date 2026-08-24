@@ -303,6 +303,13 @@ func _physics_process(delta: float) -> void:
 		if net_fire:
 			net_fire = false
 			use_weapon()
+		# Движение к снимку — здесь, в ФИЗИКЕ. Перенос в _process (ради
+		# плавности на мониторах >60 Гц) ПРОБОВАН и ОТКАЧЕН: метрика
+		# стенда в headless рухнула с 2.6% до 57% с 40 рывками назад —
+		# на реальный рендер это не переносится один в один, но выпускать
+		# путь, который собственный стенд не может проверить, нельзя.
+		# Если жалобы на дрожание на высокогерцовых мониторах останутся —
+		# правильное решение это встроенная интерполяция физики Godot 4.4+.
 		_follow_snapshot(delta)
 		return
 	# Кап «депенетрации» от марионетки. Чужая машина по сети — замороженное
@@ -465,6 +472,10 @@ func _tick_effects(delta: float) -> void:
 ## положение кузова (иначе на жёсткой посадке кузов доседал после клампа
 ## и колёса на кадр-два всё же ныряли под асфальт).
 func _process(delta: float) -> void:
+	# Марионетка тянется к снимкам с частотой РЕНДЕРА, а не физики:
+	# движение видно глазом каждый кадр, независимо от частоты монитора.
+	# Телу-марионетке (заморожена кинематически) это безопасно — физика
+	# увидит её актуальный трансформ на ближайшем тике.
 	_animate_wheels(delta)
 	_tick_status_icon(delta)
 	if _ghost_time > 0.0:
@@ -613,6 +624,15 @@ func _player_control(delta: float, on_ground: bool) -> void:
 ## Пришёл снимок этой машины: с сервера — для марионеток на клиенте,
 ## с клиента-владельца — для машины живого игрока на сервере.
 func net_apply_snapshot(pos: Vector3, rot: Quaternion, vel: Vector3) -> void:
+	# ДУБЛИКАТ не обнуляет возраст. Сервер ретранслирует последнее
+	# присланное владельцем состояние своим тиком: если пакет владельца
+	# не успел прийти между тиками, уходит копия прошлого. Сброс возраста
+	# на копии останавливал экстраполяцию — марионетка шла «стоп-скачок»
+	# (те самые рывки соперника). Пусть возраст растёт — экстраполяция
+	# продолжит вести машину по скорости до свежего состояния.
+	if _snap_seen and pos.is_equal_approx(_snap_pos) \
+			and vel.is_equal_approx(_snap_vel):
+		return
 	_snap_pos = pos
 	_snap_rot = rot
 	_snap_vel = vel
@@ -660,10 +680,13 @@ func _follow_snapshot(delta: float) -> void:
 	# кадров у второго игрока.
 	_snap_age = minf(_snap_age + delta, MAX_EXTRAP)
 	var target := _snap_pos + _snap_vel * _snap_age
+	# Коэффициент подтяжки независим от частоты кадров: 0.35 на кадре
+	# 60 Гц (движение теперь в _process, а там fps плавает и бывает 144+).
+	var k := 1.0 - pow(0.65, delta * 60.0)
 	if global_position.distance_to(target) > 8.0:
 		global_position = target
 	else:
-		var next := global_position.lerp(target, 0.35)
+		var next := global_position.lerp(target, k)
 		# И вторая страховка: НАЗАД против собственного хода не едем вовсе.
 		# Лучше замереть на кадр (этого глаз не ловит), чем откатиться —
 		# откат читается как рывок.
@@ -672,7 +695,7 @@ func _follow_snapshot(delta: float) -> void:
 			next = global_position
 		global_position = next
 	var cur := global_transform.basis.get_rotation_quaternion()
-	global_transform.basis = Basis(cur.slerp(_snap_rot, 0.35))
+	global_transform.basis = Basis(cur.slerp(_snap_rot, k))
 	linear_velocity = _snap_vel
 
 
@@ -1172,6 +1195,15 @@ func is_ghost() -> bool:
 	return _ghost_time > 0.0
 
 
+## Сообщить менеджеру гонки «по этой машине применили оружие» — для ленты
+## событий в HUD («Player 1 [иконка] → Player 2»). Зовут снаряды, мины,
+## пятна и разовые эффекты (магнит, лазер, авиаудар). Самопопадания и
+## машины вне гонки менеджер отсеет сам (report_weapon_hit).
+func notify_hit_by(attacker: Car, kind: int) -> void:
+	if race != null and race.has_method("report_weapon_hit"):
+		race.report_weapon_hit(attacker, self, kind)
+
+
 ## Применить текущее оружие (у машины в руках всегда не больше одного;
 ## новое берётся из боксов на трассе). Оружие тратится при использовании.
 func use_weapon() -> void:
@@ -1247,6 +1279,7 @@ func _use_magnet() -> void:
 		var spin := MAGNET_SPIN * (1.0 - t) * (1.0 if randf() < 0.5 else -1.0)
 		other.push_from_blast(dir / dist, power, spin, 0.12)
 		other.show_effect_icon(Weapons.MAGNET, MAGNET_ICON_TIME)
+		other.notify_hit_by(self, Weapons.MAGNET)
 
 
 ## Лазер: один луч вперёд, уничтожает ВСЕ машины на пути.
@@ -1266,6 +1299,7 @@ func _use_laser(fwd: Vector3) -> void:
 			continue
 		var side := (to - fwd * along).length()
 		if side <= HALF_WIDTH:
+			other.notify_hit_by(self, Weapons.LASER)
 			other.destroy()
 
 
@@ -1278,6 +1312,7 @@ func _use_airstrike() -> void:
 	var strike := Airstrike.new()
 	strike.track = track
 	strike.target = target
+	strike.attacker = self
 	get_parent().add_child(strike)
 
 
