@@ -61,6 +61,7 @@ var _q_mark_tex: Texture2D      # «?» в пустом слоте
 var _last_weapon := -2          # чтобы не перезагружать иконку каждый кадр
 var _warn_panel: Panel
 var _warn_label: Label
+var _minimap: Minimap           # мини-карта в правом верхнем углу
 var _count_label: Label         # отсчёт 3-2-1-GO
 var _finish_root: Control       # баннер финиша
 var _finish_label: Label
@@ -479,6 +480,17 @@ func _check_recovery(delta: float) -> void:
 		if car.net_role == Car.NetRole.PUPPET \
 				or (Net.is_client() and i != _my_index()):
 			continue
+		# Страховка от «улетел в никуда»: дикий импульс (или NaN в
+		# трансформе) уносит машину, камера уезжает следом — «трасса
+		# пропала». Возвращаем сразу, без таймера. NaN сперва обнуляем:
+		# respawn_transform от нечисловой позиции сам бы вернул NaN.
+		if not car.global_position.is_finite():
+			car.global_position = Vector3.ZERO
+			_respawn_car(i)
+			continue
+		if car.global_position.length() > 600.0:
+			_respawn_car(i)
+			continue
 		if not car.alive:
 			_offtrack_time[i] = 0.0
 			_flip_time[i] = 0.0
@@ -662,6 +674,24 @@ func _setup_hud() -> void:
 	_pos_label = _make_label(info_panel, "МЕСТО 1/4", 20,
 			Color.WHITE, 5)
 	_pos_label.position = Vector2(22, 42)
+
+	# Мини-карта в правом верхнем углу: контур трассы и точки-машины.
+	# Панель привязана к ПРАВОМУ краю (anchor 1.0), чтобы не уезжать при
+	# другом разрешении окна.
+	var map_panel := _make_panel(canvas, Vector2.ZERO, Vector2(228, 158),
+			Color(0.07, 0.09, 0.16, 0.92))
+	map_panel.anchor_left = 1.0
+	map_panel.anchor_right = 1.0
+	map_panel.offset_left = -244
+	map_panel.offset_right = -16
+	map_panel.offset_top = 12
+	map_panel.offset_bottom = 170
+	_minimap = Minimap.new()
+	_minimap.name = "Minimap"
+	_minimap.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	map_panel.add_child(_minimap)
+	_minimap.setup(_track, _cars)
+	_minimap.my_index = _my_index()
 
 	# Слот оружия: тёмный глянцевый круг + иконка + подпись.
 	var slot := TextureRect.new()
@@ -896,6 +926,10 @@ func _client_tick(_delta: float) -> void:
 	var p := _car.global_position
 	var q := _car.global_transform.basis.get_rotation_quaternion()
 	var v := _car.linear_velocity
+	# Испорченное состояние (NaN после дикого удара) не шлём вовсе —
+	# страховка в _check_recovery вернёт машину, а сервер не отравится.
+	if not (p.is_finite() and v.is_finite()):
+		return
 	_rx_pstate.rpc_id(1, PackedFloat32Array([
 			p.x, p.y, p.z, q.x, q.y, q.z, q.w, v.x, v.y, v.z]))
 	if not _car.controls_enabled:
@@ -914,12 +948,18 @@ func _pack_state() -> Array:
 	for c in _cars:
 		var q := c.global_transform.basis.get_rotation_quaternion()
 		var p := c.global_position
-		# У марионетки (машина живого игрока на сервере) linear_velocity
-		# врёт: у замороженного кинематического тела Godot пересчитывает её
-		# по сдвигу трансформа и завышает вдвое. Берём скорость, присланную
-		# владельцем, — по ней второй клиент и экстраполирует.
-		var v: Vector3 = c._snap_vel \
-				if c.net_role == Car.NetRole.PUPPET else c.linear_velocity
+		var v := c.linear_velocity
+		# Машину живого игрока ретранслируем КАК ПРИСЛАЛ владелец (сырое
+		# последнее состояние), а не позицию серверной марионетки: та сама
+		# сглаживает и экстраполирует, и пересылка её трансформа давала
+		# ДВОЙНОЕ сглаживание — у второго игрока машина шла рывками. Плюс
+		# linear_velocity замороженного тела и так врёт (Godot считает её
+		# по сдвигу трансформа). Серверная марионетка остаётся для физики
+		# самого сервера: боксы, оружие, боты.
+		if c.net_role == Car.NetRole.PUPPET and c._snap_seen:
+			p = c._snap_pos
+			q = c._snap_rot
+			v = c._snap_vel
 		xf.append_array(PackedFloat32Array([
 				p.x, p.y, p.z, q.x, q.y, q.z, q.w, v.x, v.y, v.z]))
 		flags.append(c.weapon + 1)
@@ -965,10 +1005,14 @@ func _rx_pstate(xf: PackedFloat32Array) -> void:
 	var car := _cars[slot]
 	if car.net_role != Car.NetRole.PUPPET:
 		return
-	car.net_apply_snapshot(
-			Vector3(xf[0], xf[1], xf[2]),
-			Quaternion(xf[3], xf[4], xf[5], xf[6]).normalized(),
-			Vector3(xf[7], xf[8], xf[9]))
+	var pos := Vector3(xf[0], xf[1], xf[2])
+	var vel := Vector3(xf[7], xf[8], xf[9])
+	# Битые данные (NaN/бесконечность) отравили бы марионетку и снимки
+	# ВСЕМ клиентам — молча выбрасываем пакет.
+	if not (pos.is_finite() and vel.is_finite()):
+		return
+	car.net_apply_snapshot(pos,
+			Quaternion(xf[3], xf[4], xf[5], xf[6]).normalized(), vel)
 
 
 ## Клиент просит выстрел. Оружие по-прежнему применяет ТОЛЬКО сервер:
@@ -1022,8 +1066,13 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	# как раз и просил отличать настоящего человека от ботов.
 	var rival := 1 - slot
 	_attach_marker(rival, true)
+	var rival_here := (taken & (1 << rival)) != 0
 	if _rival_marker:
-		_rival_marker.visible = (taken & (1 << rival)) != 0
+		_rival_marker.visible = rival_here
+	# На карте — те же цвета: своя точка зелёная, живой соперник оранжевый.
+	if _minimap:
+		_minimap.my_index = slot
+		_minimap.rival_index = rival if rival_here else -1
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -1141,6 +1190,8 @@ func _rx_slot_taken(slot: int, taken: bool) -> void:
 	if _rival_marker == null or Net.my_slot < 0 or slot == Net.my_slot:
 		return
 	_rival_marker.visible = taken
+	if _minimap:
+		_minimap.rival_index = slot if taken else -1
 
 
 ## Клиент подсел к уже идущему заезду — отсчёта не будет, включаемся сразу.

@@ -42,6 +42,14 @@ var _sm_prev := Vector3.ZERO
 var _sm_steps: Array[float] = []
 var _sm_back := 0
 var _sm_frames := 0
+# Тот же замер отдельно для машины СОПЕРНИКА-ИГРОКА (слот 1-мой): она идёт
+# двойным прыжком клиент→сервер→клиент, и жалоба «противник дёргается»
+# была именно на неё. Осмыслен только при двух клиентах — без второго
+# игрока слот ведёт бот и попадает в общий замер.
+var _rv_prev := Vector3.ZERO
+var _rv_steps: Array[float] = []
+var _rv_back := 0
+var _rv_frames := 0
 
 
 func _ready() -> void:
@@ -100,6 +108,14 @@ func _physics_process(delta: float) -> void:
 	var jitter := _jitter()
 	print("  марионетка: шаг расходится со скоростью на %.1f%%, рывков назад %d из %d"
 			% [jitter, _sm_back, _sm_frames])
+	# Машина соперника-игрока (только при двух клиентах): двойной прыжок
+	# клиент→сервер→клиент. Критерий как у бота + рывки назад = 0.
+	if _rv_frames >= 30:
+		var rvj := _jitter(_rv_steps)
+		print("  соперник-игрок: шаг расходится на %.1f%%, рывков назад %d из %d"
+				% [rvj, _rv_back, _rv_frames])
+		_ok["соперник-игрок идёт ровно"] = rvj < 35.0
+		_ok["соперника не дёргает назад"] = _rv_back == 0
 	# Марионетка: пройденное за кадр сходится с присланной скоростью.
 	# Порог 35%. Он ДОЛЖЕН учитывать реальный канал, а не локалхост:
 	#   локалхост      2-5%   (пакеты идут ровно)
@@ -125,7 +141,17 @@ func _physics_process(delta: float) -> void:
 ## физики, и почти все шаги нулевые (тоже проверено на себе).
 func _sample_smoothness(delta: float) -> void:
 	var idx := 2 if Net.my_slot != 2 else 3     # заведомо бот-марионетка
-	var car: Car = _main._cars[idx]
+	_sample_one(_main._cars[idx], delta, _sm_steps, false)
+	# Соперник-игрок (если второй клиент подключён — иначе это бот и он
+	# уже покрыт общим замером, второй раз не считаем).
+	var rv := 1 - Net.my_slot
+	if rv >= 0 and rv < _main._cars.size() and _main._rival_marker != null \
+			and _main._rival_marker.visible:
+		_sample_one(_main._cars[rv], delta, _rv_steps, true)
+
+
+func _sample_one(car: Car, delta: float, steps: Array[float],
+		rival: bool) -> void:
 	var pos := car.global_position
 	# Скорость берём ИЗ СНИМКА, а не из car.linear_velocity: у замороженного
 	# кинематического тела Godot пересчитывает linear_velocity сам, по сдвигу
@@ -134,27 +160,40 @@ func _sample_smoothness(delta: float) -> void:
 	# интерполяцию, которая была не виновата.
 	var vel := car._snap_vel
 	vel.y = 0.0
-	if _sm_prev != Vector3.ZERO and vel.length() > 5.0:
-		var step := pos - _sm_prev
+	var prev := _rv_prev if rival else _sm_prev
+	if prev != Vector3.ZERO and vel.length() > 5.0:
+		var step := pos - prev
 		step.y = 0.0
 		# Шаг ПРОТИВ хода — тот самый рывок назад от экстраполяции.
-		if step.length() > 0.001 				and step.normalized().dot(vel.normalized()) < -0.2:
-			_sm_back += 1
+		if step.length() > 0.001 \
+				and step.normalized().dot(vel.normalized()) < -0.2:
+			if rival:
+				_rv_back += 1
+			else:
+				_sm_back += 1
 		var expected := vel.length() * delta
 		if expected > 0.001:
-			_sm_steps.append(absf(step.length() - expected) / expected)
-		_sm_frames += 1
-	_sm_prev = pos
+			steps.append(absf(step.length() - expected) / expected)
+		if rival:
+			_rv_frames += 1
+		else:
+			_sm_frames += 1
+	if rival:
+		_rv_prev = pos
+	else:
+		_sm_prev = pos
 
 
 ## Средняя относительная невязка «шаг против скорости», в процентах.
-func _jitter() -> float:
-	if _sm_steps.size() < 30:
+func _jitter(steps: Array[float] = []) -> float:
+	if steps.is_empty():
+		steps = _sm_steps
+	if steps.size() < 30:
 		return 999.0
 	var sum := 0.0
-	for v: float in _sm_steps:
+	for v: float in steps:
 		sum += v
-	return sum / _sm_steps.size() * 100.0
+	return sum / steps.size() * 100.0
 
 
 func _fail(reason: String) -> void:

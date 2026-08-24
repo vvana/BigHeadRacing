@@ -120,6 +120,10 @@ var _touch_cars := {}           # машины в контакте на прош
 # Для капа боковых «пинков» о рёбра полотна на ровной езде:
 var _prev_hvel := Vector3.ZERO  # горизонтальная скорость прошлого кадра
 var _ext_push_time := 0.0       # окно после честного толчка (таран/взрыв)
+# Защита от «депенетрации» марионетки (см. кап в _physics_process):
+var _puppet_touch := false      # на прошлом кадре касались машины-марионетки
+var _post_vel := Vector3.ZERO   # скорость в КОНЦЕ прошлого кадра (после правок)
+var _blast_time := 0.0          # окно после взрыва: кап марионетки отключён
 var _track_ang_abs := 0.0       # |угол носа к оси трассы|, ставит _clamp_heading
 var _side_speed := 0.0          # боковой снос с последнего кадра езды (дым)
 var _smoke: Array[CPUParticles3D] = []  # дым из-под задних колёс (занос)
@@ -301,6 +305,19 @@ func _physics_process(delta: float) -> void:
 			use_weapon()
 		_follow_snapshot(delta)
 		return
+	# Кап «депенетрации» от марионетки. Чужая машина по сети — замороженное
+	# кинематическое тело, которое ТЕЛЕПОРТИРУЕТСЯ к снимкам; шагнув в наш
+	# кузов (особенно на рывке канала), решатель выдавливает нас диким
+	# разовым импульсом — тот самый «огромный импульс ускорения при ударе».
+	# Всё, что физика добавила к скорости сверх конца нашего прошлого кадра,
+	# ограничиваем 5 м/с. Честный рикошет машин добавляется НАШИМ импульсом
+	# в _bounce_off_cars (кап его не трогает — тот идёт позже в этом же
+	# кадре), а толчок взрыва защищён окном _blast_time.
+	if _puppet_touch and _blast_time <= 0.0:
+		var dv_solver := linear_velocity - _post_vel
+		if dv_solver.length() > 5.0:
+			linear_velocity = _post_vel + dv_solver.limit_length(5.0)
+	_puppet_touch = false   # заново выставит _bounce_off_cars этим кадром
 	_apply_suspension(delta)
 	var on_ground := _grounded_wheels >= 2
 	var hh := linear_velocity
@@ -420,9 +437,11 @@ func _physics_process(delta: float) -> void:
 	for p in _smoke:
 		p.emitting = smoking
 	_ext_push_time = maxf(0.0, _ext_push_time - delta)
-	# Память для капа боковых пинков — в самом конце, после всех правок.
+	_blast_time = maxf(0.0, _blast_time - delta)
+	# Память для капов — в самом конце, после всех правок скорости.
 	_prev_hvel = linear_velocity
 	_prev_hvel.y = 0.0
+	_post_vel = linear_velocity
 
 
 ## Таймеры эффектов оружия: заморозка, ускорение, занос, «призрак».
@@ -502,6 +521,8 @@ func _bounce_off_cars() -> void:
 			continue
 		var id := other.get_instance_id()
 		now[id] = true
+		if other.net_role == NetRole.PUPPET:
+			_puppet_touch = true
 		# Заморозка заразна: коснулся «синей» машины — перенял остаток
 		# её дебафа (и дальше передаёшь сам).
 		if other._freeze_time > 0.2 and _freeze_time <= 0.0:
@@ -521,7 +542,12 @@ func _bounce_off_cars() -> void:
 		apply_central_force(away * 70.0 * mass * 0.1)
 		if _touch_cars.has(id):
 			continue
-		var closing := (other.linear_velocity - linear_velocity).dot(away)
+		# Скорость соперника — через contact_velocity(): у марионетки
+		# linear_velocity врёт (Godot считает её по сдвигу замороженного
+		# трансформа и на рывке канала выдаёт десятки м/с). Плюс кап 20:
+		# рикошет от любого мусора в данных не превысит толчка 8 м/с.
+		var other_vel := other.contact_velocity()
+		var closing := minf((other_vel - linear_velocity).dot(away), 20.0)
 		if closing > 0.5:
 			apply_central_impulse(away * closing * 0.4 * mass)
 			# Искры в точке удара. Обе машины видят один и тот же контакт —
@@ -535,7 +561,7 @@ func _bounce_off_cars() -> void:
 		# плечо × относительная скорость соперника. Продольный таран мимо
 		# центра «поддевает» корму/нос — машину доворачивает, как в RnRR.
 		# Центральный импульс выше момента не даёт (проходит через центр).
-		var rel := other.linear_velocity - linear_velocity
+		var rel := other_vel - linear_velocity
 		rel.y = 0.0
 		var lever := -away * minf(dist * 0.5, 1.5)
 		var spin := lever.cross(rel.limit_length(15.0)).y * bump_spin
@@ -550,9 +576,21 @@ func _bounce_off_cars() -> void:
 
 ## Сброс памяти скорости. Звать при телепорте/респавне: иначе защита
 ## приземления «вернёт» скорость, которой у машины уже нет.
+## Скорость машины для расчётов столкновений. У марионетки linear_velocity
+## брать нельзя: Godot пересчитывает её по сдвигу замороженного трансформа
+## (завышает вдвое, а на рывке канала — многократно), берём присланную.
+func contact_velocity() -> Vector3:
+	return _snap_vel if net_role == NetRole.PUPPET else linear_velocity
+
+
 func reset_speed_memory() -> void:
 	_recent_hspeed = 0.0
 	_land_protect = 0.0
+	# И память капа марионетки: после телепорта (взрыв, респавн) стакан
+	# «скорость конца прошлого кадра» протух — кап мог бы «вернуть» до
+	# 5 м/с только что обнулённой скорости.
+	_post_vel = Vector3.ZERO
+	_puppet_touch = false
 
 
 func _player_control(delta: float, on_ground: bool) -> void:
@@ -1409,6 +1447,7 @@ func push_from_blast(dir: Vector3, power: float, spin := 0.0,
 		return
 	_forward_fx(NetFx.BLAST, [dir, power, spin, lift])
 	_ext_push_time = maxf(_ext_push_time, 0.7)
+	_blast_time = maxf(_blast_time, 0.4)  # кап марионетки толчок не съедает
 	apply_central_impulse((dir + Vector3.UP * lift).normalized()
 			* power * mass)
 	if lift > 0.05:

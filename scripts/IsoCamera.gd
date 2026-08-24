@@ -27,4 +27,8 @@ func _physics_process(delta: float) -> void:
 	if not target:
 		return
 	var desired := target.global_position + _look_offset
+	# NaN в позиции цели отравил бы камеру навсегда (lerp с NaN — NaN):
+	# кадр пропускаем, машину вернёт страховка в Main._check_recovery.
+	if not desired.is_finite():
+		return
 	global_position = global_position.lerp(desired, follow_speed * delta)

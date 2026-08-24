@@ -607,6 +607,19 @@ func _build_decor() -> void:
 	TrackDecor.new().build(self)
 
 
+## Ось трассы в плане (X,Z) и полуширина полотна в тех же точках — для
+## мини-карты. step — через сколько сэмплов брать точку (SAMPLES на круг).
+func plan_samples(step := 8) -> Dictionary:
+	var pts := PackedVector2Array()
+	var half := PackedFloat32Array()
+	var i := 0
+	while i < _pts.size():
+		pts.append(Vector2(_pts[i].x, _pts[i].z))
+		half.append(_widths[i])
+		i += step
+	return {"points": pts, "half": half}
+
+
 ## Горизонтальное расстояние от точки до оси трассы (для детекта вылета).
 func distance_from_axis(world_pos: Vector3) -> float:
 	var p := _curve.sample_baked(_curve.get_closest_offset(world_pos))
