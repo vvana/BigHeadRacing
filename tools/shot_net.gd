@@ -21,7 +21,8 @@ func _ready() -> void:
 		_out = args[1]
 	DirAccess.make_dir_recursive_absolute(_out)
 	_main = get_parent() as Node3D
-	Net.join_server(addr, Net.PORT)
+	# remember=false: не затирать игроку сохранённый адрес VDS (net.cfg).
+	Net.join_server(addr, Net.PORT, false)
 
 
 func _shot(file: String) -> void:

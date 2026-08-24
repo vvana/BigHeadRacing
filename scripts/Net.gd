@@ -89,10 +89,15 @@ func start_server() -> bool:
 	return true
 
 
-func join_server(address: String, p: int) -> bool:
+## remember=false — для тестовых стендов: они бьют в 127.0.0.1, и запись
+## этого адреса в user://net.cfg затирала игроку адрес VDS — после
+## прогона тестов игра «переставала подключаться» («сервер не ответил»),
+## хотя сервер был жив. Пойманы на живом пользователе 24.08.
+func join_server(address: String, p: int, remember := true) -> bool:
 	host = address
 	port = p
-	save_config()
+	if remember:
+		save_config()
 	var peer := ENetMultiplayerPeer.new()
 	# Каналов столько же, сколько у сервера (ENet берёт минимум из двух).
 	var err := peer.create_client(address, p, 8)

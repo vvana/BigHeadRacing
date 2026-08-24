@@ -60,7 +60,9 @@ func _ready() -> void:
 			addr = a
 			break
 	print("  сервер: %s:%d" % [addr, Net.PORT])
-	Net.join_server(addr, Net.PORT)
+	# remember=false: иначе каждый прогон стенда затирал бы игроку
+	# сохранённый адрес VDS в user://net.cfg своим 127.0.0.1.
+	Net.join_server(addr, Net.PORT, false)
 
 
 func _physics_process(delta: float) -> void:
