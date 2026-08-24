@@ -8,7 +8,13 @@ const AI_COUNT := 3
 # По сети машин всегда 4: слоты 0 и 1 — живые игроки (пустой слот до
 # подключения ведёт бот), 2 и 3 — боты.
 const NET_CARS := 4
-const SNAP_HZ := 20.0           # снимков состояния в секунду (сервер → клиенты)
+# Снимков состояния в секунду — с частотой физики. На машину уходит 43 байта,
+# на четыре — меньше 200, то есть ~10 КБ/с на клиента: для двух игроков это
+# ничто. А ровность движения от частоты зависит прямо: замер «насколько
+# пройденный за кадр путь сходится с присланной скоростью» (tools/test_net.gd)
+# даёт 5.0% при 30 снимках в секунду и 1.2% при 60 (эталон одиночной игры —
+# 0.3%). Игрок жаловался как раз на дёрганое движение, так что берём 60.
+const SNAP_HZ := 60.0
 # Сколько ждать ВТОРОГО живого игрока после подключения первого.
 # Не дождались — едем по старинке, пустой слот берёт бот.
 const LOBBY_WAIT := 5.0
@@ -173,6 +179,14 @@ func _spawn_cars() -> void:
 ## Заменить визуальную модель машины (при получении ростера с сервера
 ## модель может смениться — каждый игрок выбирает свою).
 func _set_car_model(car: Car, id: String) -> void:
+	# Выделенному серверу модели НЕ НУЖНЫ: он ничего не рисует. Мало того,
+	# они вредны — headless-рендер на каждый меш сыпет «Parameter m is null»,
+	# и journald, поймав тысячи строк за секунду, включает rate limit и
+	# выбрасывает ВСЁ, включая наши [net]-сообщения. Плюс ~100 МБ памяти на
+	# однопроцессорной VDS. Физика от моделей не зависит: форма корпуса
+	# строится в Car._build_collision.
+	if Net.is_server():
+		return
 	var old := car.get_node_or_null("CarModel")
 	if old:
 		car.remove_child(old)
@@ -393,6 +407,12 @@ func _process(delta: float) -> void:
 		# В лобби пробел просит сервер начать, не дожидаясь второго игрока.
 		if _lobby_label != null and _lobby_label.visible 				and Input.is_action_just_pressed("ui_accept"):
 			_rx_start_request.rpc_id(1)
+		# Своя машина клиент-авторитетна — и возврат на трассу (R и
+		# автовозврат) для неё делаем мы, сервер её не двигает.
+		if _car != null and _car.net_role == Car.NetRole.OWNED:
+			if Input.is_action_just_pressed("respawn"):
+				_respawn_car(_my_index())
+			_check_recovery(delta)
 		return
 	if Input.is_action_just_pressed("respawn"):
 		_respawn_car(0)
@@ -453,6 +473,12 @@ func _respawn_car(i: int) -> void:
 func _check_recovery(delta: float) -> void:
 	for i in _cars.size():
 		var car := _cars[i]
+		# По сети машину живого игрока возвращает ЕЁ клиент (она у него
+		# клиент-авторитетна): сервер марионетку не двигает, а клиент
+		# правит только свою.
+		if car.net_role == Car.NetRole.PUPPET \
+				or (Net.is_client() and i != _my_index()):
+			continue
 		if not car.alive:
 			_offtrack_time[i] = 0.0
 			_flip_time[i] = 0.0
@@ -465,7 +491,8 @@ func _check_recovery(delta: float) -> void:
 		var dist := _track.distance_from_axis(car.global_position)
 		if dist > _track.half_width_at_pos(car.global_position) + OFFTRACK_MARGIN:
 			_offtrack_time[i] += delta
-			var wait := OFFTRACK_WAIT_PLAYER if i == 0 else OFFTRACK_WAIT_AI
+			var wait := OFFTRACK_WAIT_PLAYER if i == _my_index() \
+					else OFFTRACK_WAIT_AI
 			reason = "Вне трассы!"
 			left = wait - _offtrack_time[i]
 			if _offtrack_time[i] >= wait:
@@ -516,6 +543,8 @@ func _check_recovery(delta: float) -> void:
 
 
 func _setup_environment() -> void:
+	if Net.is_server():
+		return   # см. _set_car_model: сервер без косметики
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-55, -30, 0)
 	sun.shadow_enabled = true
@@ -738,22 +767,30 @@ func _setup_hud() -> void:
 
 
 # ════════════════════ СЕТЕВАЯ ЧАСТЬ ════════════════════
-# Модель — выделенный сервер. Он один считает физику и рассылает снимки;
-# клиенты шлют ввод и рисуют. Исключение — СВОЯ машина на клиенте: она
-# считается локально (иначе руль отвечал бы через пинг), а снимок сервера
-# её мягко подправляет (Car.net_correct).
+# Модель — выделенный сервер, но машины живых игроков КЛИЕНТ-АВТОРИТЕТНЫ:
+# каждую считает её собственный клиент и шлёт серверу состояние
+# (_rx_pstate), сервер ведёт её марионеткой и ретранслирует второму
+# игроку. Ботов и всё оружие считает сервер. Прежняя схема («сервер
+# считает всех, клиентскую копию мягко подтягивает») на реальном канале
+# дёргала машину: серверное состояние отстаёт на пинг, подтяжка тянула
+# назад каждый снимок, а невязка больше 5 м давала телепорт.
+# Эффекты оружия по машине игрока сервер пересылает владельцу (_rx_fx) —
+# физику толчка/разворота/телепорта применяет клиент.
 
 
 ## Сервер: подключился игрок — слот ему уже выдал Net, здесь переводим
-## машину этого слота с бота на присланный ввод.
+## машину этого слота с бота на марионетку: физику считает клиент игрока
+## и присылает состояние (_rx_pstate).
 func _on_peer_joined(_id: int, slot: int) -> void:
 	if slot < 0 or slot >= _cars.size():
 		return
 	var car := _cars[slot]
-	car.net_role = Car.NetRole.SERVER_INPUT
-	car.is_player = false
-	car.net_th = 0.0
-	car.net_st = 0.0
+	car.net_make_puppet()
+	# О занятии слота сообщаем СРАЗУ, до всех ветвлений. Раньше это стояло в
+	# конце, и когда второй игрок запускал заезд своим подключением, функция
+	# выходила раньше отправки: у первого игрока метка живого соперника так и
+	# не загоралась. Поймано двухклиентским прогоном теста.
+	_rx_slot_taken.rpc(slot, true)
 	if _net_started:
 		_rx_lobby.rpc(Net.slot_of_peer.size(), 0)
 		return
@@ -772,15 +809,12 @@ func _on_peer_joined(_id: int, slot: int) -> void:
 func _on_peer_left(_id: int, slot: int) -> void:
 	if slot < 0 or slot >= _cars.size():
 		return
-	# Машину бросил живой игрок — возвращаем её боту. Иначе она осталась
-	# бы с последним присланным вводом (например, газ в пол) навсегда.
+	# Машину бросил живой игрок — возвращаем её боту. Иначе она зависла бы
+	# марионеткой на последнем присланном состоянии навсегда.
 	var car := _cars[slot]
-	car.net_role = Car.NetRole.LOCAL
-	car.is_player = false
-	car.net_th = 0.0
-	car.net_st = 0.0
-	car.net_hb = false
+	car.net_make_local()
 	_rx_lobby.rpc(Net.slot_of_peer.size(), maxi(ceili(_lobby_wait), 0))
+	_rx_slot_taken.rpc(slot, false)
 	# Ушли все — заезд некому доигрывать. Перезапускаем трассу, чтобы
 	# следующая пара получила чистую гонку, а не догоняла ботов.
 	if Net.slot_of_peer.is_empty() and _net_started:
@@ -797,8 +831,23 @@ func _reset_server_after_race() -> void:
 		get_tree().reload_current_scene()
 
 
+## Представиться серверу и ЖДАТЬ ОТВЕТА, повторяя запрос.
+## Один выстрел ненадёжен: сервер перезапускает сцену после каждого заезда
+## (8 секунд), и hello, посланный в этот момент, адресуется узлу /root/Main,
+## которого прямо сейчас нет — RPC молча пропадает, а клиент навсегда
+## остаётся с чужими машинами-марионетками и без своей. Ровно так и вышло
+## при проверке: подключился сразу после чужого финиша — и завис.
 func _say_hello() -> void:
-	_rx_hello.rpc_id(1, GameState.selected_car_id)
+	for attempt in 12:
+		if Net.my_slot >= 0 or not Net.is_client():
+			return
+		_rx_hello.rpc_id(1, GameState.selected_car_id)
+		await get_tree().create_timer(1.0).timeout
+		if not is_inside_tree():
+			return
+	if Net.my_slot < 0 and _lobby_label:
+		_lobby_label.text = "Сервер не выдал слот.
+Esc — в гараж"
 
 
 func _start_net_race() -> void:
@@ -836,21 +885,24 @@ func _tick_lobby(delta: float) -> void:
 		_rx_lobby.rpc(Net.slot_of_peer.size(), ceili(_lobby_wait))
 
 
-## Клиент: свой ввод — каждый кадр физики. Непрерывные оси идут НЕнадёжным
-## пакетом (потерять один кадр газа не страшно, а ждать переотправки —
-## страшно), разовые нажатия — надёжным: потерянный выстрел не восстановить.
+## Клиент: каждый кадр физики шлёт серверу СОСТОЯНИЕ своей машины — она
+## клиент-авторитетна, физика (и прыжок, и руль) целиком локальная, сеть
+## её не трогает вовсе. Состояние идёт НЕнадёжным пакетом (потерянный кадр
+## перекроет следующий), выстрел — надёжным: его не восстановить.
 func _client_tick(_delta: float) -> void:
-	if Net.my_slot < 0 or _car == null or not _car.controls_enabled:
+	if Net.my_slot < 0 or _car == null \
+			or _car.net_role != Car.NetRole.OWNED:
 		return
-	_rx_input.rpc_id(1,
-			Input.get_axis("brake", "accelerate"),
-			Input.get_axis("steer_right", "steer_left"),
-			Input.is_action_pressed("handbrake"))
-	var jump := Input.is_action_just_pressed("jump")
-	var fire := Input.is_action_just_pressed("fire") \
-			or Input.is_action_just_pressed("drop")
-	if jump or fire:
-		_rx_press.rpc_id(1, jump, fire)
+	var p := _car.global_position
+	var q := _car.global_transform.basis.get_rotation_quaternion()
+	var v := _car.linear_velocity
+	_rx_pstate.rpc_id(1, PackedFloat32Array([
+			p.x, p.y, p.z, q.x, q.y, q.z, q.w, v.x, v.y, v.z]))
+	if not _car.controls_enabled:
+		return
+	if Input.is_action_just_pressed("fire") \
+			or Input.is_action_just_pressed("drop"):
+		_rx_press.rpc_id(1)
 
 
 ## Снимок: на машину 10 float (позиция, кватернион, скорость) и 3 байта
@@ -862,7 +914,12 @@ func _pack_state() -> Array:
 	for c in _cars:
 		var q := c.global_transform.basis.get_rotation_quaternion()
 		var p := c.global_position
-		var v := c.linear_velocity
+		# У марионетки (машина живого игрока на сервере) linear_velocity
+		# врёт: у замороженного кинематического тела Godot пересчитывает её
+		# по сдвигу трансформа и завышает вдвое. Берём скорость, присланную
+		# владельцем, — по ней второй клиент и экстраполирует.
+		var v: Vector3 = c._snap_vel \
+				if c.net_role == Car.NetRole.PUPPET else c.linear_velocity
 		xf.append_array(PackedFloat32Array([
 				p.x, p.y, p.z, q.x, q.y, q.z, q.w, v.x, v.y, v.z]))
 		flags.append(c.weapon + 1)
@@ -885,35 +942,45 @@ func _rx_hello(car_id: String) -> void:
 	# ростер всем, иначе соперник видел бы не ту модель.
 	_roster[slot] = car_id
 	_set_car_model(_cars[slot], car_id)
-	_rx_welcome.rpc_id(id, slot, _roster)
+	_rx_welcome.rpc_id(id, slot, _roster, _taken_mask())
 	_rx_roster.rpc(_roster)
+	if _net_started:
+		# Заезд уже идёт: отсчёт этот игрок пропустил, и без отдельной
+		# команды он навсегда остался бы в лобби с выключенным управлением.
+		_rx_race_running.rpc_id(id)
 	_rx_lobby.rpc(Net.slot_of_peer.size(),
 			0 if _net_started else maxi(ceili(_lobby_wait), 0))
 
 
+## Клиент прислал состояние СВОЕЙ машины (она клиент-авторитетна). Сервер
+## ведёт её марионеткой: _follow_snapshot экстраполирует между пакетами и
+## сглаживает их неровный приход — как у марионеток на клиенте.
 @rpc("any_peer", "call_remote", "unreliable_ordered")
-func _rx_input(th: float, st: float, hb: bool) -> void:
-	if not Net.is_server():
+func _rx_pstate(xf: PackedFloat32Array) -> void:
+	if not Net.is_server() or xf.size() < 10:
 		return
 	var slot: int = Net.slot_of_peer.get(multiplayer.get_remote_sender_id(), -1)
 	if slot < 0 or slot >= _cars.size():
 		return
-	_cars[slot].net_th = clampf(th, -1.0, 1.0)
-	_cars[slot].net_st = clampf(st, -1.0, 1.0)
-	_cars[slot].net_hb = hb
+	var car := _cars[slot]
+	if car.net_role != Car.NetRole.PUPPET:
+		return
+	car.net_apply_snapshot(
+			Vector3(xf[0], xf[1], xf[2]),
+			Quaternion(xf[3], xf[4], xf[5], xf[6]).normalized(),
+			Vector3(xf[7], xf[8], xf[9]))
 
 
+## Клиент просит выстрел. Оружие по-прежнему применяет ТОЛЬКО сервер:
+## снаряды/мины настоящие лишь у него, клиенты видят инертные копии.
 @rpc("any_peer", "call_remote", "reliable")
-func _rx_press(jump: bool, fire: bool) -> void:
+func _rx_press() -> void:
 	if not Net.is_server():
 		return
 	var slot: int = Net.slot_of_peer.get(multiplayer.get_remote_sender_id(), -1)
 	if slot < 0 or slot >= _cars.size():
 		return
-	if jump:
-		_cars[slot].net_jump = true
-	if fire:
-		_cars[slot].net_fire = true
+	_cars[slot].net_fire = true
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -924,8 +991,16 @@ func _rx_start_request() -> void:
 
 # ── сервер → клиенты ──
 
+## Битовая маска слотов, за которыми сидит ЖИВОЙ игрок.
+func _taken_mask() -> int:
+	var mask := 0
+	for sl: int in Net.slot_of_peer.values():
+		mask |= 1 << sl
+	return mask
+
+
 @rpc("authority", "call_remote", "reliable")
-func _rx_welcome(slot: int, roster: PackedStringArray) -> void:
+func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	Net.my_slot = slot
 	_apply_roster(roster)
 	if slot < 0 or slot >= _cars.size():
@@ -942,7 +1017,13 @@ func _rx_welcome(slot: int, roster: PackedStringArray) -> void:
 	# Маркеры: своя машина зелёная, второй ЖИВОЙ игрок — оранжевый.
 	# Боты без маркера — так «реальный игрок» виден с первого взгляда.
 	_attach_marker(slot)
-	_attach_marker(1 - slot, true)
+	# Оранжевая стрелка — признак ЖИВОГО соперника, а не «второй машины».
+	# Пока слот пустует, его ведёт бот, и метка над ним врала бы: игрок
+	# как раз и просил отличать настоящего человека от ботов.
+	var rival := 1 - slot
+	_attach_marker(rival, true)
+	if _rival_marker:
+		_rival_marker.visible = (taken & (1 << rival)) != 0
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -1004,18 +1085,74 @@ func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray) -> void:
 		var rot := Quaternion(
 				xf[o + 3], xf[o + 4], xf[o + 5], xf[o + 6]).normalized()
 		var vel := Vector3(xf[o + 7], xf[o + 8], xf[o + 9])
-		if c.net_role == Car.NetRole.OWNED:
-			c.net_correct(pos, rot, vel)
-		else:
+		# СВОЯ машина клиент-авторитетна: её позицию, «жизнь» и «призрака»
+		# сервер не правит вовсе (раньше подтяжка сюда и давала рывки).
+		# Эффекты оружия по ней приходят отдельным RPC (_rx_fx), а от
+		# сервера ей нужны только выданное боксом оружие и значок эффекта.
+		if c.net_role != Car.NetRole.OWNED:
 			c.net_apply_snapshot(pos, rot, vel)
+			c.alive = (int(flags[f + 1]) & 1) != 0
+			# «Призрака» подливаем по чуть-чуть: пока сервер шлёт флаг,
+			# таймер не гаснет, а кончился флаг — быстро сойдёт на нет.
+			c._ghost_time = 0.3 if (int(flags[f + 1]) & 2) != 0 else 0.0
 		c.weapon = int(flags[f]) - 1
-		c.alive = (int(flags[f + 1]) & 1) != 0
-		# «Призрак» держим прямым присвоением: у марионетки не крутится
-		# _tick_effects, и таймер сам бы не убывал.
-		c._ghost_time = 0.3 if (int(flags[f + 1]) & 2) != 0 else 0.0
 		var kind := int(flags[f + 2]) - 2
 		if kind >= 0:
 			c.show_effect_icon(kind, 0.25)
+
+
+## Сервер: переслать эффект оружия владельцу машины (зовёт Car._forward_fx).
+## Машина живого игрока клиент-авторитетна — физику эффекта применит он.
+func net_forward_fx(car: Car, kind: int, args: Array) -> void:
+	if not Net.is_server():
+		return
+	var slot := _cars.find(car)
+	for pid: int in Net.slot_of_peer:
+		if Net.slot_of_peer[pid] == slot:
+			_rx_fx.rpc_id(pid, kind, args)
+			return
+
+
+## По НАШЕЙ машине применили оружие — физику эффекта (толчок, закрутку,
+## телепорт «призрака») считаем мы: машина клиент-авторитетна, и иначе
+## игрок удара просто не почувствовал бы.
+@rpc("authority", "call_remote", "reliable")
+func _rx_fx(kind: int, args: Array) -> void:
+	if _car == null or _car.net_role != Car.NetRole.OWNED:
+		return
+	match kind:
+		Car.NetFx.DESTROY:
+			_car.destroy()
+		Car.NetFx.BLAST:
+			if args.size() >= 4:
+				_car.push_from_blast(args[0], args[1], args[2], args[3])
+		Car.NetFx.FREEZE:
+			if args.size() >= 1:
+				_car.apply_freeze(args[0])
+		Car.NetFx.OIL:
+			_car.apply_oil_slip()
+		Car.NetFx.BOOST:
+			_car.apply_boost()
+
+
+## Слот занял или освободил живой игрок — показываем/прячем оранжевую метку.
+@rpc("authority", "call_remote", "reliable")
+func _rx_slot_taken(slot: int, taken: bool) -> void:
+	if _rival_marker == null or Net.my_slot < 0 or slot == Net.my_slot:
+		return
+	_rival_marker.visible = taken
+
+
+## Клиент подсел к уже идущему заезду — отсчёта не будет, включаемся сразу.
+@rpc("authority", "call_remote", "reliable")
+func _rx_race_running() -> void:
+	_net_started = true
+	if _lobby_label:
+		_lobby_label.visible = false
+	if _count_label:
+		_count_label.visible = false
+	for c in _cars:
+		c.controls_enabled = true
 
 
 @rpc("authority", "call_remote", "reliable")

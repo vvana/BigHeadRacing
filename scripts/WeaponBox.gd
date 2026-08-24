@@ -28,18 +28,22 @@ func _ready() -> void:
 	col.shape = box
 	add_child(col)
 
-	_mesh = MeshInstance3D.new()
-	var cube := BoxMesh.new()
-	cube.size = Vector3(1.1, 1.1, 1.1)
-	_mesh.mesh = cube
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.82, 0.15, 0.85)
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.emission_enabled = true
-	mat.emission = Color(0.9, 0.65, 0.1)
-	mat.emission_energy_multiplier = 1.4
-	_mesh.material_override = mat
-	add_child(_mesh)
+	# Крутящийся куб — косметика. Серверу он не нужен и вреден: headless-
+	# рендер сыпет по мешам «Parameter m is null» в stderr, journald от
+	# такого потока включает rate limit и глотает наши [net]-сообщения.
+	if not Net.is_server():
+		_mesh = MeshInstance3D.new()
+		var cube := BoxMesh.new()
+		cube.size = Vector3(1.1, 1.1, 1.1)
+		_mesh.mesh = cube
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(1.0, 0.82, 0.15, 0.85)
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.emission_enabled = true
+		mat.emission = Color(0.9, 0.65, 0.1)
+		mat.emission_energy_multiplier = 1.4
+		_mesh.material_override = mat
+		add_child(_mesh)
 
 	# На клиенте бокс — просто крутящийся куб: оружие выдаёт сервер и
 	# присылает его в снимке. Иначе клиент выдал бы себе своё, случайное.
@@ -50,6 +54,8 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	if _mesh == null:
+		return   # сервер: куба нет, крутить нечего
 	_mesh.rotate_y(1.6 * delta)
 	_mesh.rotation.x = 0.35 * sin(Time.get_ticks_msec() / 400.0)
 

@@ -49,6 +49,26 @@ func _ready() -> void:
 # следуют полотно, ограждения, обочина и декор.
 const FLAT_TRACK := false
 
+## Работаем ли выделенным сервером. Смотрим КОМАНДНУЮ СТРОКУ, а не autoload
+## Net, и вот почему: TrackBuilder используется ещё и в стендах, запускаемых
+## через `--script` (tools/test_curve.gd), а в режиме --script autoload'ы НЕ
+## загружаются. Обращение к Net там роняет компиляцию скрипта, стенд молча
+## ВИСНЕТ, и ошибка видна только в stderr. Ключ `-- --server` — то же самое
+## условие, что проверяет Net.wants_server().
+static func _headless_server() -> bool:
+	return OS.get_cmdline_user_args().has("--server")
+
+
+## Прицепить КОСМЕТИЧЕСКИЙ меш к телу. На выделенном сервере не цепляет:
+## коллизия — отдельный дочерний узел, физике меш не нужен, а headless-рендер
+## на каждый меш пишет в stderr «Parameter m is null» (см. _build_decor).
+func _add_visual(body: Node, mesh: MeshInstance3D) -> void:
+	if _headless_server():
+		mesh.queue_free()
+		return
+	body.add_child(mesh)
+
+
 ## Профиль высот: одна ГОРКА и больше ничего. Пары [доля круга, высота];
 ## между ключами с РАЗНОЙ высотой — плавная S-кривая, с одинаковой —
 ## ровное место.
@@ -380,7 +400,7 @@ func _build_ground() -> void:
 			"res://assets/models/track_env/cartoon/textures/grass_1.png")
 	mat.vertex_color_use_as_albedo = true
 	mesh.material_override = mat
-	ground.add_child(mesh)
+	_add_visual(ground, mesh)
 
 	var col := CollisionShape3D.new()
 	var shape := ConcavePolygonShape3D.new()
@@ -419,7 +439,7 @@ func _build_road() -> void:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.18, 0.18, 0.2)
 	road.material_override = mat
-	body.add_child(road)
+	_add_visual(body, road)
 
 	var col := CollisionShape3D.new()
 	var shape := ConcavePolygonShape3D.new()
@@ -525,7 +545,7 @@ func _build_ramps() -> void:
 		box.size = Vector3(6.0, 0.4, 5.0)
 		mesh.mesh = box
 		mesh.material_override = ramp_mat
-		ramp.add_child(mesh)
+		_add_visual(ramp, mesh)
 
 		var col := CollisionShape3D.new()
 		var shape := BoxShape3D.new()
@@ -540,8 +560,11 @@ func _build_ramps() -> void:
 
 
 ## Стартово-финишный створ: шахматная клетка на полотне. Арка, баннер и
-## стартовые огни — модели из ассетов (см. TrackDecor). Коллизий нет.
+## стартовые огни — модели из ассетов (см. TrackDecor). Коллизий нет,
+## поэтому на сервере не строится вовсе (см. _build_decor).
 func _build_start_line() -> void:
+	if _headless_server():
+		return
 	var white := StandardMaterial3D.new()
 	white.albedo_color = Color(0.94, 0.94, 0.94)
 	var black := StandardMaterial3D.new()
@@ -573,7 +596,14 @@ func _build_start_line() -> void:
 
 
 ## Декор из готовых ассетов — отдельным узлом (см. TrackDecor.gd).
+## Выделенному серверу КОСМЕТИКА не нужна: он ничего не рисует. И не просто
+## не нужна, а мешает — headless-рендер на каждый меш сыпет в stderr
+## «Parameter m is null», journald ловит тысячи строк за секунду, включает
+## rate limit и выбрасывает ВСЁ, включая наши [net]-сообщения: лог сервера
+## становится бесполезным. Плюс лишние меши на однопроцессорной VDS.
 func _build_decor() -> void:
+	if _headless_server():
+		return
 	TrackDecor.new().build(self)
 
 

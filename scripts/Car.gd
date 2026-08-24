@@ -72,24 +72,28 @@ var _freeze_time := 0.0         # замедление от ледышки (де
 var _boost_time := 0.0          # ускорение
 var _slip_time := 0.0           # занос от масляного пятна
 ## Кто ведёт эту машину. LOCAL — как в одиночной игре (игрок за клавиатурой
-## или бот). SERVER_INPUT — сервер крутит физику по вводу, присланному
-## клиентом. PUPPET — клиент НЕ считает эту машину, а тянет её к снимкам
-## сервера. OWNED — своя машина на клиенте: считается локально (иначе руль
-## отвечал бы через пинг), а снимки сервера мягко её подправляют.
-enum NetRole { LOCAL, SERVER_INPUT, PUPPET, OWNED }
+## или бот). PUPPET — здесь её физику НЕ считают, а тянут к присланным
+## снимкам: на клиенте это все чужие машины, на сервере — машины живых
+## игроков (они КЛИЕНТ-АВТОРИТЕТНЫ: состояние присылает клиент владельца).
+## OWNED — своя машина на клиенте: физика полностью локальная, сервер её
+## НЕ подправляет вовсе. Раньше сервер считал её сам и «мягко подтягивал»
+## клиентскую копию — на реальном канале серверное состояние отстаёт на
+## пинг, подтяжка тянула машину назад каждый снимок, а при невязке больше
+## 5 м телепортировала: те самые «рывки, играть невозможно».
+enum NetRole { LOCAL, PUPPET, OWNED }
 var net_role := NetRole.LOCAL
-var net_th := 0.0               # ввод, присланный клиентом: газ/тормоз
-var net_st := 0.0               # руль
-var net_hb := false             # ручник
-var net_jump := false           # разовые: гасятся сразу после применения
-var net_fire := false
+var net_fire := false           # сервер: клиент просил выстрел (гасится сразу)
+## Эффекты оружия, пересылаемые сервером владельцу машины (Main._rx_fx):
+## физику эффекта (толчок, разворот, телепорт) применяет клиент-владелец.
+enum NetFx { DESTROY, BLAST, FREEZE, OIL, BOOST }
 var has_marker := false         # над машиной висит стрелка-указатель
-var _snap_pos := Vector3.ZERO   # последний снимок с сервера
+# Последний снимок с сервера и его возраст. Марионетка тянется к нему,
+# ЭКСТРАПОЛИРУЯ по присланной скорости, — см. _follow_snapshot.
+var _snap_pos := Vector3.ZERO
 var _snap_rot := Quaternion.IDENTITY
 var _snap_vel := Vector3.ZERO
-var _snap_age := 0.0            # сколько секунд назад он пришёл
+var _snap_age := 0.0
 var _snap_seen := false
-
 var _status_icon: Sprite3D = null  # значок действующего эффекта над крышей
 var _status_kind := -1          # разовый значок (магнит): какой показываем
 var _status_time := 0.0         # и сколько ему осталось
@@ -155,6 +159,10 @@ func _ready() -> void:
 	collision_mask = 0b111
 	add_to_group("cars")
 	_build_collision()
+	# Форма корпуса нужна всегда (физика), а скорлупа льда, дым и значок
+	# эффекта — только там, где есть экран. См. Main._set_car_model.
+	if Net.is_server():
+		return
 	_build_ice_shell()
 	_build_smoke()
 	_build_status_icon()
@@ -282,6 +290,15 @@ func _build_smoke() -> void:
 
 func _physics_process(delta: float) -> void:
 	if net_role == NetRole.PUPPET:
+		# Таймеры эффектов тикают и у марионетки: серверу нужен живой
+		# «призрак» для снимков, а марионетке на клиенте — его мигание.
+		_tick_effects(delta)
+		# Сервер: выстрел живого игрока. Его машина здесь марионетка
+		# (клиент-авторитетна), но оружие по-прежнему применяет сервер —
+		# иначе снаряд бил бы по-разному на каждом экране.
+		if net_fire:
+			net_fire = false
+			use_weapon()
 		_follow_snapshot(delta)
 		return
 	_apply_suspension(delta)
@@ -299,9 +316,7 @@ func _physics_process(delta: float) -> void:
 		if _recent_hspeed > 1.0:
 			_recent_hdir = hh / _recent_hspeed
 	if alive and controls_enabled:
-		if net_role == NetRole.SERVER_INPUT:
-			_net_control(delta, on_ground)
-		elif is_player:
+		if is_player:
 			_player_control(delta, on_ground)
 		else:
 			_ai_control(delta, on_ground)
@@ -557,18 +572,8 @@ func _player_control(delta: float, on_ground: bool) -> void:
 		use_weapon()
 
 
-## Сервер ведёт машину по вводу, присланному клиентом. Разовые нажатия
-## (прыжок, выстрел) гасим сразу: RPC приходит между кадрами физики, и без
-## сброса одно нажатие сработало бы несколько кадров подряд.
-func _net_control(delta: float, on_ground: bool) -> void:
-	_drive(delta, on_ground, net_th, net_st, net_hb, net_jump)
-	net_jump = false
-	if net_fire:
-		net_fire = false
-		use_weapon()
-
-
-## Клиент получил снимок этой машины с сервера.
+## Пришёл снимок этой машины: с сервера — для марионеток на клиенте,
+## с клиента-владельца — для машины живого игрока на сервере.
 func net_apply_snapshot(pos: Vector3, rot: Quaternion, vel: Vector3) -> void:
 	_snap_pos = pos
 	_snap_rot = rot
@@ -580,39 +585,67 @@ func net_apply_snapshot(pos: Vector3, rot: Quaternion, vel: Vector3) -> void:
 		global_transform.basis = Basis(rot)
 
 
-## Марионетка: физику не считаем вовсе, тянемся к снимку. Снимки идут
-## ~20 раз в секунду, а кадров 60 — поэтому цель ЭКСТРАПОЛИРУЕТСЯ по
-## скорости из снимка, иначе машина едет рывками. Большая невязка
-## (респавн, телепорт после уничтожения) — не догоняем, а переставляем.
+## Марионетка: свою физику не считаем вовсе, тянемся к снимку. Снимки идут
+## реже кадров, поэтому цель ЭКСТРАПОЛИРУЕТСЯ по присланной скорости —
+## между пакетами машина продолжает ехать, а не ждёт следующего.
+##
+## ИСТОРИЯ ВОПРОСА (чтобы не переделывать это в третий раз). Жалобу на
+## «дёрганое движение» я сперва списал на эту функцию и переписал её дважды:
+## сначала на «едем от текущего места к последнему присланному», потом на
+## учебный буфер снимков с отставанием. Обе версии оказались ХУЖЕ исходной.
+## Замер «насколько пройденный за кадр путь сходится с присланной скоростью»
+## (см. tools/test_net.gd): исходная экстраполяция 1.7%, «от текущего места»
+## ~50%, буфер с отставанием 20.8%. Эталон одиночной игры — 0.3%.
+## Так что здесь всё в порядке, и трогать это не надо. Дёргало из-за подтяжки
+## СВОЕЙ машины к серверному состоянию — она удалена вовсе: своя машина
+## теперь клиент-авторитетна (см. NetRole.OWNED).
+##
+## Большая невязка (респавн, телепорт после уничтожения) — не догоняем, а
+## переставляем.
+# Насколько далеко вперёд разрешено угадывать положение марионетки, пока
+# нет свежего снимка. Подобрано ЗАМЕРАМИ НА ЖИВОМ СЕРВЕРЕ, двумя клиентами
+# (метрика — «шаг против присланной скорости», см. tools/test_net.gd):
+#   0.05 с → 42%   мало: в паузе между пакетами машина замирает и догоняет
+#   0.12 с → 25%   лучше всего
+#   0.22 с → 39%   много: уезжает вперёд и потом подолгу стоит
+# Локалхост даёт 2-5% при любом значении — там пакеты идут ровно, и подобрать
+# по нему было НЕЛЬЗЯ. Учебный буфер снимков с отставанием пробовал тоже:
+# 60% на интернете и 21% на локалхосте, то есть хуже везде.
+const MAX_EXTRAP := 0.12
 func _follow_snapshot(delta: float) -> void:
 	if not _snap_seen:
 		return
-	_snap_age += delta
+	# Возраст снимка ОГРАНИЧЕН. Без ограничения запоздавший пакет уводил
+	# цель далеко вперёд, а следующий снимок возвращал её назад — машину
+	# дёргало. На одном клиенте по локалхосту этого не видно (пакеты идут
+	# ровно), а на двух уже ловится: замер показывал 4 рывка назад за 419
+	# кадров у второго игрока.
+	_snap_age = minf(_snap_age + delta, MAX_EXTRAP)
 	var target := _snap_pos + _snap_vel * _snap_age
 	if global_position.distance_to(target) > 8.0:
 		global_position = target
 	else:
-		global_position = global_position.lerp(target, 0.35)
+		var next := global_position.lerp(target, 0.35)
+		# И вторая страховка: НАЗАД против собственного хода не едем вовсе.
+		# Лучше замереть на кадр (этого глаз не ловит), чем откатиться —
+		# откат читается как рывок.
+		var step := next - global_position
+		if _snap_vel.length() > 1.0 and step.dot(_snap_vel) < 0.0:
+			next = global_position
+		global_position = next
 	var cur := global_transform.basis.get_rotation_quaternion()
 	global_transform.basis = Basis(cur.slerp(_snap_rot, 0.35))
 	linear_velocity = _snap_vel
 
 
-## Своя машина на клиенте: она честно считается локально (иначе руль
-## отвечал бы через пинг), а сервер её мягко подтягивает. Резкий рывок
-## только при большой невязке — иначе машина «дрожала» бы на каждом снимке.
-func net_correct(pos: Vector3, rot: Quaternion, vel: Vector3) -> void:
-	if global_position.distance_to(pos) > 4.0:
-		global_position = pos
-		global_transform.basis = Basis(rot)
-		linear_velocity = vel
-		reset_speed_memory()
-		return
-	global_position = global_position.lerp(pos, 0.12)
-	linear_velocity = linear_velocity.lerp(vel, 0.12)
-
-
-## Перевод машины в режим марионетки (клиент): своя физика выключается.
+## Перевод машины в марионетку: своя физика выключается, позиция тянется
+## к присланным снимкам. На клиенте это все чужие машины, на сервере —
+## машины живых игроков (клиент-авторитетность).
+## ВАЖНО: подтяжки СВОЕЙ машины клиента к серверному состоянию больше нет
+## (был net_correct): серверная копия отстаёт на пинг, и любая подтяжка к
+## ней — от lerp до шагов по 8 см — на реальном канале ощущалась рывками,
+## а невязка больше 5 м давала телепорт. Теперь свою машину клиент считает
+## сам и САМ шлёт её состояние серверу (Main._client_tick → _rx_pstate).
 func net_make_puppet() -> void:
 	net_role = NetRole.PUPPET
 	is_player = false
@@ -620,6 +653,27 @@ func net_make_puppet() -> void:
 	freeze = true
 	for p in _smoke:
 		p.emitting = false
+
+
+## Обратно под бота (сервер: игрок вышел). Снимки владельца больше не
+## придут — без сброса _snap_seen машина зависла бы марионеткой навсегда.
+func net_make_local() -> void:
+	net_role = NetRole.LOCAL
+	is_player = false
+	freeze = false
+	_snap_seen = false
+	net_fire = false
+
+
+## Сервер: эффект оружия по машине живого игрока пересылается её клиенту —
+## машина клиент-авторитетна, и физику эффекта (толчок, закрутку, телепорт)
+## обязан применить владелец, иначе он его просто не почувствует.
+## Локальную часть (таймеры «призрака»/заморозки для снимков) сервер всё
+## равно ведёт у себя — поэтому вызывающий код после пересылки НЕ выходит.
+func _forward_fx(kind: int, args: Array = []) -> void:
+	if net_role == NetRole.PUPPET and race != null \
+			and race.has_method("net_forward_fx"):
+		race.net_forward_fx(self, kind, args)
 
 
 ## ИИ: едет к точке на оси трассы впереди себя, стреляет по машине в прицеле,
@@ -1121,7 +1175,7 @@ func use_weapon() -> void:
 		Weapons.AIRSTRIKE:
 			_use_airstrike()
 		Weapons.BOOST:
-			_boost_time = boost_duration
+			apply_boost()
 			FlashFx.spawn(get_parent(),
 					global_position + Vector3.UP * 0.5, 1.2,
 					Color(0.3, 0.9, 1.0))
@@ -1196,6 +1250,7 @@ func _use_airstrike() -> void:
 func destroy() -> void:
 	if not alive or is_ghost():
 		return
+	_forward_fx(NetFx.DESTROY)
 	FlashFx.spawn(get_parent(), global_position, 2.4, Color(1.0, 0.45, 0.1))
 	if track:
 		global_transform = track.respawn_transform(global_position)
@@ -1265,11 +1320,22 @@ func show_effect_icon(kind: int, duration: float) -> void:
 	_status_time = maxf(_status_time, duration)
 
 
+## Ускорение (бонус BOOST). Вынесено из use_weapon ради сети: на сервере
+## машина живого игрока — марионетка, тягу считает клиент-владелец, и без
+## пересылки буст не действовал бы вовсе.
+func apply_boost() -> void:
+	if not alive:
+		return
+	_forward_fx(NetFx.BOOST)
+	_boost_time = boost_duration
+
+
 ## Заморозка: машина «синеет» и едет медленнее. Дебаф ЗАРАЗЕН — при
 ## контакте машин передаётся остаток времени (см. _bounce_off_cars).
 func apply_freeze(duration: float) -> void:
 	if not alive:
 		return
+	_forward_fx(NetFx.FREEZE, [duration])
 	_freeze_time = maxf(_freeze_time, duration)
 
 
@@ -1286,6 +1352,7 @@ func apply_freeze(duration: float) -> void:
 func apply_oil_slip() -> void:
 	if not alive or _slip_time > 0.0:
 		return
+	_forward_fx(NetFx.OIL)
 	_slip_time = slip_duration
 	_bump_spin_time = slip_duration
 	_ext_push_time = slip_duration
@@ -1340,6 +1407,7 @@ func push_from_blast(dir: Vector3, power: float, spin := 0.0,
 		lift := 0.35) -> void:
 	if not alive:
 		return
+	_forward_fx(NetFx.BLAST, [dir, power, spin, lift])
 	_ext_push_time = maxf(_ext_push_time, 0.7)
 	apply_central_impulse((dir + Vector3.UP * lift).normalized()
 			* power * mass)
