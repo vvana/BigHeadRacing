@@ -28,8 +28,13 @@ func _physics_process(delta: float) -> void:
 			return
 		var length: float = track._curve.get_baked_length()
 		var off: float = fposmod(track.boost_pad_offsets[0] - 12.0, length)
-		var pos: Vector3 = track._curve.sample_baked(off)
-		var ahead: Vector3 = track._curve.sample_baked(fmod(off + 3.0, length))
+		# Плиты стоят со смещением от оси (boost_pad_laterals) — целимся
+		# в полосу плиты, а не в центр полотна.
+		var lat: float = track.boost_pad_laterals[0]
+		var pos: Vector3 = track._curve.sample_baked(off) \
+				+ track.right_at_offset(off) * lat
+		var ahead: Vector3 = track._curve.sample_baked(fmod(off + 3.0, length)) \
+				+ track.right_at_offset(fmod(off + 3.0, length)) * lat
 		var dir := (ahead - pos).normalized()
 		car.global_transform = Transform3D(
 				Basis.looking_at(dir), pos + Vector3(0, 0.62, 0))

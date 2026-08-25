@@ -29,32 +29,33 @@ var _slot_ids := PackedStringArray(["", "", "", ""])
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	visible = false
-	_font = load("res://assets/ui/Softie.ttf")
+	_font = UiKit.font()
 
-	var bg := ColorRect.new()
-	bg.color = Color(0.07, 0.06, 0.1)
+	# Фон — затемнённая ржавая панель из референса (сумрак гаража).
+	var bg := TextureRect.new()
+	bg.texture = load("res://assets/ui/garage/backdrop_rust.jpg")
+	bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	bg.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	add_child(bg)
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	# Заголовок — та же розовая лента, что на экране выбора машины.
-	var banner := TextureRect.new()
-	banner.texture = load("res://assets/ui/flag_banner.png")
-	banner.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	banner.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	# Заголовок — стальная плита с аварийной лентой по нижней кромке.
+	var banner := UiKit.plate(self, "steel", Vector2.ZERO,
+			Vector2(400, 96), false)
 	banner.anchor_left = 0.5
 	banner.anchor_right = 0.5
-	banner.offset_left = -210
-	banner.offset_right = 210
-	banner.offset_top = 6
-	banner.offset_bottom = 124
-	add_child(banner)
-	var title := _label(banner, "ЛОББИ", 32, Color.WHITE, 7)
-	title.add_theme_color_override("font_outline_color", Color(0.45, 0.1, 0.25))
+	banner.offset_left = -200
+	banner.offset_right = 200
+	banner.offset_top = 16
+	banner.offset_bottom = 112
+	UiKit.hazard(banner, Vector2(14, 96 - 22), Vector2(400 - 28, 12), 0.9)
+	var title := _label(banner, "ЛОББИ", 34, Color.WHITE, 7)
 	title.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	title.offset_bottom = -10
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
-	_status = _label(self, "Подключение…", 24, Color(1, 0.95, 0.7), 6)
+	_status = _label(self, "Подключение…", 22, UiKit.YELLOW, 6)
 	_status.anchor_left = 0.5
 	_status.anchor_right = 0.5
 	_status.offset_left = -420
@@ -114,9 +115,9 @@ func set_slot(slot: int, taken: bool, car_id: String, is_me: bool) -> void:
 	# оранжевый (один язык меток по всей игре).
 	var color := Color(1, 1, 1, 0.5)
 	if is_me:
-		color = Color(0.45, 1.0, 0.55)
+		color = UiKit.GREEN_ME
 	elif taken:
-		color = Color(1.0, 0.65, 0.25)
+		color = UiKit.ORANGE_RIVAL
 	name_l.add_theme_color_override("font_color", color)
 	_views[slot].visible = taken
 	_wait_labels[slot].visible = not taken
@@ -141,13 +142,8 @@ func set_slot(slot: int, taken: bool, car_id: String, is_me: bool) -> void:
 ## Панель одного слота: имя игрока, вьюпорт с подиумом и вращающейся
 ## машиной (свой мир, как миниатюры на экране выбора), название машины.
 func _build_slot(s: int) -> void:
-	var panel := Panel.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.09, 0.13, 0.25, 0.9)
-	sb.set_corner_radius_all(16)
-	sb.set_border_width_all(2)
-	sb.border_color = Color(1, 1, 1, 0.22)
-	panel.add_theme_stylebox_override("panel", sb)
+	var panel := UiKit.plate(self, "steel", Vector2.ZERO,
+			Vector2(SLOT_W, SLOT_H))
 	panel.anchor_left = 0.5
 	panel.anchor_right = 0.5
 	panel.anchor_top = 0.5
@@ -159,7 +155,6 @@ func _build_slot(s: int) -> void:
 	panel.offset_right = x0 + SLOT_W
 	panel.offset_top = -SLOT_H * 0.5 + 40.0
 	panel.offset_bottom = SLOT_H * 0.5 + 40.0
-	add_child(panel)
 
 	var name_l := _label(panel, "Player %d" % (s + 1), 24, Color(1, 1, 1, 0.5), 6)
 	name_l.position = Vector2(0, 10)
@@ -244,6 +239,6 @@ func _label(parent: Node, txt: String, size_px: int, color: Color,
 	l.add_theme_color_override("font_color", color)
 	if outline > 0:
 		l.add_theme_constant_override("outline_size", outline)
-		l.add_theme_color_override("font_outline_color", Color(0.09, 0.1, 0.17))
+		l.add_theme_color_override("font_outline_color", UiKit.INK)
 	parent.add_child(l)
 	return l

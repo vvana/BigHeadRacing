@@ -52,11 +52,58 @@ func _ready() -> void:
 	mat.emission_energy_multiplier = 2.5
 	mesh.material_override = mat
 	add_child(mesh)
+	_build_trail()
 
 	if inert:
 		set_deferred("monitoring", false)
 	else:
 		body_entered.connect(_on_body_entered)
+
+
+## Шлейф за снарядом: у ракеты — огненное свечение (glow из Epic Toon FX,
+## аддитивно), у ледышки — россыпь снежинок. Клубы остаются позади
+## (local_coords = false) и быстро тают.
+func _build_trail() -> void:
+	var p := CPUParticles3D.new()
+	p.amount = 20
+	p.lifetime = 0.18  # короче: при 0.3 огненный след тянулся на ~13 м
+	p.local_coords = false
+	p.direction = Vector3.UP
+	p.spread = 180.0
+	p.gravity = Vector3.ZERO
+	p.initial_velocity_min = 0.2
+	p.initial_velocity_max = 0.8
+	p.angle_min = 0.0
+	p.angle_max = 360.0
+	p.scale_amount_min = 0.7
+	p.scale_amount_max = 1.0
+	var fade := Curve.new()
+	fade.add_point(Vector2(0.0, 1.0))
+	fade.add_point(Vector2(1.0, 0.15))
+	p.scale_amount_curve = fade
+	var quad := QuadMesh.new()
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	mat.vertex_color_use_as_albedo = true
+	var grad := Gradient.new()
+	if freeze:
+		quad.size = Vector2(0.3, 0.3)
+		mat.albedo_texture = load("res://assets/fx/snowflake.png")
+		grad.set_color(0, Color(0.85, 0.95, 1.0, 1.0))
+		grad.set_color(1, Color(0.55, 0.8, 1.0, 0.0))
+	else:
+		quad.size = Vector2(0.6, 0.6)
+		mat.albedo_texture = load("res://assets/fx/glow1.png")
+		mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+		grad.set_color(0, Color(1.0, 0.85, 0.4, 1.0))
+		grad.set_color(1, Color(0.9, 0.25, 0.03, 0.0))
+	quad.material = mat
+	p.mesh = quad
+	p.color_ramp = grad
+	add_child(p)
+	p.emitting = true
 
 
 func _physics_process(delta: float) -> void:
@@ -79,4 +126,8 @@ func _on_body_entered(body: Node3D) -> void:
 			car.destroy()
 	var color := Color(0.5, 0.8, 1.0) if freeze else Color(1.0, 0.7, 0.2)
 	FlashFx.spawn(get_parent(), global_position, 0.9, color)
+	if freeze:
+		FxKit.snow_burst(get_parent(), global_position)
+	else:
+		SparksFx.spawn(get_parent(), global_position, 6.0)
 	queue_free()

@@ -65,6 +65,9 @@ var race_over := false          # финиш: газа нет, машина пл
 var track: TrackBuilder = null  # ставит Main: маршрут ИИ и точки респавна
 var race: Node = null           # ставит Main: доступ к лидеру (авиаудар)
 var ai_rubber := 1.0            # «резинка»: множитель тяги/скорости ИИ
+# «Класс» ИИ: постоянный множитель темпа бота (< 1 — едет слабее игрока).
+# Вкладывается в ai_rubber менеджером гонки (Main), сам по себе не читается.
+var ai_skill := 1.0
 
 # Эффекты оружия (таймеры, с).
 var _ghost_time := 0.0          # после уничтожения: не трогает машины, мигает
@@ -128,6 +131,8 @@ var _track_ang_abs := 0.0       # |угол носа к оси трассы|, с
 var _side_speed := 0.0          # боковой снос с последнего кадра езды (дым)
 var _on_sand := false           # на песчаной трассе съехал с полотна на песок
 var _smoke: Array[CPUParticles3D] = []  # дым из-под задних колёс (занос)
+var _skid_active := false       # сильный занос: задние колёса чертят следы
+var _skid_trails := {}          # пивот заднего колеса -> текущая SkidTrail
 var _boost_flame: CPUParticles3D        # огонь из выхлопа при ускорении
 var _wheel_pivots: Array[Node3D] = []
 var _steer_visual := 0.0
@@ -173,6 +178,10 @@ func _ready() -> void:
 	_build_smoke()
 	_build_boost_flame()
 	_build_status_icon()
+	# Фары — только на ночной городской трассе (track ставит Main ДО
+	# add_child, как и для пыли на песке).
+	if track != null and track.kind == TrackBuilder.KIND_NEON:
+		_build_headlights()
 
 
 ## Значок действующего эффекта над крышей (магнит, ускорение). top_level
@@ -189,6 +198,37 @@ func _build_status_icon() -> void:
 	_status_icon.top_level = true
 	_status_icon.visible = false
 	add_child(_status_icon)
+
+
+## Фары для ночного города: два узких спота вперёд (-Z), чуть вниз, БЕЗ
+## теней (8 бестеневых спотов на заезд — дёшево; с тенями — нет). Плюс
+## светящиеся «лампы» на носу — саму фару видно и сбоку.
+func _build_headlights() -> void:
+	for sx: float in [-0.55, 0.55]:
+		var beam := SpotLight3D.new()
+		beam.position = Vector3(sx, 0.45, -1.35)
+		beam.rotation_degrees = Vector3(-10, 0, 0)
+		beam.spot_range = 22.0
+		beam.spot_angle = 30.0
+		beam.light_energy = 6.0
+		beam.light_color = Color(1.0, 0.93, 0.75)
+		beam.shadow_enabled = false
+		add_child(beam)
+
+		var lamp := MeshInstance3D.new()
+		var lamp_mesh := BoxMesh.new()
+		lamp_mesh.size = Vector3(0.22, 0.12, 0.06)
+		var mat := StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.albedo_color = Color(1.0, 0.95, 0.8)
+		mat.emission_enabled = true
+		mat.emission = Color(1.0, 0.93, 0.7)
+		mat.emission_energy_multiplier = 2.0
+		lamp.mesh = lamp_mesh
+		lamp.material_override = mat
+		lamp.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		lamp.position = Vector3(sx, 0.42, -1.42)
+		add_child(lamp)
 
 
 ## Форма корпуса — «санки»: плоское днище-упор (не даёт провалиться под
@@ -302,48 +342,55 @@ func _build_smoke() -> void:
 
 
 ## Огонь из выхлопа — бьёт из кормы, пока действует ускорение (бонус BOOST
-## или плита-ускоритель). Та же текстура облачка, что у дыма, но клубы
-## короткоживущие, летят назад струёй и перекрашены в огонь (жёлтое ядро →
-## оранжевый → прозрачный красный хвост), к концу жизни съёживаются.
+## или плита-ускоритель). Языки пламени — АНИМИРОВАННЫЕ кадры огня из
+## Epic Toon FX (атлас 6×3: у частицы случайный стартовый кадр, дальше
+## листается по жизни — пламя «пляшет»). Аддитивное смешивание оставлено:
+## перекрывающиеся языки высветляются до жёлто-белого и «светятся».
 func _build_boost_flame() -> void:
-	var tex: Texture2D = load("res://assets/fx/smoke_cloud_2x2.png")
+	var tex: Texture2D = load("res://assets/fx/fire_6x3.png")
+
 	var shrink := Curve.new()
 	shrink.add_point(Vector2(0.0, 1.0))
-	shrink.add_point(Vector2(1.0, 0.15))
+	shrink.add_point(Vector2(1.0, 0.05))
 	var p := CPUParticles3D.new()
 	p.emitting = false
-	p.amount = 26
-	p.lifetime = 0.28
+	p.amount = 30
+	p.lifetime = 0.13   # короткий язык: длинный хвост тянулся за машиной шлейфом
 	p.local_coords = false   # струя остаётся позади машины
-	p.direction = Vector3(0.0, 0.15, 1.0)  # назад (+Z) и чуть вверх
-	p.spread = 7.0
+	p.direction = Vector3(0.0, 0.12, 1.0)  # назад (+Z) и чуть вверх
+	p.spread = 5.0
 	p.gravity = Vector3.ZERO
-	p.initial_velocity_min = 6.0
-	p.initial_velocity_max = 9.0
-	p.angle_min = 0.0        # случайный поворот билборда
-	p.angle_max = 360.0
-	p.scale_amount_min = 0.5
-	p.scale_amount_max = 0.8
+	p.initial_velocity_min = 5.0
+	p.initial_velocity_max = 8.0
+	p.scale_amount_min = 0.45
+	p.scale_amount_max = 0.7
 	p.scale_amount_curve = shrink
+	# Случайный стартовый кадр атласа + прокрутка кадров по жизни частицы.
 	p.anim_offset_min = 0.0
 	p.anim_offset_max = 1.0
+	p.anim_speed_min = 1.0
+	p.anim_speed_max = 2.0
 	var quad := QuadMesh.new()
-	quad.size = Vector2(0.6, 0.6)
+	quad.size = Vector2(0.75, 0.75)
 	var mat := StandardMaterial3D.new()
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD   # свечение огня
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
-	mat.particles_anim_h_frames = 2
-	mat.particles_anim_v_frames = 2
-	mat.particles_anim_loop = false
+	mat.particles_anim_h_frames = 6
+	mat.particles_anim_v_frames = 3
+	mat.particles_anim_loop = true   # offset+speed листают атлас по кругу
 	mat.vertex_color_use_as_albedo = true
 	mat.albedo_texture = tex
 	quad.material = mat
 	p.mesh = quad
+	# Жизнь клуба: бело-жёлтое ядро у сопла → оранжевый → тёмно-красный
+	# гаснущий кончик (при ADD тёмный цвет сам сходит на нет).
 	var grad := Gradient.new()
-	grad.set_color(0, Color(1.0, 0.9, 0.4, 0.95))
-	grad.set_color(1, Color(1.0, 0.25, 0.05, 0.0))
-	grad.add_point(0.35, Color(1.0, 0.55, 0.1, 0.8))
+	grad.set_color(0, Color(1.0, 0.97, 0.75, 1.0))
+	grad.set_color(1, Color(0.55, 0.08, 0.01, 0.0))
+	grad.add_point(0.3, Color(1.0, 0.62, 0.12, 1.0))
+	grad.add_point(0.65, Color(0.95, 0.3, 0.03, 0.6))
 	p.color_ramp = grad
 	p.position = Vector3(0.0, 0.42, 1.6)
 	add_child(p)
@@ -508,6 +555,16 @@ func _physics_process(delta: float) -> void:
 			or (_on_sand and hh.length() > 3.0))
 	for p in _smoke:
 		p.emitting = smoking
+	# Следы шин на асфальте: тот же сильный занос, что и дым, но только
+	# на полотне классической трассы (на песке след резины не рисуем,
+	# на траве за трассой — тоже). Сами ленты тянет _animate_wheels:
+	# у него уже есть лучи к дороге под каждым колесом.
+	_skid_active = alive and on_ground \
+			and ((absf(_side_speed) > 5.0 and hh.length() > 8.0)
+				or (_slip_time > 0.0 and hh.length() > 3.0)) \
+			and (track == null or (track.kind != TrackBuilder.KIND_SAND
+				and track.distance_from_axis(global_position)
+					< TrackBuilder.TRACK_HALF_WIDTH + 0.3))
 	_ext_push_time = maxf(0.0, _ext_push_time - delta)
 	_blast_time = maxf(0.0, _blast_time - delta)
 	# Память для капов — в самом конце, после всех правок скорости.
@@ -608,6 +665,7 @@ func _bounce_off_cars() -> void:
 		# её дебафа (и дальше передаёшь сам).
 		if other._freeze_time > 0.2 and _freeze_time <= 0.0:
 			_freeze_time = other._freeze_time
+			FxKit.snow_burst(get_parent(), global_position + Vector3.UP * 0.6)
 		var away := global_position - other.global_position
 		away.y = 0.0
 		var dist := away.length()
@@ -634,9 +692,12 @@ func _bounce_off_cars() -> void:
 			# Искры в точке удара. Обе машины видят один и тот же контакт —
 			# спавнит только одна из пары (меньший instance id), не обе.
 			if closing > 2.0 and get_instance_id() < id:
-				SparksFx.spawn(get_parent(),
-						(global_position + other.global_position) * 0.5
-						+ Vector3.UP * 0.45, closing)
+				var mid := (global_position + other.global_position) * 0.5
+				SparksFx.spawn(get_parent(), mid + Vector3.UP * 0.45, closing)
+				# Крепкий таран — мультяшные звёзды из точки удара.
+				if closing > 4.0:
+					FxKit.stars_burst(get_parent(), mid + Vector3.UP * 0.8,
+							mini(4 + int(closing * 0.4), 9))
 		# Нецентральный удар ЗАКРУЧИВАЕТ: точка контакта — у соперника,
 		# плечо — от центра к нему (не длиннее полукорпуса), момент =
 		# плечо × относительная скорость соперника. Продольный таран мимо
@@ -1310,6 +1371,8 @@ func use_weapon() -> void:
 			p.freeze = kind == Weapons.FREEZE
 			get_parent().add_child(p)
 			p.global_position = global_position + fwd * 2.3 + Vector3.UP * 0.55
+			FxKit.muzzle_flash(get_parent(), p.global_position,
+					Color(0.6, 0.85, 1.0) if p.freeze else Color(1.0, 0.8, 0.35))
 		Weapons.OIL:
 			var oil := OilSlick.new()
 			oil.dropper = self
@@ -1326,6 +1389,8 @@ func use_weapon() -> void:
 			apply_boost()
 			FlashFx.spawn(get_parent(),
 					global_position + Vector3.UP * 0.5, 1.2,
+					Color(0.3, 0.9, 1.0))
+			FxKit.ring(get_parent(), global_position, 2.2,
 					Color(0.3, 0.9, 1.0))
 
 
@@ -1344,6 +1409,9 @@ func _use_magnet() -> void:
 	const MAGNET_ICON_TIME := 1.5 # сколько над жертвой висит значок магнита
 	FlashFx.spawn(get_parent(), global_position + Vector3.UP * 0.5, 3.2,
 			Color(0.8, 0.3, 1.0))
+	FxKit.ring(get_parent(), global_position, 5.0, Color(0.8, 0.3, 1.0))
+	FxKit.lightning_burst(get_parent(), global_position + Vector3.UP * 0.8,
+			Color(0.85, 0.4, 1.0), 7, 1.4)
 	for node in get_tree().get_nodes_in_group("cars"):
 		var other := node as Car
 		if other == self or not other.alive or other.is_ghost():
@@ -1363,6 +1431,10 @@ func _use_magnet() -> void:
 		other.push_from_blast(dir / dist, power, spin, 0.12)
 		other.show_effect_icon(Weapons.MAGNET, MAGNET_ICON_TIME)
 		other.notify_hit_by(self, Weapons.MAGNET)
+		# Разряд над жертвой — видно, кого дёрнуло.
+		FxKit.lightning_burst(get_parent(),
+				other.global_position + Vector3.UP * 0.9,
+				Color(0.85, 0.4, 1.0), 4, 0.9)
 
 
 ## «Соперник впереди?» для магнита — по прогрессу ГОНКИ (накопленный путь
@@ -1394,6 +1466,10 @@ func _use_laser(fwd: Vector3) -> void:
 		var side := (to - fwd * along).length()
 		if side <= HALF_WIDTH:
 			other.notify_hit_by(self, Weapons.LASER)
+			# Разряд на жертве — луч «прошивает» её электричеством.
+			FxKit.lightning_burst(get_parent(),
+					other.global_position + Vector3.UP * 0.7,
+					Color(1.0, 0.5, 0.4), 6, 1.2)
 			other.destroy()
 
 
@@ -1419,6 +1495,11 @@ func destroy() -> void:
 		return
 	_forward_fx(NetFx.DESTROY)
 	FlashFx.spawn(get_parent(), global_position, 2.4, Color(1.0, 0.45, 0.1))
+	FxKit.ring(get_parent(), global_position, 3.4, Color(1.0, 0.55, 0.15))
+	FxKit.smoke_burst(get_parent(), global_position + Vector3.UP * 0.4, 12, 1.2)
+	SparksFx.spawn(get_parent(), global_position + Vector3.UP * 0.5, 10.0)
+	FxKit.fire_burst(get_parent(), global_position + Vector3.UP * 0.3)
+	FxKit.scorch(get_parent(), global_position)
 	if track:
 		global_transform = track.respawn_transform(global_position)
 	linear_velocity = Vector3.ZERO
@@ -1518,6 +1599,7 @@ func apply_freeze(duration: float) -> void:
 		return
 	_forward_fx(NetFx.FREEZE, [duration])
 	_freeze_time = maxf(_freeze_time, duration)
+	FxKit.snow_burst(get_parent(), global_position + Vector3.UP * 0.6)
 
 
 ## Масляное пятно: занос — закрутка + почти нулевое сцепление (slip_grip)
@@ -1677,6 +1759,22 @@ func _animate_wheels(delta: float) -> void:
 		query.collision_mask = 1  # стены — не дорога
 		query.exclude = car_rids
 		var hit := space.intersect_ray(query)
+		# След шины: в сильном заносе задние колёса чертят ленту по точке
+		# касания с дорогой (луч уже есть). Кончился занос/контакт — лента
+		# закрывается и дальше тает сама.
+		if not pivot.get_meta("is_front"):
+			if _skid_active and not hit.is_empty():
+				var trail: SkidTrail = _skid_trails.get(pivot)
+				if trail == null:
+					trail = SkidTrail.start(get_parent())
+					_skid_trails[pivot] = trail
+				if not trail.add_point(hit["position"], hit["normal"]):
+					# Лента набрала лимит или точка ускакала (телепорт):
+					# закрываем, новую начнёт следующий кадр.
+					trail.finish()
+					_skid_trails.erase(pivot)
+			else:
+				_end_skid(pivot)
 		var pen := 0.0
 		if not hit.is_empty():
 			pen = (hit["position"] as Vector3).y - (hub.y - radius)
@@ -1703,6 +1801,15 @@ func _animate_wheels(delta: float) -> void:
 		pivot.set_meta("lift", lift)
 		if lift > 0.001:
 			pivot.global_position = hub + Vector3.UP * lift
+
+
+## Закрыть текущую ленту следа колеса (если была): дальше она лежит,
+## тает и удаляется сама.
+func _end_skid(pivot: Node3D) -> void:
+	var trail: SkidTrail = _skid_trails.get(pivot)
+	if trail != null:
+		trail.finish()
+		_skid_trails.erase(pivot)
 
 
 ## Есть ли под машиной земля вплотную. Луч идёт строго вниз по миру

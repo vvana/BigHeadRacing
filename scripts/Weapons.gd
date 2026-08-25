@@ -26,16 +26,17 @@ const NAMES := {
 	BOOST: "Ускорение",
 }
 
-# Мультяшные иконки (GUI Pack Cartoon) — для слота оружия в HUD.
+# Восьмиугольные значки «гаражного» стиля (нарезаны из референса
+# _STYLE_CORE_A_sheet_of_12_weap_2.jpg скриптом tools/gen_ui_assets.py).
 const ICONS := {
-	MINE: "res://assets/ui/w_mine.png",
-	ROCKET: "res://assets/ui/w_rocket.png",
-	OIL: "res://assets/ui/w_oil.png",
-	MAGNET: "res://assets/ui/w_magnet.png",
-	LASER: "res://assets/ui/w_laser.png",
-	FREEZE: "res://assets/ui/w_freeze.png",
-	AIRSTRIKE: "res://assets/ui/w_airstrike.png",
-	BOOST: "res://assets/ui/w_boost.png",
+	MINE: "res://assets/ui/garage/wg_mine.png",
+	ROCKET: "res://assets/ui/garage/wg_rocket.png",
+	OIL: "res://assets/ui/garage/wg_oil.png",
+	MAGNET: "res://assets/ui/garage/wg_magnet.png",
+	LASER: "res://assets/ui/garage/wg_laser.png",
+	FREEZE: "res://assets/ui/garage/wg_freeze.png",
+	AIRSTRIKE: "res://assets/ui/garage/wg_airstrike.png",
+	BOOST: "res://assets/ui/garage/wg_boost.png",
 }
 
 

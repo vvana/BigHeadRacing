@@ -28,7 +28,8 @@ const GROUND_DROP := 1.2
 # выбирают и получают классику — регрессия детерминирована.
 const KIND_GRASS := "grass"   # классика: трава, ограждения, горка
 const KIND_SAND := "sand"     # пустыня: песок, БЕЗ ограждений, съезд разрешён
-const KINDS: Array[String] = [KIND_GRASS, KIND_SAND]
+const KIND_NEON := "neon"     # ночной город: тёмный асфальт, неон на стенах
+const KINDS: Array[String] = [KIND_GRASS, KIND_SAND, KIND_NEON]
 # Насколько дальше кромки полотна пускает автовозврат на песке: съезд на
 # песок — легальная (медленная) езда, возвращаем только уехавших в дюны.
 const SAND_OFFTRACK_MARGIN := 12.0
@@ -59,9 +60,8 @@ var _straights: Array[Vector2] = []
 
 
 func _ready() -> void:
-	_segments = SEGMENTS
+	_segments = segments_for(kind)
 	if kind == KIND_SAND:
-		_segments = SEGMENTS_SAND
 		has_walls = false
 		offtrack_margin = SAND_OFFTRACK_MARGIN
 		# Без стен просвет между полотном и землёй нечем прятать — обочина
@@ -74,6 +74,9 @@ func _ready() -> void:
 	_build_road()
 	if has_walls:
 		_build_walls()
+		# Неоновые трубки по верху ограждений — фирменный вид ночного города.
+		if kind == KIND_NEON and not _headless_server():
+			_build_neon_strips()
 	_build_ramps()
 	_build_boost_pads()
 	_build_start_line()
@@ -180,29 +183,69 @@ const SEGMENTS: Array = [
 ## Конфигурация подобрана перебором с проверкой замыкания (обе свободные
 ## длины положительные: 44 и 72 м) и отсутствия сближения витков < 26 м.
 ## Сумма углов: правые 50+110+50+135+125+30 = 500, левые 55+85 = 140 → 360. ✓
+## Полотно ШИРЕ классики (просьба пользователя 2026-08-25): полуширины
+## 9…11 м (максимум = TRACK_HALF_WIDTH). Витки сближаются не ближе 26 м
+## по осям, так что даже при 11+11 полотна не слипаются (зазор ≥ 4 м).
 const SEGMENTS_SAND: Array = [
-	["S", -1.0, 10.0],           # 0  СТАРТОВАЯ ПРЯМАЯ (свободная, ~44 м)
-	["A", 20.0, 50.0, 7.0],      # 1  тесный правый сразу за стартом
-	["S", 30.0, 8.5],            # 2  короткая прямая
-	["A", 36.0, -55.0, 8.5],     # 3  левый
-	["A", 46.0, 110.0, 9.0],     # 4  размашистый правый
-	["S", -1.0, 10.0],           # 5  ДЛИННАЯ ПРЯМАЯ (свободная, ~72 м)
-	["A", 46.0, 50.0, 9.5],      # 6  быстрый правый
-	["S", 30.0, 8.5],            # 7  прямая
-	["A", 44.0, 135.0, 8.0],     # 8  длинная правая дуга
-	["A", 40.0, -85.0, 8.5],     # 9  левый
-	["S", 30.0, 9.0],            # 10 прямая
-	["A", 50.0, 125.0, 9.5],     # 11 широкий правый
-	["A", 50.0, 30.0, 10.0],     # 12 выход на стартовую прямую
+	["S", -1.0, 11.0],           # 0  СТАРТОВАЯ ПРЯМАЯ (свободная, ~44 м)
+	["A", 20.0, 50.0, 9.0],      # 1  тесный правый сразу за стартом
+	["S", 30.0, 10.0],           # 2  короткая прямая
+	["A", 36.0, -55.0, 10.0],    # 3  левый
+	["A", 46.0, 110.0, 10.5],    # 4  размашистый правый
+	["S", -1.0, 11.0],           # 5  ДЛИННАЯ ПРЯМАЯ (свободная, ~72 м)
+	["A", 46.0, 50.0, 11.0],     # 6  быстрый правый
+	["S", 30.0, 10.0],           # 7  прямая
+	["A", 44.0, 135.0, 9.5],     # 8  длинная правая дуга
+	["A", 40.0, -85.0, 10.0],    # 9  левый
+	["S", 30.0, 10.5],           # 10 прямая
+	["A", 50.0, 125.0, 11.0],    # 11 широкий правый
+	["A", 50.0, 30.0, 11.0],     # 12 выход на стартовую прямую
+]
+
+## НОЧНОЙ ГОРОД (kind == KIND_NEON): улицы с «перекрёстками» — почти все
+## повороты прямоугольные (90°), плоско, ограждения ЕСТЬ (тёмные, с
+## неоновыми трубками поверху — см. _build_neon_strips). Длина 703 м —
+## сопоставима с классикой (727) и песком (685). Конфигурация подобрана
+## численным перебором (как песчаная): замыкание точное, обе свободные
+## прямые положительные (~103 и ~107 м), витки не сближаются ближе 30 м,
+## габарит 247×189 м. Сумма углов: правые 90+90+60+90+45+120 = 495,
+## левые 90+45 = 135 → 495−135 = 360. ✓
+const SEGMENTS_NEON: Array = [
+	["S", -1.0, 10.5],           # 0  СТАРТОВЫЙ ПРОСПЕКТ (свободная, ~103 м)
+	["A", 27.0, 90.0, 9.0],      # 1  прямоугольный правый (перекрёсток)
+	["S", 32.0, 9.5],            # 2  квартал
+	["A", 30.0, -90.0, 8.5],     # 3  прямоугольный левый
+	["S", 35.0, 8.0],            # 4  улица поуже
+	["A", 20.0, 90.0, 7.5],      # 5  тесный правый угол
+	["A", 25.0, 60.0, 7.0],      # 6  сразу доворот — «срезанный квартал»
+	["S", -1.0, 10.5],           # 7  ДЛИННЫЙ ПРОСПЕКТ (свободная, ~107 м)
+	["A", 36.0, 90.0, 9.0],      # 8  широкий правый
+	["S", 63.0, 8.5],            # 9  прямая с шиканой на выходе
+	["A", 26.0, -45.0, 8.0],     # 10 шикана: влево
+	["A", 26.0, 45.0, 8.5],      # 11 шикана: вправо
+	["S", 51.0, 8.5],            # 12 прямая
+	["A", 32.0, 120.0, 10.5],    # 13 размашистый выход на стартовый проспект
 ]
 
 const TURTLE_STEP := 3.0   # шаг опорных точек вдоль трассы, м
 
 
-## Высота оси для ЭТОЙ трассы: классика — профиль с горкой, песок — плоско
-## (дюны только на земле за полотном).
+## Конфигурация участков для вида трассы (общая точка правды: _ready и
+## tools/test_curve.gd берут сегменты отсюда).
+static func segments_for(kind_: String) -> Array:
+	match kind_:
+		KIND_SAND:
+			return SEGMENTS_SAND
+		KIND_NEON:
+			return SEGMENTS_NEON
+		_:
+			return SEGMENTS
+
+
+## Высота оси для ЭТОЙ трассы: классика — профиль с горкой, песок и ночной
+## город — плоско (улицы; рельеф только на земле за полотном).
 func _height_at(t: float) -> float:
-	return 0.0 if kind == KIND_SAND else _profile_height(t)
+	return _profile_height(t) if kind == KIND_GRASS else 0.0
 
 
 ## Замкнутый контур из прямых и дуг (см. SEGMENTS): настоящие прямые
@@ -368,6 +411,19 @@ func half_width_at_pos(world_pos: Vector3) -> float:
 	return half_width_at_offset(_curve.get_closest_offset(world_pos))
 
 
+## Вектор «вправо» полотна у отметки off — из предрассчитанных кадров
+## (_rights горизонтальны, полотно без бокового крена). Для расстановки
+## бонусов/ускорителей со смещением от оси.
+func right_at_offset(off: float) -> Vector3:
+	if _rights.is_empty():
+		return Vector3.RIGHT
+	var length := _curve.get_baked_length()
+	if length <= 0.0:
+		return Vector3.RIGHT
+	var i := int(roundf(fposmod(off, length) / length * SAMPLES)) % SAMPLES
+	return _rights[i]
+
+
 ## Равномерно сэмплирует кривую: позиции и перпендикуляры к ходу трассы.
 ## «Вправо» держим горизонтальным — полотно без бокового наклона.
 func _sample_frames() -> void:
@@ -412,6 +468,9 @@ func _ground_height(x: float, z: float) -> float:
 			+ sin((x + z) * 0.021) * 3.0
 	if kind == KIND_SAND:
 		return base - away * 0.05 + hills * 0.35 * blend
+	if kind == KIND_NEON:
+		# Город: пустыри почти плоские — на них стоят здания (TrackDecor).
+		return base - away * 0.03 + hills * 0.15 * blend
 	return base - away * 0.28 + hills * blend
 
 
@@ -468,6 +527,11 @@ func _build_ground() -> void:
 		mat.albedo_texture = load(
 				"res://assets/models/track_env/cartoon/textures/gravel.png")
 		mat.albedo_color = Color(1.45, 1.32, 1.05)
+	elif kind == KIND_NEON:
+		# Ночной город: тот же гравий, но затемнённый в холодный бетон.
+		mat.albedo_texture = load(
+				"res://assets/models/track_env/cartoon/textures/gravel.png")
+		mat.albedo_color = Color(0.30, 0.33, 0.44)
 	else:
 		# Зелёные поля — трава из Cartoon Tracks Pack (пятна текстуры
 		# смягчены при конвертации, см. ПРОГРЕСС.md).
@@ -513,9 +577,15 @@ func _build_road() -> void:
 	road.mesh = st.commit()
 	var mat := StandardMaterial3D.new()
 	# Классика — тёмный асфальт; пустыня — укатанный песок (темнее рыхлого
-	# вокруг, чтобы полотно читалось).
-	mat.albedo_color = Color(0.64, 0.53, 0.36) if kind == KIND_SAND \
-			else Color(0.18, 0.18, 0.2)
+	# вокруг, чтобы полотно читалось); ночной город — почти чёрный асфальт,
+	# на котором неон и разметка горят контрастнее.
+	match kind:
+		KIND_SAND:
+			mat.albedo_color = Color(0.64, 0.53, 0.36)
+		KIND_NEON:
+			mat.albedo_color = Color(0.09, 0.09, 0.12)
+		_:
+			mat.albedo_color = Color(0.18, 0.18, 0.2)
 	road.material_override = mat
 	_add_visual(body, road)
 
@@ -576,7 +646,10 @@ func _build_walls() -> void:
 	var mesh := MeshInstance3D.new()
 	mesh.mesh = st.commit()
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.75, 0.2, 0.15)
+	# Классика — красные борта; ночной город — тёмный бетон (неон поверху
+	# добавляет _build_neon_strips).
+	mat.albedo_color = Color(0.10, 0.10, 0.16) if kind == KIND_NEON \
+			else Color(0.75, 0.2, 0.15)
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mesh.material_override = mat
 	body.add_child(mesh)
@@ -589,6 +662,49 @@ func _build_walls() -> void:
 	body.add_child(col)
 
 	add_child(body)
+
+
+## Неоновые «трубки» по верху обоих ограждений ночного города: лента
+## высотой 0.18 м (верх + две боковые грани) поверх стены. Чистая
+## косметика без коллизий: UNSHADED + эмиссия — в ночном окружении с
+## включённым glow (см. Main._setup_environment) трубки светятся.
+## Внутренний борт голубой, внешний — маджента: стороны различимы боковым
+## зрением, как цветовая подсказка «куда поворачивать».
+func _build_neon_strips() -> void:
+	var colors := {-1.0: Color(0.15, 0.9, 1.0), 1.0: Color(1.0, 0.2, 0.85)}
+	const STRIP_H := 0.18
+	var half_t := WALL_THICKNESS * 0.5 + 0.06
+	for side: float in [-1.0, 1.0]:
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		# Низ ленты чуть утоплен в стену — нет щели и z-fighting с верхом.
+		var base := Vector3(0, WALL_HEIGHT - 0.02, 0)
+		var up := Vector3(0, STRIP_H, 0)
+		for i in SAMPLES:
+			var j := (i + 1) % SAMPLES
+			var ni := _rights[i] * side
+			var nj := _rights[j] * side
+			var ci := _pts[i] + ni * _widths[i] + base
+			var cj := _pts[j] + nj * _widths[j] + base
+			var ai := ci - ni * half_t
+			var bi := ci + ni * half_t
+			var aj := cj - nj * half_t
+			var bj := cj + nj * half_t
+			_add_quad(st, ai + up, bi + up, bj + up, aj + up, Vector3.UP)
+			_add_quad(st, ai, ai + up, aj + up, aj, -ni)
+			_add_quad(st, bi, bi + up, bj + up, bj, ni)
+		var mesh := MeshInstance3D.new()
+		mesh.mesh = st.commit()
+		var mat := StandardMaterial3D.new()
+		var c: Color = colors[side]
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.albedo_color = c
+		mat.emission_enabled = true
+		mat.emission = c
+		mat.emission_energy_multiplier = 2.2
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		mesh.material_override = mat
+		add_child(mesh)
 
 
 ## Доли круга для трамплинов: середины двух самых длинных прямых, кроме
@@ -607,15 +723,29 @@ func _ramp_ratios() -> Array:
 func _build_ramps() -> void:
 	var ramp_mat := StandardMaterial3D.new()
 	ramp_mat.albedo_color = Color(0.9, 0.75, 0.1)
+	if kind == KIND_NEON:
+		# Ночью жёлтый трамплин без подсветки — чёрный кирпич: даём эмиссию.
+		ramp_mat.emission_enabled = true
+		ramp_mat.emission = Color(1.0, 0.7, 0.15)
+		ramp_mat.emission_energy_multiplier = 1.1
 
 	var length := _curve.get_baked_length()
 	# Трамплины — посреди самых длинных ПРЯМЫХ (кроме стартовой, где стоит
 	# решётка): на дуге трамплин сбрасывал бы машину в ограждение.
+	# Стоят НЕ строго по центру: сдвиг к борту, стороны чередуются —
+	# прыжок ПО ЖЕЛАНИЮ. Сдвиг крупный (≥ полтрамплина + полкорпуса):
+	# едущий по оси минует трамплин ЦЕЛИКОМ — частичный наезд на боковую
+	# кромку подбрасывал бы машину набок.
+	var side := 1.0
 	for t: float in _ramp_ratios():
 		var offset := length * t
-		var pos := _curve.sample_baked(offset)
+		var lateral := side \
+				* maxf(0.0, minf(4.6, half_width_at_offset(offset) - 3.4))
+		side = -side
+		var pos := _curve.sample_baked(offset) \
+				+ right_at_offset(offset) * lateral
 		var ahead := _curve.sample_baked(fmod(offset + 2.0, length))
-		var dir := (ahead - pos).normalized()
+		var dir := (ahead - _curve.sample_baked(offset)).normalized()
 
 		var ramp := StaticBody3D.new()
 		var mesh := MeshInstance3D.new()
@@ -637,29 +767,46 @@ func _build_ramps() -> void:
 		ramp.rotate_object_local(Vector3.RIGHT, deg_to_rad(9.0))  # наклон-трамплин
 
 
-## Отметки ускорителей вдоль оси (м) — для тестов.
+## Отметки ускорителей вдоль оси (м) и их боковые смещения (м, вправо
+## положительно) — для тестов и стендов.
 var boost_pad_offsets := PackedFloat32Array()
+var boost_pad_laterals := PackedFloat32Array()
 
 
 ## Ускорители — В НАЧАЛЕ прямых участков (наехал — буст, выгодно именно
 ## перед прямой). Совсем короткие прямые пропускаем, стартовую тоже: там
-## решётка, створ и отсчёт. Плиты есть и на сервере (срабатывание — его
-## зона ответственности), косметику BoostPad сам не строит в headless.
+## решётка, створ и отсчёт. Плиты стоят НЕ по центру: сдвиг к борту,
+## стороны чередуются — к бонусу надо целиться. Длинная прямая (> 55 м)
+## получает ВТОРУЮ плиту дальше по ходу у другого борта. Плиты есть и на
+## сервере (срабатывание — его зона ответственности), косметику BoostPad
+## сам не строит в headless.
 func _build_boost_pads() -> void:
 	var length := _curve.get_baked_length()
+	var side := 1.0
 	for s: Vector2 in _straights:
 		if s.x <= 0.001:
 			continue   # стартовая прямая
-		if (s.y - s.x) * length < 25.0:
+		var run := (s.y - s.x) * length
+		if run < 25.0:
 			continue
-		var off := fposmod(s.x * length + 6.0, length)
-		var pos := _curve.sample_baked(off)
-		var ahead := _curve.sample_baked(fmod(off + 2.0, length))
-		var pad := BoostPad.new()
-		add_child(pad)
-		pad.position = pos + Vector3(0, 0.05, 0)
-		pad.look_at(pad.position + (ahead - pos).normalized())
-		boost_pad_offsets.append(off)
+		var offs: Array[float] = [fposmod(s.x * length + 6.0, length)]
+		if run > 55.0:
+			offs.append(fposmod(s.x * length + run * 0.6, length))
+		for off: float in offs:
+			# Плита 3 м шириной: смещение так, чтобы целиком осталась
+			# на полотне с запасом (полуширина минус полплиты и кромка).
+			var lateral := side \
+					* maxf(0.0, minf(3.2, half_width_at_offset(off) - 2.6))
+			side = -side
+			var axis_pos := _curve.sample_baked(off)
+			var ahead := _curve.sample_baked(fmod(off + 2.0, length))
+			var pad := BoostPad.new()
+			add_child(pad)
+			pad.position = axis_pos + right_at_offset(off) * lateral \
+					+ Vector3(0, 0.05, 0)
+			pad.look_at(pad.position + (ahead - axis_pos).normalized())
+			boost_pad_offsets.append(off)
+			boost_pad_laterals.append(lateral)
 
 
 ## Стартово-финишный створ: шахматная клетка на полотне. Арка, баннер и

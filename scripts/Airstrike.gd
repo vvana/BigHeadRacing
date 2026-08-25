@@ -172,6 +172,10 @@ func _physics_process(delta: float) -> void:
 	for pos in _spots:
 		FlashFx.spawn(get_parent(), pos + Vector3.UP * 0.6, 2.6,
 				Color(1.0, 0.45, 0.1))
+		FxKit.ring(get_parent(), pos, 3.0, Color(1.0, 0.55, 0.15))
+		FxKit.smoke_burst(get_parent(), pos + Vector3.UP * 0.5, 10, 1.1)
+		FxKit.fire_burst(get_parent(), pos + Vector3.UP * 0.2, 10)
+		FxKit.scorch(get_parent(), pos, 2.2)
 		for node in get_tree().get_nodes_in_group("cars"):
 			var car := node as Car
 			if car == null or not car.alive or car.is_ghost():

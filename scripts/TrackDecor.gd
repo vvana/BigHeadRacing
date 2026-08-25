@@ -43,13 +43,17 @@ func build(track: TrackBuilder) -> void:
 	track.add_child(self)
 	_build_start_area()
 	_build_tribunes()
-	_build_balloons()
+	# Ночью воздушных шаров не бывает — в городе вместо них здания.
+	if track.kind != TrackBuilder.KIND_NEON:
+		_build_balloons()
 	_build_roadside()
 	_build_turn_signs()
 	_build_road_marks()
-	# В пустыне (песчаная трасса) деревья не растут.
-	if track.kind != TrackBuilder.KIND_SAND:
+	# Деревья — только на классике: в пустыне не растут, в городе — здания.
+	if track.kind == TrackBuilder.KIND_GRASS:
 		_build_trees()
+	if track.kind == TrackBuilder.KIND_NEON:
+		_build_city()
 
 
 ## ---------- размещение ----------
@@ -251,6 +255,11 @@ func _build_road_marks() -> void:
 	dash_mesh.size = Vector3(0.2, 0.02, 2.4)
 	var dash_mat := StandardMaterial3D.new()
 	dash_mat.albedo_color = Color(0.9, 0.9, 0.88)
+	if _track.kind == TrackBuilder.KIND_NEON:
+		# Ночью осевая светится холодным белым — как светоотражающая краска.
+		dash_mat.emission_enabled = true
+		dash_mat.emission = Color(0.75, 0.85, 1.0)
+		dash_mat.emission_energy_multiplier = 0.9
 	dash_mesh.material = dash_mat
 	var d := 12.0
 	while d < length - 12.0:
@@ -290,6 +299,129 @@ func _build_trees() -> void:
 		var scale := rng.randf_range(0.8, 1.35)
 		_spawn(CDIR + TREES[rng.randi() % TREES.size()], p, yaw_dir, scale, false)
 		placed += 1
+
+
+## Палитра неоновых вывесок ночного города.
+const NEON_COLORS: Array[Color] = [
+	Color(1.0, 0.2, 0.85),   # маджента
+	Color(0.15, 0.9, 1.0),   # голубой
+	Color(1.0, 0.85, 0.2),   # жёлтый
+	Color(0.3, 1.0, 0.45),   # зелёный
+	Color(1.0, 0.45, 0.15),  # оранжевый
+]
+
+
+## Ночной город: небоскрёбы-коробки со светящимися окнами вокруг трассы
+## и неоновые вывески на фасадах. Окна — общая эмиссивная текстура с
+## ТРИПЛАНАРНОЙ проекцией ПО МИРУ: одна и та же сетка окон ложится на
+## фасады коробки любого размера без UV-развёртки (масштаб узла не
+## растягивает окна — проекция мировая).
+## Высота зданий ограничена расстоянием до трассы (h ≤ 0.5·d): камера
+## смотрит под -32° (tan ≈ 0.62), и дом у самой трассы, окажись он между
+## камерой и машиной, закрыл бы обзор. С капом ближние дома низкие,
+## дальние — башни: силуэт города растёт к горизонту.
+func _build_city() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20260825
+	var wall_mat := StandardMaterial3D.new()
+	wall_mat.albedo_color = Color(0.06, 0.07, 0.11)
+	wall_mat.emission_enabled = true
+	# ВАЖНО: emission-цвет ЧЁРНЫЙ. Оператор эмиссии по умолчанию — ADD
+	# (цвет + текстура): с белым цветом светился бы весь дом целиком,
+	# а не окна из текстуры.
+	wall_mat.emission = Color(0, 0, 0)
+	wall_mat.emission_energy_multiplier = 1.5
+	wall_mat.emission_texture = _window_texture(rng)
+	wall_mat.uv1_triplanar = true
+	wall_mat.uv1_world_triplanar = true
+	# Тайл текстуры (8 окон) ≈ 18 м → окно ~2.2 м.
+	wall_mat.uv1_scale = Vector3.ONE * (1.0 / 18.0)
+	var box := BoxMesh.new()
+	box.size = Vector3.ONE
+	box.material = wall_mat
+
+	var half := TrackBuilder.GROUND_SIZE * 0.47
+	var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
+	var placed := 0
+	var attempts := 0
+	while placed < 70 and attempts < 800:
+		attempts += 1
+		var x := rng.randf_range(-half, half)
+		var z := rng.randf_range(-half, half)
+		var p := Vector3(x, 0, z)
+		var d: float = _track.distance_from_axis(p)
+		if d < edge + 9.0:
+			continue
+		if _is_occupied(p, 8.0):
+			continue
+		var w := rng.randf_range(7.0, 16.0)
+		var depth := rng.randf_range(7.0, 16.0)
+		var hgt := minf(rng.randf_range(9.0, 36.0), d * 0.5)
+		var b := MeshInstance3D.new()
+		b.mesh = box
+		b.scale = Vector3(w, hgt, depth)
+		b.position = Vector3(x, _ground_y(p) + hgt * 0.5 - 0.2, z)
+		# Городская сетка: дома стоят почти по осям, с лёгким разбросом.
+		b.rotation.y = rng.randi_range(0, 3) * PI * 0.5 \
+				+ rng.randf_range(-0.06, 0.06)
+		add_child(b)
+		_occupy(b.position, maxf(w, depth) * 0.75)
+		placed += 1
+		# Вывеска — на фасаде к трассе, у части домов.
+		if rng.randf() < 0.55:
+			_add_neon_sign(b.position, w, depth, hgt, rng)
+
+
+## Сетка окон для эмиссивной текстуры зданий: 8×8 окон на тайл, часть
+## горит тёплым/холодным светом разной яркости, остальное темно.
+func _window_texture(rng: RandomNumberGenerator) -> ImageTexture:
+	const CELL := 16      # пикселей на окно (тайл 128×128 → 8×8 окон)
+	var img := Image.create(128, 128, false, Image.FORMAT_RGB8)
+	img.fill(Color(0, 0, 0))
+	for wy in 8:
+		for wx in 8:
+			if rng.randf() > 0.38:
+				continue   # тёмное окно
+			var c := Color(1.0, 0.82, 0.45) if rng.randf() < 0.7 \
+					else Color(0.55, 0.8, 1.0)
+			c *= rng.randf_range(0.45, 1.0)
+			# Само окно — с полями внутри клетки (стены между окнами).
+			for py in range(CELL * wy + 4, CELL * wy + 12):
+				for px in range(CELL * wx + 3, CELL * wx + 13):
+					img.set_pixel(px, py, c)
+	return ImageTexture.create_from_image(img)
+
+
+## Неоновая вывеска: светящаяся горизонтальная плашка на фасаде здания,
+## обращённом к трассе.
+func _add_neon_sign(
+	center: Vector3, w: float, depth: float, hgt: float,
+	rng: RandomNumberGenerator
+) -> void:
+	var to_track: Vector3 = _track._curve.get_closest_point(center) - center
+	to_track.y = 0.0
+	if to_track.length_squared() < 1.0:
+		return
+	to_track = to_track.normalized()
+	var sign_mesh := BoxMesh.new()
+	sign_mesh.size = Vector3(
+			rng.randf_range(3.0, minf(8.0, w * 0.8)), 1.1, 0.2)
+	var mat := StandardMaterial3D.new()
+	var c: Color = NEON_COLORS[rng.randi() % NEON_COLORS.size()]
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = c
+	mat.emission_enabled = true
+	mat.emission = c
+	mat.emission_energy_multiplier = 2.4
+	sign_mesh.material = mat
+	var sign_node := MeshInstance3D.new()
+	sign_node.mesh = sign_mesh
+	add_child(sign_node)
+	# Чуть перед фасадом (полудиагональ покрывает любой поворот дома).
+	var off := maxf(w, depth) * 0.5 + 0.3
+	sign_node.position = center + to_track * off \
+			+ Vector3(0, rng.randf_range(-hgt * 0.25, hgt * 0.3), 0)
+	sign_node.rotation.y = atan2(-to_track.x, -to_track.z)
 
 
 ## ---------- утилиты ----------

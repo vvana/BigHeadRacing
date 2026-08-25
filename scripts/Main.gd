@@ -84,17 +84,32 @@ var _feed_box: VBoxContainer        # лента «кто кого чем» (с�
 var _speed_label: Label
 var _lap_label: Label
 var _pos_label: Label
-var _weapon_icon: TextureRect   # иконка оружия в круглом слоте
+var _weapon_icon: TextureRect   # значок оружия (пустой слот — гекс EMPTY)
 var _weapon_name: Label
-var _q_mark_tex: Texture2D      # «?» в пустом слоте
+var _slot_empty_tex: Texture2D  # гекс пустого слота (нарезан из референса)
 var _last_weapon := -2          # чтобы не перезагружать иконку каждый кадр
-var _warn_panel: Panel
+var _warn_panel: Control
 var _warn_label: Label
 var _minimap: Minimap           # мини-карта в правом верхнем углу
 var _count_label: Label         # отсчёт 3-2-1-GO
 var _finish_root: Control       # баннер финиша
 var _finish_label: Label
-var _ui_font: FontFile          # Softie Cyr — мультяшный шрифт (с кириллицей)
+var _finish_xp_label: Label     # строка «+N ОПЫТА · УРОВЕНЬ K» на баннере
+var _my_kills := 0              # мои уничтоженные соперники (опыт за заезд)
+var _ui_font: FontFile          # Russo One — индустриальный, с кириллицей
+
+# ---- Всплывающие анонсы (Announcer) и события, которые их порождают ----
+var _announcer: Announcer
+# Летальное оружие (жертву уничтожает с одного попадания) — только такие
+# попадания считаются «убийствами» для серий и первой крови.
+const LETHAL_KINDS := [Weapons.ROCKET, Weapons.LASER, Weapons.AIRSTRIKE]
+const KILL_STREAK_WINDOW := 1.2   # окно серии, с (лазер бьёт всех за кадр)
+var _kill_streak := {}            # атакующий -> {count, time}
+var _first_blood_done := false
+var _last_lap_told := false
+var _race_time := 0.0             # сколько моя машина уже гоняется (после GO)
+var _lead_shown := false          # подтверждённое «я лидер» для анонсов
+var _lead_flip_time := 0.0        # дебаунс смены лидерства
 
 
 func _ready() -> void:
@@ -174,6 +189,9 @@ func _spawn_cars() -> void:
 			# Лёгкий разброс характеристик, чтобы ИИ не ехали строем.
 			car.max_speed += randf_range(-1.2, 1.2)
 			car.engine_power += randf_range(-8.0, 8.0)
+			# Боты слабее игрока: «класс» режет темп на 6-14% (жалоба
+			# «противники едут очень хорошо» — игра должна быть попроще).
+			car.ai_skill = randf_range(0.86, 0.94)
 
 		var row := i / 2
 		var col := i % 2
@@ -249,18 +267,25 @@ func _attach_marker(index: int, rival := false) -> void:
 		_player_marker = marker
 
 
-## Боксы с оружием: ПО ОДНОМУ на отметку, посреди полотна. Раньше их
-## ставили тройками поперёк трассы, и бокс исчезал после подбора — кто
-## успел, тот и съел. Теперь бокс один, не исчезает, и каждый проехавший
-## забирает свой случайный бонус (см. WeaponBox).
+## Боксы с оружием: ПО ОДНОМУ на отметку. Бокс не исчезает, каждый
+## проехавший забирает свой случайный бонус (см. WeaponBox). Стоят НЕ по
+## центру полотна: смещение к бортам, стороны чередуются — за бонусом
+## нужно целиться. Смещения детерминированные (без randf): расстановка
+## не сдвигает поток случайных чисел, регрессионные стенды стабильны.
 func _spawn_weapon_boxes() -> void:
 	var curve: Curve3D = _track._curve
 	var length := curve.get_baked_length()
-	for t: float in [0.12, 0.3, 0.52, 0.7, 0.92]:
-		var off := length * t
+	var marks: Array[float] = [0.06, 0.17, 0.28, 0.38, 0.48,
+			0.58, 0.70, 0.81, 0.92]
+	for i in marks.size():
+		var off := length * marks[i]
+		var max_lat: float = maxf(0.0, _track.half_width_at_offset(off) - 1.6)
+		var lateral := (1.0 if i % 2 == 0 else -1.0) \
+				* minf(2.4 if i % 3 == 0 else 3.6, max_lat)
 		var box := WeaponBox.new()
 		add_child(box)
-		box.global_position = curve.sample_baked(off) + Vector3.UP * 0.85
+		box.global_position = curve.sample_baked(off) \
+				+ _track.right_at_offset(off) * lateral + Vector3.UP * 0.85
 
 
 ## Лидер гонки (по прогрессу) — цель авиаудара.
@@ -324,13 +349,13 @@ func _countdown() -> void:
 	if _count_label:
 		_count_label.visible = true
 	for txt in ["3", "2", "1"]:
-		_pop_count(txt, Color(1, 0.85, 0.25))
+		_pop_count(txt, UiKit.YELLOW)
 		if Net.is_server():
 			_rx_count.rpc(txt)
 		await get_tree().create_timer(0.8).timeout
 		if not is_inside_tree():
 			return
-	_pop_count("GO!", Color(0.5, 1.0, 0.35))
+	_pop_count("GO!", UiKit.TEAL)
 	if Net.is_server():
 		_rx_count.rpc("GO!")
 	for c in _cars:
@@ -389,16 +414,20 @@ func _physics_process(_delta: float) -> void:
 		_finish_race()
 
 	# «Резинка»: отстающий ИИ едет бодрее, убежавший — спокойнее.
-	# Мерим от ЛИДЕРА, а не от машины 0: по сети машина 0 — просто один
-	# из слотов, и привязка к ней сделала бы резинку бессмысленной.
+	# ОФФЛАЙН темп меряется от ИГРОКА (машина 0): убежавший вперёд бот
+	# сбрасывает (кламп снизу 0.8 — его можно догнать), отставший слегка
+	# поджимает (сверху 1.15 — от него можно уехать). По сети машина 0 —
+	# просто один из слотов, там мерим от лидера. Поверх резинки — ai_skill:
+	# постоянная «слабина» бота (боты не должны ехать идеально).
 	if not Net.is_client():
-		var lead := _progress[0]
-		for i in _cars.size():
-			lead = maxf(lead, _progress[i])
+		var ref := _progress[0]
+		if Net.is_online():
+			for i in _cars.size():
+				ref = maxf(ref, _progress[i])
 		for i in _cars.size():
 			if _cars[i].net_role == Car.NetRole.LOCAL and not _cars[i].is_player:
-				_cars[i].ai_rubber = clampf(
-						1.0 + (lead - _progress[i]) / 120.0, 0.85, 1.3)
+				_cars[i].ai_rubber = _cars[i].ai_skill * clampf(
+						1.0 + (ref - _progress[i]) / 120.0, 0.8, 1.15)
 
 	if Net.is_server():
 		_server_tick(_delta)
@@ -441,15 +470,14 @@ func _process(delta: float) -> void:
 			_last_weapon = _car.weapon
 			if _car.weapon >= 0:
 				_weapon_icon.texture = Weapons.icon(_car.weapon)
-				_weapon_icon.modulate = Color.WHITE
 				_weapon_name.text = Weapons.display_name(_car.weapon)
 			else:
-				_weapon_icon.texture = _q_mark_tex
-				_weapon_icon.modulate = Color(1, 1, 1, 0.4)
+				_weapon_icon.texture = _slot_empty_tex
 				_weapon_name.text = "возьми бокс"
 		_lap_label.text = "КРУГ %d/%d" % [
 				clampi(_laps_done[_my_index()] + 1, 1, LAPS), LAPS]
 		_pos_label.text = "МЕСТО %d/%d" % [_player_place(), _cars.size()]
+		_tick_announcements(delta)
 
 	if Net.is_server():
 		# У сервера нет ни ввода, ни HUD — только автовозврат машин.
@@ -527,13 +555,34 @@ func _car_finished(i: int) -> void:
 
 
 ## Баннер «ФИНИШ! Место N». Место зафиксировано в момент пересечения —
-## кто доехал позже, на него уже не влияет.
+## кто доехал позже, на него уже не влияет. Здесь же начисляется опыт:
+## один раз (guard _my_finished), у себя — оффлайн и на клиенте
+## (выделенный сервер HUD не строит и сюда не попадает).
 func _show_finish(place: int) -> void:
+	if _my_finished:
+		return
 	_my_finished = true
 	if _count_label:
 		_count_label.visible = false
-	_finish_label.text = "ФИНИШ!  Место: %d из %d" % [place, _cars.size()]
+	var gained: int = GameState.place_xp(place) + _my_kills * GameState.KILL_XP
+	var before: Vector3i = GameState.level_info()
+	GameState.add_xp(gained)
+	var info: Vector3i = GameState.level_info()
+	_finish_label.text = "ФИНИШ!  МЕСТО %d ИЗ %d" % [place, _cars.size()]
+	if _finish_xp_label:
+		_finish_xp_label.text = "+%d ОПЫТА   ·   УРОВЕНЬ %d  (%d / %d)" \
+				% [gained, info.x, info.y, info.z]
+	if info.x > before.x and _announcer:
+		_announcer.big("НОВЫЙ УРОВЕНЬ %d!" % info.x, "", "teal")
 	_finish_root.visible = true
+	# Праздничный залп конфетти над машиной игрока (победителю — двойной).
+	var me := _my_index()
+	if me >= 0 and me < _cars.size():
+		var car := _cars[me]
+		FxKit.confetti_burst(self, car.global_position + Vector3.UP * 1.2)
+		if place == 1:
+			FxKit.confetti_burst(self,
+					car.global_position + Vector3.UP * 2.5, 120)
 
 
 ## Полное окончание заезда: все доехали или вышел FINISH_TIMEOUT.
@@ -684,30 +733,56 @@ func _pick_track_kind() -> String:
 func _setup_environment() -> void:
 	if Net.is_server():
 		return   # см. _set_car_model: сервер без косметики
+	# Ночной город (неон) — своё окружение: луна вместо солнца, тёмное
+	# небо с городским заревом у горизонта и glow, от которого светятся
+	# все эмиссивные материалы (трубки на стенах, окна зданий, вывески).
+	var neon := _track_kind == TrackBuilder.KIND_NEON
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-55, -30, 0)
 	sun.shadow_enabled = true
-	sun.light_energy = 1.2
+	if neon:
+		sun.light_energy = 0.25
+		sun.light_color = Color(0.65, 0.75, 1.0)   # холодный лунный свет
+	else:
+		sun.light_energy = 1.2
 	add_child(sun)
 
 	var env := WorldEnvironment.new()
 	var e := Environment.new()
-	# Голубое градиентное небо (мультяшный день — под стать декору трассы).
+	# Голубое градиентное небо (мультяшный день — под стать декору трассы);
+	# ночью — почти чёрный верх и багровое зарево города у горизонта.
 	var sky_mat := ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = Color(0.3, 0.55, 0.87)
-	sky_mat.sky_horizon_color = Color(0.74, 0.85, 0.95)
-	sky_mat.ground_horizon_color = Color(0.74, 0.85, 0.95)
-	# Низ скайбокса — в тон земли: трава или песок пустыни.
-	sky_mat.ground_bottom_color = Color(0.52, 0.44, 0.28) \
-			if _track_kind == TrackBuilder.KIND_SAND else Color(0.28, 0.4, 0.24)
+	if neon:
+		sky_mat.sky_top_color = Color(0.01, 0.02, 0.06)
+		sky_mat.sky_horizon_color = Color(0.17, 0.07, 0.22)
+		sky_mat.ground_horizon_color = Color(0.17, 0.07, 0.22)
+		sky_mat.ground_bottom_color = Color(0.02, 0.02, 0.04)
+	else:
+		sky_mat.sky_top_color = Color(0.3, 0.55, 0.87)
+		sky_mat.sky_horizon_color = Color(0.74, 0.85, 0.95)
+		sky_mat.ground_horizon_color = Color(0.74, 0.85, 0.95)
+		# Низ скайбокса — в тон земли: трава или песок пустыни.
+		sky_mat.ground_bottom_color = Color(0.52, 0.44, 0.28) \
+				if _track_kind == TrackBuilder.KIND_SAND \
+				else Color(0.28, 0.4, 0.24)
 	sky_mat.sun_angle_max = 15.0
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
 	e.background_mode = Environment.BG_SKY
 	e.sky = sky
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	e.ambient_light_color = Color(0.65, 0.67, 0.72)
-	e.ambient_light_energy = 0.8
+	if neon:
+		# Приподнятый синий ambient: ночь читается, но машины не тонут в
+		# черноте (аркада важнее реализма).
+		e.ambient_light_color = Color(0.38, 0.42, 0.62)
+		e.ambient_light_energy = 0.55
+		e.glow_enabled = true
+		e.glow_intensity = 0.7
+		e.glow_bloom = 0.05
+		e.glow_hdr_threshold = 1.0
+	else:
+		e.ambient_light_color = Color(0.65, 0.67, 0.72)
+		e.ambient_light_energy = 0.8
 	env.environment = e
 	add_child(env)
 
@@ -746,25 +821,8 @@ func _build_placeholder_visual(car: Car) -> void:
 	car.add_child(nose)
 
 
-## Плоская скруглённая панель с тонкой рамкой. Именно плоская: у всех
-## «прямоугольников» GUI Pack Cartoon края пузатые (гуляют до 12-19 px),
-## и растянутая 9-slice панель выходит «облаком с выпуклостями».
-func _make_panel(parent: Node, pos: Vector2, panel_size: Vector2,
-		bg := Color(0.09, 0.13, 0.25, 0.82)) -> Panel:
-	var p := Panel.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = bg
-	sb.set_corner_radius_all(16)
-	sb.set_border_width_all(2)
-	sb.border_color = Color(1, 1, 1, 0.22)
-	p.add_theme_stylebox_override("panel", sb)
-	p.position = pos
-	p.size = panel_size
-	parent.add_child(p)
-	return p
-
-
-## Надпись мультяшным шрифтом Softie Cyr (есть кириллица) с обводкой.
+## Надпись Russo One (индустриальный гротеск, есть кириллица) с
+## чернильной обводкой — базовая типографика «гаражного» стиля.
 func _make_label(parent: Node, txt: String, font_size: int,
 		color := Color.WHITE, outline := 0) -> Label:
 	var l := Label.new()
@@ -775,7 +833,7 @@ func _make_label(parent: Node, txt: String, font_size: int,
 	l.add_theme_color_override("font_color", color)
 	if outline > 0:
 		l.add_theme_constant_override("outline_size", outline)
-		l.add_theme_color_override("font_outline_color", Color(0.09, 0.1, 0.17))
+		l.add_theme_color_override("font_outline_color", UiKit.INK)
 	parent.add_child(l)
 	return l
 
@@ -783,32 +841,41 @@ func _make_label(parent: Node, txt: String, font_size: int,
 func _setup_hud() -> void:
 	var canvas := CanvasLayer.new()
 	add_child(canvas)
-	_ui_font = load("res://assets/ui/Softie.ttf")
-	_q_mark_tex = load("res://assets/ui/q_mark.png")
-	# Скорость: крупные цифры.
-	var speed_panel := _make_panel(canvas, Vector2(16, 12), Vector2(190, 66))
-	_speed_label = _make_label(speed_panel, "0", 40, Color.WHITE, 6)
-	_speed_label.position = Vector2(20, 5)
-	_speed_label.size = Vector2(100, 56)
+	_ui_font = UiKit.font()
+	_slot_empty_tex = load("res://assets/ui/garage/slot_empty.png")
+
+	# Скорость: белая эмалевая табличка, чернильные цифры, аварийная
+	# полоска по нижней кромке (как SPEED-табличка референса).
+	var speed_panel := UiKit.plate(canvas, "white", Vector2(16, 12),
+			Vector2(190, 70))
+	_speed_label = _make_label(speed_panel, "0", 40, UiKit.INK)
+	_speed_label.position = Vector2(14, 4)
+	_speed_label.size = Vector2(106, 54)
 	_speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	var kmh := _make_label(speed_panel, "км/ч", 15,
-			Color(1, 1, 1, 0.75), 4)
-	kmh.position = Vector2(130, 36)
+	var kmh := _make_label(speed_panel, "КМ/Ч", 14,
+			Color(UiKit.INK.r, UiKit.INK.g, UiKit.INK.b, 0.7))
+	kmh.position = Vector2(130, 30)
+	UiKit.hazard(speed_panel, Vector2(10, 57), Vector2(170, 7), 0.95)
 
-	# Круг и место.
-	var info_panel := _make_panel(canvas, Vector2(16, 86), Vector2(190, 78))
-	_lap_label = _make_label(info_panel, "КРУГ 1/%d" % LAPS, 20,
-			Color(1, 0.9, 0.45), 5)
-	_lap_label.position = Vector2(22, 12)
-	_pos_label = _make_label(info_panel, "МЕСТО 1/4", 20,
-			Color.WHITE, 5)
-	_pos_label.position = Vector2(22, 42)
+	# Круг — жёлтая эмаль, место — оранжевая (как Lap / 1st референса).
+	var lap_panel := UiKit.plate(canvas, "yellow", Vector2(16, 90),
+			Vector2(190, 44))
+	_lap_label = _make_label(lap_panel, "КРУГ 1/%d" % LAPS, 20, UiKit.INK)
+	_lap_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_lap_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_lap_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var pos_panel := UiKit.plate(canvas, "orange", Vector2(16, 142),
+			Vector2(190, 44))
+	_pos_label = _make_label(pos_panel, "МЕСТО 1/4", 20, Color.WHITE, 5)
+	_pos_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_pos_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_pos_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
-	# Мини-карта в правом верхнем углу: контур трассы и точки-машины.
-	# Панель привязана к ПРАВОМУ краю (anchor 1.0), чтобы не уезжать при
-	# другом разрешении окна.
-	var map_panel := _make_panel(canvas, Vector2.ZERO, Vector2(228, 158),
-			Color(0.07, 0.09, 0.16, 0.92))
+	# Мини-карта в правом верхнем углу: стальная табличка, внутри контур
+	# трассы. Панель привязана к ПРАВОМУ краю (anchor 1.0), чтобы не
+	# уезжать при другом разрешении окна.
+	var map_panel := UiKit.plate(canvas, "steel", Vector2.ZERO,
+			Vector2(228, 158))
 	map_panel.anchor_left = 1.0
 	map_panel.anchor_right = 1.0
 	map_panel.offset_left = -244
@@ -818,34 +885,32 @@ func _setup_hud() -> void:
 	_minimap = Minimap.new()
 	_minimap.name = "Minimap"
 	_minimap.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_minimap.offset_left = 8
+	_minimap.offset_right = -8
+	_minimap.offset_top = 8
+	_minimap.offset_bottom = -8
 	map_panel.add_child(_minimap)
 	_minimap.setup(_track, _cars)
 	_minimap.my_index = _my_index()
 
-	# Слот оружия: тёмный глянцевый круг + иконка + подпись.
-	var slot := TextureRect.new()
-	slot.texture = load("res://assets/ui/circle_dark.png")
-	# expand_mode СТРОГО до size: при дефолтном KEEP_SIZE присвоение size
-	# клампится к размеру текстуры (512) и слот выходит гигантским.
-	slot.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	slot.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	slot.position = Vector2(24, 178)
-	slot.size = Vector2(96, 96)
-	canvas.add_child(slot)
+	# Слот оружия: пустой — стальной гекс EMPTY (нарезан из референса),
+	# с оружием — его восьмиугольный значок на всю величину слота.
 	_weapon_icon = TextureRect.new()
+	# expand_mode СТРОГО до size: при дефолтном KEEP_SIZE присвоение size
+	# клампится к размеру текстуры и слот выходит гигантским.
 	_weapon_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_weapon_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	_weapon_icon.position = Vector2(17, 15)
-	_weapon_icon.size = Vector2(62, 62)
-	slot.add_child(_weapon_icon)
-	_weapon_name = _make_label(canvas, "", 15, Color(1, 0.9, 0.45), 4)
-	_weapon_name.position = Vector2(0, 276)
+	_weapon_icon.position = Vector2(24, 196)
+	_weapon_icon.size = Vector2(96, 96)
+	_weapon_icon.texture = _slot_empty_tex
+	canvas.add_child(_weapon_icon)
+	_weapon_name = _make_label(canvas, "", 14, UiKit.YELLOW, 4)
+	_weapon_name.position = Vector2(0, 294)
 	_weapon_name.size = Vector2(144, 22)
 	_weapon_name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
-	# Предупреждение (вылет/переворот/застрял) — красная плашка сверху.
-	_warn_panel = _make_panel(canvas, Vector2.ZERO, Vector2(440, 56),
-			Color(0.82, 0.16, 0.2, 0.92))
+	# Предупреждение (вылет/переворот/застрял) — красная табличка сверху.
+	_warn_panel = UiKit.plate(canvas, "red", Vector2.ZERO, Vector2(440, 56))
 	_warn_panel.anchor_left = 0.5
 	_warn_panel.anchor_right = 0.5
 	_warn_panel.offset_left = -220
@@ -862,44 +927,48 @@ func _setup_hud() -> void:
 	_warn_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
 	# Отсчёт 3-2-1-GO: огромные цифры с «выпрыгиванием» (см. _pop_count).
-	_count_label = _make_label(canvas, "", 120, Color(1, 0.85, 0.25), 16)
+	_count_label = _make_label(canvas, "", 130, UiKit.YELLOW, 18)
 	_count_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_count_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_count_label.visible = false
 
-	# Финиш: розовый баннер-лента + текст.
+	# Финиш: стальная плита с шахматными лентами сверху и снизу.
 	_finish_root = Control.new()
 	_finish_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_finish_root.visible = false
 	canvas.add_child(_finish_root)
-	var banner := TextureRect.new()
-	banner.texture = load("res://assets/ui/flag_banner.png")
-	banner.anchor_left = 0.5
-	banner.anchor_right = 0.5
-	banner.anchor_top = 0.5
-	banner.anchor_bottom = 0.5
-	banner.offset_left = -310
-	banner.offset_right = 310
-	banner.offset_top = -170
-	banner.offset_bottom = 28
-	banner.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	banner.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	_finish_root.add_child(banner)
-	_finish_label = _make_label(banner, "", 30, Color.WHITE, 8)
+	var fin_plate := UiKit.plate(_finish_root, "steel", Vector2.ZERO,
+			Vector2(640, 190), false)
+	fin_plate.anchor_left = 0.5
+	fin_plate.anchor_right = 0.5
+	fin_plate.anchor_top = 0.5
+	fin_plate.anchor_bottom = 0.5
+	fin_plate.offset_left = -320
+	fin_plate.offset_right = 320
+	fin_plate.offset_top = -130
+	fin_plate.offset_bottom = 60
+	UiKit.checker(fin_plate, Vector2(20, 14), Vector2(600, 24))
+	UiKit.checker(fin_plate, Vector2(20, 152), Vector2(600, 24))
+	_finish_label = _make_label(fin_plate, "", 34, Color.WHITE, 8)
 	_finish_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_finish_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_finish_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	var finish_hint := _make_label(_finish_root, "Enter — в гараж", 18,
-			Color(1, 1, 1, 0.85), 5)
-	finish_hint.anchor_left = 0.5
-	finish_hint.anchor_right = 0.5
-	finish_hint.anchor_top = 0.5
-	finish_hint.anchor_bottom = 0.5
-	finish_hint.offset_left = -150
-	finish_hint.offset_right = 150
-	finish_hint.offset_top = 44
-	finish_hint.offset_bottom = 72
+	_finish_label.offset_bottom = -40.0   # чуть выше: снизу строка опыта
+	_finish_xp_label = _make_label(fin_plate, "", 20, UiKit.YELLOW, 6)
+	_finish_xp_label.anchor_left = 0.0
+	_finish_xp_label.anchor_right = 1.0
+	_finish_xp_label.offset_top = 112.0
+	_finish_xp_label.offset_bottom = 146.0
+	_finish_xp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var finish_hint := _make_label(fin_plate, "ENTER — В ГАРАЖ", 16,
+			Color(1, 1, 1, 0.8), 5)
+	finish_hint.anchor_left = 0.0
+	finish_hint.anchor_right = 1.0
+	finish_hint.anchor_top = 1.0
+	finish_hint.anchor_bottom = 1.0
+	finish_hint.offset_top = 12
+	finish_hint.offset_bottom = 40
 	finish_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
 	var help := Label.new()
@@ -907,11 +976,17 @@ func _setup_hud() -> void:
 			+ "E — оружие | R — на трассу | Esc — меню"
 	help.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	help.position = Vector2(20, -30)
-	help.add_theme_font_size_override("font_size", 14)
+	help.add_theme_font_size_override("font_size", 13)
 	if _ui_font:
 		help.add_theme_font_override("font", _ui_font)
-	help.modulate = Color(1, 1, 1, 0.7)
+	help.modulate = Color(1, 1, 1, 0.65)
 	canvas.add_child(help)
+
+	# Всплывающие анонсы (двойные убийства, последний круг…) — поверх
+	# всего HUD, но ПОД сетевым лобби.
+	_announcer = Announcer.new()
+	_announcer.name = "Announcer"
+	canvas.add_child(_announcer)
 
 	# Лента событий оружия («кто кого чем») — правый край, под мини-картой.
 	_feed_box = VBoxContainer.new()
@@ -1395,8 +1470,7 @@ func _rx_count(txt: String) -> void:
 		_lobby.hide_screen()
 	if _count_label:
 		_count_label.visible = true
-	_pop_count(txt, Color(0.5, 1.0, 0.35) if txt == "GO!"
-			else Color(1, 0.85, 0.25))
+	_pop_count(txt, UiKit.TEAL if txt == "GO!" else UiKit.YELLOW)
 	if txt != "GO!":
 		return
 	# Управление включается по команде сервера: до GO! ввод не шлём.
@@ -1613,6 +1687,9 @@ func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3) -> void:
 		Weapons.MAGNET:
 			FlashFx.spawn(self, pos + Vector3.UP * 0.5, 3.2,
 					Color(0.8, 0.3, 1.0))
+			FxKit.ring(self, pos, 5.0, Color(0.8, 0.3, 1.0))
+			FxKit.lightning_burst(self, pos + Vector3.UP * 0.8,
+					Color(0.85, 0.4, 1.0), 7, 1.4)
 		Weapons.LASER:
 			LaserFx.spawn(self, pos + Vector3.UP * 0.5, dir, 70.0)
 		Weapons.AIRSTRIKE:
@@ -1624,6 +1701,7 @@ func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3) -> void:
 		Weapons.BOOST:
 			FlashFx.spawn(self, pos + Vector3.UP * 0.5, 1.2,
 					Color(0.3, 0.9, 1.0))
+			FxKit.ring(self, pos, 2.2, Color(0.3, 0.9, 1.0))
 
 
 ## Обновить экран лобби: какие слоты заняты живыми игроками и на каких
@@ -1642,7 +1720,7 @@ func _update_lobby_slots() -> void:
 # оффлайн-игра, поэтому события порождаются там и рассылаются RPC.
 
 const FEED_MAX := 5        # больше записей разом не держим
-const FEED_LIFETIME := 3.4 # сколько запись висит до угасания, с
+const FEED_LIFETIME := 7.0 # сколько запись висит до угасания, с
 
 
 ## Имя машины для ленты. Имён игроков пока нет — Player по номеру слота.
@@ -1671,15 +1749,16 @@ func _rx_weapon_event(ai: int, vi: int, kind: int) -> void:
 
 ## Запись в ленту: имя, иконка оружия, стрелка, жертва. Висит
 ## FEED_LIFETIME и угасает; при переполнении старейшая вытесняется.
+## Летальные попадания заодно уходят в счётчик серий (_register_kill).
 func _show_weapon_event(ai: int, vi: int, kind: int) -> void:
 	if _feed_box == null:
 		return
+	if kind in LETHAL_KINDS:
+		_register_kill(ai, vi)
 	while _feed_box.get_child_count() >= FEED_MAX:
 		_feed_box.get_child(0).free()
 	var entry := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.09, 0.13, 0.25, 0.82)
-	sb.set_corner_radius_all(10)
+	var sb := UiKit.steel_box()
 	sb.content_margin_left = 12.0
 	sb.content_margin_right = 12.0
 	sb.content_margin_top = 5.0
@@ -1711,6 +1790,78 @@ func _show_weapon_event(ai: int, vi: int, kind: int) -> void:
 ## Имя в ленте: своё — зелёное (как стрелка над машиной), чужие — жёлтые.
 func _feed_name(parent: Node, idx: int) -> void:
 	var l := _make_label(parent, car_label(idx), 16,
-			Color(0.45, 1.0, 0.55) if idx == _my_index()
+			UiKit.GREEN_ME if idx == _my_index()
 			else Color(1, 0.9, 0.45), 4)
 	l.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+
+
+# ════════════════════ ВСПЛЫВАЮЩИЕ АНОНСЫ ════════════════════
+# Крупные события гонки штампуются табличками по центру экрана
+# (Announcer): серии убийств, первая кровь, последний круг, лидерство,
+# личные «вас уничтожил…». Работает и оффлайн, и на клиенте: события
+# оружия приезжают через _rx_weapon_event, прогресс — в снимках.
+
+## Летальное попадание: серия убийств (окно KILL_STREAK_WINDOW — лазер и
+## авиаудар кладут нескольких за раз), первая кровь, личные анонсы.
+func _register_kill(ai: int, vi: int) -> void:
+	if _announcer == null:
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	var streak: Dictionary = _kill_streak.get(ai, {"count": 0, "time": -10.0})
+	if now - streak["time"] > KILL_STREAK_WINDOW:
+		streak["count"] = 0
+	streak["count"] += 1
+	streak["time"] = now
+	_kill_streak[ai] = streak
+
+	if not _first_blood_done:
+		_first_blood_done = true
+		_announcer.big("ПЕРВАЯ КРОВЬ!", car_label(ai), "orange")
+	match streak["count"]:
+		2: _announcer.big("ДВОЙНОЕ УБИЙСТВО!", car_label(ai), "red")
+		3: _announcer.big("ТРОЙНОЕ УБИЙСТВО!", car_label(ai), "red")
+
+	var me := _my_index()
+	if vi == me:
+		_announcer.small("Вас уничтожил %s" % car_label(ai), "red")
+	elif ai == me:
+		_my_kills += 1   # копилка опыта за заезд (см. _show_finish)
+		_announcer.small("%s уничтожен!" % car_label(vi), "teal")
+
+
+## Ежекадровые проверки для анонсов: последний круг и смена лидерства.
+## Зовётся из _process только там, где есть HUD (не на сервере).
+func _tick_announcements(delta: float) -> void:
+	if _announcer == null:
+		return
+	var racing: bool = _car.controls_enabled and not _finished \
+			and not _my_finished
+	if racing:
+		_race_time += delta
+
+	# Последний круг — один раз, когда МОЯ машина на него выехала.
+	if racing and not _last_lap_told \
+			and _laps_done[_my_index()] == LAPS - 1:
+		_last_lap_told = true
+		_announcer.big("ПОСЛЕДНИЙ КРУГ!", "", "yellow")
+
+	# Лидерство: место 1 с дебаунсом 0.8 с (борьба бок-о-бок не должна
+	# сыпать анонсы очередью). Первые секунды после старта молчим —
+	# состояние только устанавливается.
+	if not racing:
+		return
+	var leading := _player_place() == 1
+	if leading == _lead_shown:
+		_lead_flip_time = 0.0
+		return
+	_lead_flip_time += delta
+	if _lead_flip_time < 0.8:
+		return
+	_lead_flip_time = 0.0
+	_lead_shown = leading
+	if _race_time < 5.0:
+		return   # стартовая раздача мест — не событие
+	if leading:
+		_announcer.big("ВЫ ЛИДЕР!", "", "teal")
+	else:
+		_announcer.small("Лидерство потеряно", "red")

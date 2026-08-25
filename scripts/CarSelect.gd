@@ -40,7 +40,7 @@ var _net_status: Label
 var _scroll: ScrollContainer
 var _style_normal: StyleBoxFlat
 var _style_selected: StyleBoxFlat
-var _ui_font: FontFile  # Softie Cyr — мультяшный шрифт (с кириллицей)
+var _ui_font: FontFile  # Russo One — индустриальный, с кириллицей
 
 
 func _ready() -> void:
@@ -88,7 +88,7 @@ func _build_net_ui(canvas: Node) -> void:
 	_net_status.add_theme_font_size_override("font_size", 18)
 	_net_status.add_theme_constant_override("outline_size", 5)
 	_net_status.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	_net_status.add_theme_color_override("font_color", Color(1, 0.95, 0.75))
+	_net_status.add_theme_color_override("font_color", UiKit.YELLOW)
 	canvas.add_child(_net_status)
 	# Панель жмётся к левой половине экрана: справа от 685 px начинается
 	# сетка машин, и на анкере 0.75 кнопка уезжала ПОД неё — в кадре её
@@ -110,6 +110,13 @@ func _build_net_ui(canvas: Node) -> void:
 	if _ui_font:
 		_host_edit.add_theme_font_override("font", _ui_font)
 	_host_edit.add_theme_font_size_override("font_size", 20)
+	# Стальная рамка вместо системной серой.
+	var edit_sb := UiKit.steel_box(6, 0.95)
+	edit_sb.set_content_margin_all(6)
+	for state in ["normal", "focus"]:
+		_host_edit.add_theme_stylebox_override(state, edit_sb)
+	_host_edit.add_theme_color_override("font_color", Color.WHITE)
+	_host_edit.add_theme_color_override("caret_color", UiKit.YELLOW)
 	_host_edit.anchor_left = 0.0
 	_host_edit.anchor_right = 0.0
 	_host_edit.anchor_top = 1.0
@@ -122,12 +129,7 @@ func _build_net_ui(canvas: Node) -> void:
 
 	var net_btn := Button.new()
 	net_btn.text = "ПО СЕТИ"
-	if _ui_font:
-		net_btn.add_theme_font_override("font", _ui_font)
-	net_btn.add_theme_font_size_override("font_size", 28)
-	net_btn.add_theme_constant_override("outline_size", 7)
-	net_btn.add_theme_color_override("font_outline_color", Color(0.06, 0.2, 0.35))
-	net_btn.focus_mode = Control.FOCUS_NONE
+	UiKit.style_button(net_btn, "teal", 26)
 	net_btn.anchor_left = 0.0
 	net_btn.anchor_right = 0.0
 	net_btn.anchor_top = 1.0
@@ -136,18 +138,6 @@ func _build_net_ui(canvas: Node) -> void:
 	net_btn.offset_right = 680
 	net_btn.offset_top = -122
 	net_btn.offset_bottom = -52
-	var tex: Texture2D = load("res://assets/ui/btn_rect_blue.png")
-	for state in ["normal", "hover", "pressed"]:
-		var st := StyleBoxTexture.new()
-		st.texture = tex
-		st.set_texture_margin_all(34.0)
-		if state == "hover":
-			st.modulate_color = Color(1.15, 1.15, 1.15)
-		elif state == "pressed":
-			st.modulate_color = Color(0.8, 0.8, 0.8)
-		net_btn.add_theme_stylebox_override(state, st)
-	for state in ["font_color", "font_hover_color", "font_pressed_color"]:
-		net_btn.add_theme_color_override(state, Color.WHITE)
 	net_btn.pressed.connect(_join_pressed)
 	canvas.add_child(net_btn)
 
@@ -380,43 +370,55 @@ func _setup_podium() -> void:
 func _setup_hud() -> void:
 	var canvas := CanvasLayer.new()
 	add_child(canvas)
-	_ui_font = load("res://assets/ui/Softie.ttf")
+	_ui_font = UiKit.font()
 
-	# Заголовок — розовый баннер-лента (GUI Pack Cartoon) с обводным текстом.
-	var banner := TextureRect.new()
-	banner.texture = load("res://assets/ui/flag_banner.png")
-	# expand_mode до offsets: при KEEP_SIZE размеры клампятся к текстуре.
-	banner.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	banner.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	# Заголовок — белая эмалевая табличка с чернильным текстом и
+	# аварийной лентой по нижней кромке («гаражный» стиль).
+	var banner := UiKit.plate(canvas, "white", Vector2.ZERO,
+			Vector2(420, 92), false)
 	banner.anchor_left = 0.25
 	banner.anchor_right = 0.25
 	banner.offset_left = -210
 	banner.offset_right = 210
-	banner.offset_top = 10
-	banner.offset_bottom = 128
-	canvas.add_child(banner)
+	banner.offset_top = 14
+	banner.offset_bottom = 106
+	UiKit.hazard(banner, Vector2(14, 92 - 22), Vector2(420 - 28, 12), 0.95)
 	var title := Label.new()
 	title.text = "ВЫБОР МАШИНЫ"
 	if _ui_font:
 		title.add_theme_font_override("font", _ui_font)
-	title.add_theme_font_size_override("font_size", 30)
-	title.add_theme_constant_override("outline_size", 7)
-	title.add_theme_color_override("font_outline_color", Color(0.45, 0.1, 0.25))
+	title.add_theme_font_size_override("font_size", 28)
+	title.add_theme_color_override("font_color", UiKit.INK)
 	banner.add_child(title)
 	# and_offsets: обычный set_anchors_preset сохранил бы крошечный размер.
 	title.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	title.offset_bottom = -10
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
-	# Имя машины — мультяшным шрифтом Softie на плоской скруглённой панели
-	# (кнопки-«желе» пака при растяжении дают бугры — юзеру не нравилось).
-	var name_panel := Panel.new()
-	var name_sb := StyleBoxFlat.new()
-	name_sb.bg_color = Color(0.09, 0.13, 0.25, 0.82)
-	name_sb.set_corner_radius_all(16)
-	name_sb.set_border_width_all(2)
-	name_sb.border_color = Color(1, 1, 1, 0.22)
-	name_panel.add_theme_stylebox_override("panel", name_sb)
+	# Уровень и опыт профиля — жёлтая строка под заголовком. Опыт даётся
+	# за место на финише (GameState), за уровни дальше откроем «штуки».
+	var info: Vector3i = GameState.level_info()
+	var xp_label := Label.new()
+	xp_label.text = "УРОВЕНЬ %d   ·   ОПЫТ %d / %d" % [info.x, info.y, info.z]
+	if _ui_font:
+		xp_label.add_theme_font_override("font", _ui_font)
+	xp_label.add_theme_font_size_override("font_size", 17)
+	xp_label.add_theme_color_override("font_color", UiKit.YELLOW)
+	xp_label.add_theme_constant_override("outline_size", 5)
+	xp_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	xp_label.anchor_left = 0.25
+	xp_label.anchor_right = 0.25
+	xp_label.offset_left = -210
+	xp_label.offset_right = 210
+	xp_label.offset_top = 112
+	xp_label.offset_bottom = 138
+	xp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	canvas.add_child(xp_label)
+
+	# Имя машины — на стальной табличке.
+	var name_panel := UiKit.plate(canvas, "steel", Vector2.ZERO,
+			Vector2(380, 70))
 	name_panel.anchor_left = 0.25
 	name_panel.anchor_right = 0.25
 	name_panel.anchor_top = 1.0
@@ -425,13 +427,12 @@ func _setup_hud() -> void:
 	name_panel.offset_right = 190
 	name_panel.offset_top = -216
 	name_panel.offset_bottom = -146
-	canvas.add_child(name_panel)
 	_name_label = Label.new()
 	if _ui_font:
 		_name_label.add_theme_font_override("font", _ui_font)
-	_name_label.add_theme_font_size_override("font_size", 34)
+	_name_label.add_theme_font_size_override("font_size", 30)
 	_name_label.add_theme_constant_override("outline_size", 6)
-	_name_label.add_theme_color_override("font_outline_color", Color(0.09, 0.1, 0.17))
+	_name_label.add_theme_color_override("font_outline_color", UiKit.INK)
 	name_panel.add_child(_name_label)
 	_name_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -448,24 +449,19 @@ func _setup_hud() -> void:
 	_count_label.modulate = Color(1, 1, 1, 0.7)
 	canvas.add_child(_count_label)
 
-	# Стрелки листания по бокам подиума — мультяшные, с «нажатием».
-	_make_arrow(canvas, "res://assets/ui/arrow_left.png", 0.06,
+	# Стрелки листания по бокам подиума — оранжевые таблички.
+	_make_arrow(canvas, "res://assets/ui/garage/arrow_l.png", 0.06,
 			func() -> void: _set_index(
 					(_index - 1 + CarModelLibrary.CAR_IDS.size())
 					% CarModelLibrary.CAR_IDS.size()))
-	_make_arrow(canvas, "res://assets/ui/arrow_right.png", 0.44,
+	_make_arrow(canvas, "res://assets/ui/garage/arrow_r.png", 0.44,
 			func() -> void: _set_index(
 					(_index + 1) % CarModelLibrary.CAR_IDS.size()))
 
-	# Кнопка «СТАРТ» — глянцевая зелёная кнопка из пака.
+	# Кнопка «СТАРТ» — оранжевая эмалевая табличка (как START референса).
 	var start_btn := Button.new()
 	start_btn.text = "СТАРТ"
-	if _ui_font:
-		start_btn.add_theme_font_override("font", _ui_font)
-	start_btn.add_theme_font_size_override("font_size", 30)
-	start_btn.add_theme_constant_override("outline_size", 7)
-	start_btn.add_theme_color_override("font_outline_color", Color(0.1, 0.3, 0.08))
-	start_btn.focus_mode = Control.FOCUS_NONE
+	UiKit.style_button(start_btn, "orange", 30)
 	start_btn.anchor_left = 0.25
 	start_btn.anchor_right = 0.25
 	start_btn.anchor_top = 1.0
@@ -474,23 +470,6 @@ func _setup_hud() -> void:
 	start_btn.offset_right = 130
 	start_btn.offset_top = -122
 	start_btn.offset_bottom = -52
-	var tex_btn: Texture2D = load("res://assets/ui/btn_rect_green.png")
-	var st_normal := StyleBoxTexture.new()
-	st_normal.texture = tex_btn
-	st_normal.set_texture_margin_all(34.0)
-	var st_hover := StyleBoxTexture.new()
-	st_hover.texture = tex_btn
-	st_hover.set_texture_margin_all(34.0)
-	st_hover.modulate_color = Color(1.15, 1.15, 1.15)
-	var st_pressed := StyleBoxTexture.new()
-	st_pressed.texture = tex_btn
-	st_pressed.set_texture_margin_all(34.0)
-	st_pressed.modulate_color = Color(0.8, 0.8, 0.8)
-	start_btn.add_theme_stylebox_override("normal", st_normal)
-	start_btn.add_theme_stylebox_override("hover", st_hover)
-	start_btn.add_theme_stylebox_override("pressed", st_pressed)
-	for state in ["font_color", "font_hover_color", "font_pressed_color"]:
-		start_btn.add_theme_color_override(state, Color.WHITE)
 	start_btn.pressed.connect(_start_race)
 	canvas.add_child(start_btn)
 	_build_net_ui(canvas)
@@ -535,20 +514,20 @@ func _make_arrow(canvas: CanvasLayer, tex_path: String, anchor_x: float,
 
 ## Правая половина: прокручиваемая сетка миниатюр всех машин.
 func _setup_grid(canvas: CanvasLayer) -> void:
-	_style_normal = StyleBoxFlat.new()
-	_style_normal.bg_color = Color(0.13, 0.13, 0.18, 0.9)
-	_style_normal.set_corner_radius_all(6)
-	_style_selected = StyleBoxFlat.new()
-	_style_selected.bg_color = Color(0.25, 0.22, 0.1, 0.95)
-	_style_selected.set_corner_radius_all(6)
+	_style_normal = UiKit.steel_box()
+	_style_selected = UiKit.steel_box()
+	_style_selected.bg_color = Color(0.30, 0.27, 0.14, 0.95)
 	_style_selected.set_border_width_all(3)
-	_style_selected.border_color = Color(0.95, 0.8, 0.1)
+	_style_selected.border_color = UiKit.YELLOW
 
 	var panel := PanelContainer.new()
 	var panel_style := StyleBoxFlat.new()
-	panel_style.bg_color = Color(0.04, 0.04, 0.07, 0.85)
+	panel_style.bg_color = Color(UiKit.INK.r, UiKit.INK.g, UiKit.INK.b, 0.88)
 	panel_style.set_corner_radius_all(10)
 	panel_style.set_content_margin_all(10)
+	panel_style.set_border_width_all(1)
+	panel_style.border_color = Color(UiKit.RIM.r, UiKit.RIM.g,
+			UiKit.RIM.b, 0.45)
 	panel.add_theme_stylebox_override("panel", panel_style)
 	panel.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
 	panel.offset_left = -600

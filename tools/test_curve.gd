@@ -55,8 +55,7 @@ func _check(track: TrackBuilder, kind: String) -> bool:
 	# а не дефект. Запас ×1.4 покрывает стыки прямая↔дуга; настоящий
 	# излом (разрыв касательной) даёт угол в разы больше.
 	var min_radius := 1e9
-	var segments: Array = TrackBuilder.SEGMENTS \
-			if kind != TrackBuilder.KIND_SAND else TrackBuilder.SEGMENTS_SAND
+	var segments: Array = TrackBuilder.segments_for(kind)
 	for seg: Array in segments:
 		if seg[0] == "A":
 			min_radius = minf(min_radius, float(seg[1]))

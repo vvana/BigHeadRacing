@@ -81,5 +81,11 @@ func _physics_process(_d: float) -> void:
 			player2._boost_time = 5.0
 		465:
 			_shot("hud_status_boost.png")
-		480:
+		470:
+			# Всплывающие анонсы: большой «штамп» + малый ярус.
+			_main._announcer.big("ДВОЙНОЕ УБИЙСТВО!", "Player 1", "red")
+			_main._announcer.small("Player 3 уничтожен!", "teal")
+		492:
+			_shot("hud_announce.png")
+		500:
 			get_tree().quit(0)

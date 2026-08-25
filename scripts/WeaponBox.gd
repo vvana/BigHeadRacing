@@ -77,3 +77,5 @@ func _on_body(body: Node3D) -> void:
 	else:
 		car.weapon = Weapons.random_weapon()
 	FlashFx.spawn(get_parent(), global_position, 0.9, Color(1.0, 0.9, 0.3))
+	SparksFx.spawn(get_parent(), global_position, 5.0)
+	FxKit.stars_burst(get_parent(), global_position + Vector3.UP * 0.4, 5)

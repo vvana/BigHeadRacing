@@ -27,18 +27,26 @@ func _ready() -> void:
 	col.shape = shape
 	add_child(col)
 
+	# Клякса из Epic Toon FX (splat01, кадр атласа): мультяшное пятно с
+	# брызгами вместо идеального круга. Текстура белая — красится в чёрный,
+	# металлик/низкая шероховатость дают масляный блик. Кадр вытянут по
+	# ширине (~2:1), так что квад крупнее зоны срабатывания; поворот
+	# «случайный», но БЕЗ randf — не сдвигать поток случайных чисел у
+	# стендов с seed (правило журнала).
 	var mesh := MeshInstance3D.new()
-	var disc := CylinderMesh.new()
-	disc.top_radius = 2.4
-	disc.bottom_radius = 2.4
-	disc.height = 0.04
-	mesh.mesh = disc
+	var quad := QuadMesh.new()
+	quad.size = Vector2(6.4, 6.4)
+	quad.orientation = PlaneMesh.FACE_Y
+	mesh.mesh = quad
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.05, 0.04, 0.08, 0.9)
+	mat.albedo_texture = load("res://assets/fx/oil_splat.png")
+	mat.albedo_color = Color(0.07, 0.05, 0.1, 0.92)
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.roughness = 0.1
 	mat.metallic = 0.6
 	mesh.material_override = mat
+	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mesh.rotation.y = float(get_instance_id() % 6283) * 0.001
 	add_child(mesh)
 
 	if inert:
