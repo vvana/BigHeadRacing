@@ -70,7 +70,7 @@ func _run() -> void:
 	# ГОРКА (единственный перепад высот, см. TrackBuilder.HEIGHT_KEYS):
 	# сбоку — виден силуэт подъёма и спуска; с подножия — как её видит
 	# гонщик. Доли берём из профиля, а не «на глаз».
-	var foot := track._curve.sample_baked(length * 0.140)
+	var foot := track._curve.sample_baked(length * 0.122)
 	var top := track._curve.sample_baked(length * 0.184)
 	var side := (top - foot)
 	side.y = 0.0
@@ -81,7 +81,7 @@ func _run() -> void:
 	# на выходе из дуги, и камера уезжала ЗА ограждение (в кадре был только
 	# красный борт).
 	var behind := track._curve.sample_baked(
-			fposmod(length * 0.140 - 26.0, length))
+			fposmod(length * 0.122 - 26.0, length))
 	await _shot(behind + Vector3(0, 3.2, 0), top + Vector3(0, 1.0, 0),
 			"hill_drive.png")
 	# Игровой ракурс — как видит игрок (изометрия).

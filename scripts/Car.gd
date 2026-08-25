@@ -134,6 +134,7 @@ var _smoke: Array[CPUParticles3D] = []  # дым из-под задних кол
 var _skid_active := false       # сильный занос: задние колёса чертят следы
 var _skid_trails := {}          # пивот заднего колеса -> текущая SkidTrail
 var _boost_flame: CPUParticles3D        # огонь из выхлопа при ускорении
+var _boost_from_pad := false    # текущий буст — с плиты (см. apply_boost)
 var _wheel_pivots: Array[Node3D] = []
 var _steer_visual := 0.0
 var _ai_fire_cd := 2.0
@@ -200,9 +201,10 @@ func _build_status_icon() -> void:
 	add_child(_status_icon)
 
 
-## Фары для ночного города: два узких спота вперёд (-Z), чуть вниз, БЕЗ
-## теней (8 бестеневых спотов на заезд — дёшево; с тенями — нет). Плюс
-## светящиеся «лампы» на носу — саму фару видно и сбоку.
+## Фары для ночного города: два узких спота вперёд (-Z), чуть вниз, С
+## тенями — иначе луч просвечивает сквозь ограждения и стены (споты
+## узкие и короткие, тени для них дёшевы). Плюс светящиеся «лампы» на
+## носу — саму фару видно и сбоку.
 func _build_headlights() -> void:
 	for sx: float in [-0.55, 0.55]:
 		var beam := SpotLight3D.new()
@@ -212,7 +214,7 @@ func _build_headlights() -> void:
 		beam.spot_angle = 30.0
 		beam.light_energy = 6.0
 		beam.light_color = Color(1.0, 0.93, 0.75)
-		beam.shadow_enabled = false
+		beam.shadow_enabled = true
 		add_child(beam)
 
 		var lamp := MeshInstance3D.new()
@@ -583,6 +585,11 @@ func _tick_effects(delta: float) -> void:
 	# Огонь ускорения. У марионетки по сети свой _boost_time не тикает —
 	# признак буста приезжает в снимке значком эффекта (_status_kind).
 	if _boost_flame:
+		# С плиты — узкий короткий язык, от турбины — полный.
+		var narrow := _boost_from_pad and _boost_time > 0.0
+		_boost_flame.scale_amount_min = 0.26 if narrow else 0.45
+		_boost_flame.scale_amount_max = 0.4 if narrow else 0.7
+		_boost_flame.spread = 3.0 if narrow else 5.0
 		_boost_flame.emitting = alive and (_boost_time > 0.0
 				or (_status_time > 0.0 and _status_kind == Weapons.BOOST))
 	if _ghost_time > 0.0:
@@ -1531,7 +1538,7 @@ func _tick_status_icon(delta: float) -> void:
 		if _status_time > 0.0:
 			kind = _status_kind
 			left = _status_time
-		elif _boost_time > 0.0:
+		elif _boost_time > 0.0 and not _boost_from_pad:
 			kind = Weapons.BOOST
 			left = _boost_time
 	if kind < 0:
@@ -1571,10 +1578,14 @@ func show_effect_icon(kind: int, duration: float) -> void:
 ## Ускорение (бонус BOOST). Вынесено из use_weapon ради сети: на сервере
 ## машина живого игрока — марионетка, тягу считает клиент-владелец, и без
 ## пересылки буст не действовал бы вовсе.
-func apply_boost() -> void:
+## from_pad: буст с плиты-ускорителя — плиты срабатывают каждые несколько
+## секунд, поэтому без таблички над машиной и с узким языком огня
+## (полная помпа со значком — только у турбины-бонуса).
+func apply_boost(from_pad := false) -> void:
 	if not alive:
 		return
-	_forward_fx(NetFx.BOOST)
+	_forward_fx(NetFx.BOOST, [from_pad])
+	_boost_from_pad = from_pad
 	_boost_time = boost_duration
 
 

@@ -168,7 +168,11 @@ func _turn_peaks(max_count: int, min_abs: float) -> Array:
 	var pts: PackedVector3Array = _track._pts
 	var n := pts.size()
 	var length: float = _track._curve.get_baked_length()
-	var w := 6  # окно оценки кривизны, сэмплов в каждую сторону
+	# Окно оценки кривизны — В МЕТРАХ (≈5.7 м в каждую сторону), а не в
+	# сэмплах: плотность сэмплов менялась (768 → 1536 на круг), и окно в
+	# сэмплах сжалось бы вдвое — углы пиков упали бы ниже порога min_abs,
+	# щиты и стрелки перед поворотами пропали бы.
+	var w := maxi(1, roundi(5.7 * n / length))
 	var angles := PackedFloat32Array()
 	angles.resize(n)
 	for i in n:
@@ -339,6 +343,14 @@ func _build_city() -> void:
 	var box := BoxMesh.new()
 	box.size = Vector3.ONE
 	box.material = wall_mat
+	# Крыша: трипланарная проекция кладёт окна и на ВЕРХНЮЮ грань коробки,
+	# а камера смотрит сверху (-32°) — окна на крышах бросались в глаза.
+	# Тёмная плита чуть шире дома прикрывает их и заодно рисует карниз.
+	var roof_mat := StandardMaterial3D.new()
+	roof_mat.albedo_color = Color(0.045, 0.05, 0.08)
+	var roof_box := BoxMesh.new()
+	roof_box.size = Vector3.ONE
+	roof_box.material = roof_mat
 
 	var half := TrackBuilder.GROUND_SIZE * 0.47
 	var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
@@ -365,6 +377,12 @@ func _build_city() -> void:
 		b.rotation.y = rng.randi_range(0, 3) * PI * 0.5 \
 				+ rng.randf_range(-0.06, 0.06)
 		add_child(b)
+		var roof := MeshInstance3D.new()
+		roof.mesh = roof_box
+		roof.scale = Vector3(w + 0.6, 0.5, depth + 0.6)
+		roof.position = b.position + Vector3(0, hgt * 0.5 + 0.15, 0)
+		roof.rotation.y = b.rotation.y
+		add_child(roof)
 		_occupy(b.position, maxf(w, depth) * 0.75)
 		placed += 1
 		# Вывеска — на фасаде к трассе, у части домов.

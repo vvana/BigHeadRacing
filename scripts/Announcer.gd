@@ -6,10 +6,12 @@ extends Control
 ## Два яруса: big — крупные события (по одному, остальные в очереди),
 ## small — личная мелочь строкой ниже. Живёт в CanvasLayer поверх HUD.
 
-const BIG_Y := 0.24        # вертикаль ЦЕНТРА большого яруса, доля экрана
-const SMALL_Y := 0.42      # вертикаль малого яруса (ниже подписи большого)
-const BIG_HOLD := 9.0      # сколько большая табличка висит, с
-const SMALL_HOLD := 7.0
+# Ярусы подняты к верхней кромке (было 0.24/0.42): по центру экрана
+# таблички перекрывали обзор трассы перед машиной.
+const BIG_Y := 0.14        # вертикаль ЦЕНТРА большого яруса, доля экрана
+const SMALL_Y := 0.26      # вертикаль малого яруса (ниже подписи большого)
+const BIG_HOLD := 3.0      # сколько большая табличка висит, с
+const SMALL_HOLD := 2.5
 const QUEUE_MAX := 3       # больше анонсов в очереди не держим
 
 var _big_queue: Array[Dictionary] = []
@@ -108,19 +110,22 @@ func _show(item: Dictionary, is_big: bool) -> void:
 	root.modulate.a = 0.0
 	root.scale = Vector2(1.7, 1.7)
 	root.rotation = tilt * 3.0
+	# ГРАБЛИ: НЕ строить это через set_parallel(true/false)! set_parallel
+	# переключает РЕЖИМ: после set_parallel(true) следующие твинеры
+	# присоединяются к ТЕКУЩЕМУ шагу — «растворение» приклеивалось к самому
+	# tween_interval и шло ОДНОВРЕМЕННО с паузой: табличка гасла за ~0.6 с,
+	# хотя узел жил все 9 («анонсы мгновенно пропадают»). Поэтому только
+	# точечный parallel(): он кладёт один твинер параллельно предыдущему.
 	var tw := root.create_tween()
-	tw.set_parallel(true)
 	tw.tween_property(root, "modulate:a", 1.0, 0.10)
-	tw.tween_property(root, "scale", Vector2.ONE, 0.26) \
+	tw.parallel().tween_property(root, "scale", Vector2.ONE, 0.26) \
 			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_property(root, "rotation", tilt, 0.26)
-	tw.set_parallel(false)
+	tw.parallel().tween_property(root, "rotation", tilt, 0.26)
 	tw.tween_interval(BIG_HOLD if is_big else SMALL_HOLD)
-	tw.set_parallel(true)
 	tw.tween_property(root, "modulate:a", 0.0, 0.28)
-	tw.tween_property(root, "position:y", root.position.y - 46.0, 0.28) \
+	tw.parallel().tween_property(root, "position:y",
+			root.position.y - 46.0, 0.28) \
 			.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-	tw.set_parallel(false)
 	tw.tween_callback(root.queue_free)
 	tw.tween_callback(_on_done.bind(is_big))
 

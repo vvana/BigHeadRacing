@@ -80,6 +80,7 @@ var _lobby: Lobby                   # полноэкранное лобби на
 # Клиент: какие слоты заняты живыми игроками (для экрана лобби).
 var _slot_taken: Array[bool] = [false, false, false, false]
 var _feed_box: VBoxContainer        # лента «кто кого чем» (события оружия)
+var _feed_pending: Array[Array] = []  # события, ждущие места в ленте
 
 var _speed_label: Label
 var _lap_label: Label
@@ -478,6 +479,7 @@ func _process(delta: float) -> void:
 				clampi(_laps_done[_my_index()] + 1, 1, LAPS), LAPS]
 		_pos_label.text = "МЕСТО %d/%d" % [_player_place(), _cars.size()]
 		_tick_announcements(delta)
+		_pump_feed()
 
 	if Net.is_server():
 		# У сервера нет ни ввода, ни HUD — только автовозврат машин.
@@ -1545,7 +1547,7 @@ func _rx_fx(kind: int, args: Array) -> void:
 		Car.NetFx.OIL:
 			_car.apply_oil_slip()
 		Car.NetFx.BOOST:
-			_car.apply_boost()
+			_car.apply_boost(args.size() >= 1 and args[0])
 		Car.NetFx.SLOW:
 			if args.size() >= 1:
 				_car.apply_speed_cut(args[0])
@@ -1721,6 +1723,10 @@ func _update_lobby_slots() -> void:
 
 const FEED_MAX := 5        # больше записей разом не держим
 const FEED_LIFETIME := 7.0 # сколько запись висит до угасания, с
+# Раньше этого запись НЕЛЬЗЯ вытеснить новой: в разгар боя события идут
+# чаще, чем раз в секунду, и без этого порога записи сменялись быстрее,
+# чем их успеваешь прочитать. Лишние события ждут в _feed_pending.
+const FEED_MIN_SHOW := 4.0
 
 
 ## Имя машины для ленты. Имён игроков пока нет — Player по номеру слота.
@@ -1747,17 +1753,40 @@ func _rx_weapon_event(ai: int, vi: int, kind: int) -> void:
 	_show_weapon_event(ai, vi, kind)
 
 
-## Запись в ленту: имя, иконка оружия, стрелка, жертва. Висит
-## FEED_LIFETIME и угасает; при переполнении старейшая вытесняется.
-## Летальные попадания заодно уходят в счётчик серий (_register_kill).
+## Событие для ленты. Счётчик серий — сразу (_register_kill), а сама
+## запись — через очередь _feed_pending: на экран попадает, когда есть
+## место или старейшая запись провисела хотя бы FEED_MIN_SHOW.
 func _show_weapon_event(ai: int, vi: int, kind: int) -> void:
 	if _feed_box == null:
 		return
 	if kind in LETHAL_KINDS:
 		_register_kill(ai, vi)
-	while _feed_box.get_child_count() >= FEED_MAX:
-		_feed_box.get_child(0).free()
+	_feed_pending.append([ai, vi, kind])
+	if _feed_pending.size() > FEED_MAX:
+		_feed_pending.pop_front()
+	_pump_feed()
+
+
+## Выпустить ожидающие события на экран (зовёт _process и новые события).
+func _pump_feed() -> void:
+	if _feed_box == null or _feed_pending.is_empty():
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	while not _feed_pending.is_empty():
+		if _feed_box.get_child_count() >= FEED_MAX:
+			var oldest := _feed_box.get_child(0)
+			if now - float(oldest.get_meta("born", 0.0)) < FEED_MIN_SHOW:
+				return   # все записи ещё свежие — событие подождёт
+			oldest.free()
+		var e: Array = _feed_pending.pop_front()
+		_add_feed_entry(e[0], e[1], e[2], now)
+
+
+## Запись в ленту: имя, иконка оружия, стрелка, жертва. Висит
+## FEED_LIFETIME и угасает.
+func _add_feed_entry(ai: int, vi: int, kind: int, now: float) -> void:
 	var entry := PanelContainer.new()
+	entry.set_meta("born", now)
 	var sb := UiKit.steel_box()
 	sb.content_margin_left = 12.0
 	sb.content_margin_right = 12.0

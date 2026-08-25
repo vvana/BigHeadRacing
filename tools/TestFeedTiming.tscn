@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testfeedtiming"]
+
+[ext_resource type="Script" path="res://tools/test_feed_timing.gd" id="1_testfeedtiming"]
+
+[node name="TestFeedTiming" type="Node3D"]
+script = ExtResource("1_testfeedtiming")

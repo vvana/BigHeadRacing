@@ -82,6 +82,6 @@ func _on_body(body: Node3D) -> void:
 	if _next_boost.get(id, 0.0) > now:
 		return
 	_next_boost[id] = now + PER_CAR_COOLDOWN
-	car.apply_boost()
+	car.apply_boost(true)
 	FlashFx.spawn(get_parent(), global_position + Vector3.UP * 0.4, 0.8,
 			Color(0.3, 0.9, 1.0))

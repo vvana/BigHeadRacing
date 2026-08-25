@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testannouncer"]
+
+[ext_resource type="Script" path="res://tools/test_announcer.gd" id="1_testann"]
+
+[node name="TestAnnouncer" type="Node"]
+script = ExtResource("1_testann")
