@@ -359,13 +359,15 @@ func _build_boost_flame() -> void:
 	p.amount = 30
 	p.lifetime = 0.13   # короткий язык: длинный хвост тянулся за машиной шлейфом
 	p.local_coords = false   # струя остаётся позади машины
-	p.direction = Vector3(0.0, 0.12, 1.0)  # назад (+Z) и чуть вверх
-	p.spread = 5.0
+	# Почти горизонтально назад (+Z): струя из выхлопной трубы, а не костёр
+	# на бампере — подъём убран, скорость выше, конус узкий.
+	p.direction = Vector3(0.0, 0.04, 1.0)
+	p.spread = 3.0
 	p.gravity = Vector3.ZERO
-	p.initial_velocity_min = 5.0
-	p.initial_velocity_max = 8.0
-	p.scale_amount_min = 0.45
-	p.scale_amount_max = 0.7
+	p.initial_velocity_min = 7.0
+	p.initial_velocity_max = 10.0
+	p.scale_amount_min = 0.22
+	p.scale_amount_max = 0.34
 	p.scale_amount_curve = shrink
 	# Случайный стартовый кадр атласа + прокрутка кадров по жизни частицы.
 	p.anim_offset_min = 0.0
@@ -373,7 +375,7 @@ func _build_boost_flame() -> void:
 	p.anim_speed_min = 1.0
 	p.anim_speed_max = 2.0
 	var quad := QuadMesh.new()
-	quad.size = Vector2(0.75, 0.75)
+	quad.size = Vector2(0.6, 0.6)
 	var mat := StandardMaterial3D.new()
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD   # свечение огня
@@ -394,7 +396,9 @@ func _build_boost_flame() -> void:
 	grad.add_point(0.3, Color(1.0, 0.62, 0.12, 1.0))
 	grad.add_point(0.65, Color(0.95, 0.3, 0.03, 0.6))
 	p.color_ramp = grad
-	p.position = Vector3(0.0, 0.42, 1.6)
+	# Ниже и ЗА бампером (кузов 3.2 м, корма на 1.6): при сопле на самом
+	# бампере половина струи в изометрии ложилась на багажник — «зад горит».
+	p.position = Vector3(0.0, 0.3, 1.85)
 	add_child(p)
 	_boost_flame = p
 
@@ -557,13 +561,15 @@ func _physics_process(delta: float) -> void:
 			or (_on_sand and hh.length() > 3.0))
 	for p in _smoke:
 		p.emitting = smoking
-	# Следы шин на асфальте: тот же сильный занос, что и дым, но только
-	# на полотне классической трассы (на песке след резины не рисуем,
-	# на траве за трассой — тоже). Сами ленты тянет _animate_wheels:
-	# у него уже есть лучи к дороге под каждым колесом.
+	# Следы шин на асфальте: пороги ВЫШЕ дымовых — дым идёт от любого
+	# сильного скольжения, а резина чертит только по-настоящему злой
+	# занос, иначе трасса зарастала полосами везде, где дымило. Рисуем
+	# только на полотне классической трассы (на песке след резины не
+	# рисуем, на траве за трассой — тоже). Сами ленты тянет
+	# _animate_wheels: у него уже есть лучи к дороге под каждым колесом.
 	_skid_active = alive and on_ground \
-			and ((absf(_side_speed) > 5.0 and hh.length() > 8.0)
-				or (_slip_time > 0.0 and hh.length() > 3.0)) \
+			and ((absf(_side_speed) > 6.5 and hh.length() > 11.0)
+				or (_slip_time > 0.0 and hh.length() > 6.0)) \
 			and (track == null or (track.kind != TrackBuilder.KIND_SAND
 				and track.distance_from_axis(global_position)
 					< TrackBuilder.TRACK_HALF_WIDTH + 0.3))
@@ -587,9 +593,9 @@ func _tick_effects(delta: float) -> void:
 	if _boost_flame:
 		# С плиты — узкий короткий язык, от турбины — полный.
 		var narrow := _boost_from_pad and _boost_time > 0.0
-		_boost_flame.scale_amount_min = 0.26 if narrow else 0.45
-		_boost_flame.scale_amount_max = 0.4 if narrow else 0.7
-		_boost_flame.spread = 3.0 if narrow else 5.0
+		_boost_flame.scale_amount_min = 0.14 if narrow else 0.22
+		_boost_flame.scale_amount_max = 0.22 if narrow else 0.34
+		_boost_flame.spread = 2.0 if narrow else 3.0
 		_boost_flame.emitting = alive and (_boost_time > 0.0
 				or (_status_time > 0.0 and _status_kind == Weapons.BOOST))
 	if _ghost_time > 0.0:
