@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testboostpad"]
+
+[ext_resource type="Script" path="res://tools/test_boost_pad.gd" id="1_testboostpad"]
+
+[node name="TestBoostPad" type="Node3D"]
+script = ExtResource("1_testboostpad")

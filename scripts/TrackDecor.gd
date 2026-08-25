@@ -47,7 +47,9 @@ func build(track: TrackBuilder) -> void:
 	_build_roadside()
 	_build_turn_signs()
 	_build_road_marks()
-	_build_trees()
+	# В пустыне (песчаная трасса) деревья не растут.
+	if track.kind != TrackBuilder.KIND_SAND:
+		_build_trees()
 
 
 ## ---------- размещение ----------

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testsandlap"]
+
+[ext_resource type="Script" path="res://tools/test_sand_lap.gd" id="1_testsandlap"]
+
+[node name="TestSandLap" type="Node3D"]
+script = ExtResource("1_testsandlap")

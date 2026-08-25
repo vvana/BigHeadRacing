@@ -69,5 +69,11 @@ func _on_body(body: Node3D) -> void:
 	if _next_pickup.get(id, 0.0) > now:
 		return
 	_next_pickup[id] = now + PER_CAR_COOLDOWN
-	car.weapon = Weapons.random_weapon()
+	# Шансы зависят от положения в гонке (последнему реже мина/масло,
+	# отставшему чаще буст) — их знает менеджер гонки; без него (стенды,
+	# где бокс стоит сам по себе) — равновероятно.
+	if car.race != null and car.race.has_method("pickup_weapon_for"):
+		car.weapon = car.race.pickup_weapon_for(car)
+	else:
+		car.weapon = Weapons.random_weapon()
 	FlashFx.spawn(get_parent(), global_position, 0.9, Color(1.0, 0.9, 0.3))

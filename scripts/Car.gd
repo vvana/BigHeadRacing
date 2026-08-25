@@ -85,7 +85,7 @@ var net_role := NetRole.LOCAL
 var net_fire := false           # сервер: клиент просил выстрел (гасится сразу)
 ## Эффекты оружия, пересылаемые сервером владельцу машины (Main._rx_fx):
 ## физику эффекта (толчок, разворот, телепорт) применяет клиент-владелец.
-enum NetFx { DESTROY, BLAST, FREEZE, OIL, BOOST }
+enum NetFx { DESTROY, BLAST, FREEZE, OIL, BOOST, SLOW }
 var has_marker := false         # над машиной висит стрелка-указатель
 # Последний снимок с сервера и его возраст. Марионетка тянется к нему,
 # ЭКСТРАПОЛИРУЯ по присланной скорости, — см. _follow_snapshot.
@@ -126,6 +126,7 @@ var _post_vel := Vector3.ZERO   # скорость в КОНЦЕ прошлог�
 var _blast_time := 0.0          # окно после взрыва: кап марионетки отключён
 var _track_ang_abs := 0.0       # |угол носа к оси трассы|, ставит _clamp_heading
 var _side_speed := 0.0          # боковой снос с последнего кадра езды (дым)
+var _on_sand := false           # на песчаной трассе съехал с полотна на песок
 var _smoke: Array[CPUParticles3D] = []  # дым из-под задних колёс (занос)
 var _wheel_pivots: Array[Node3D] = []
 var _steer_visual := 0.0
@@ -284,8 +285,14 @@ func _build_smoke() -> void:
 		quad.material = mat
 		p.mesh = quad
 		var grad := Gradient.new()
-		grad.set_color(0, Color(0.92, 0.92, 0.92, 0.75))
-		grad.set_color(1, Color(0.85, 0.85, 0.85, 0.0))
+		# На песчаной трассе пыль песочная (track ставится Main ДО add_child,
+		# так что в _ready он уже известен; без track — обычный серый дым).
+		if track != null and track.kind == TrackBuilder.KIND_SAND:
+			grad.set_color(0, Color(0.87, 0.74, 0.5, 0.8))
+			grad.set_color(1, Color(0.84, 0.72, 0.5, 0.0))
+		else:
+			grad.set_color(0, Color(0.92, 0.92, 0.92, 0.75))
+			grad.set_color(1, Color(0.85, 0.85, 0.85, 0.0))
 		p.color_ramp = grad
 		p.position = Vector3(sx, 0.12, 1.5)
 		add_child(p)
@@ -339,6 +346,12 @@ func _physics_process(delta: float) -> void:
 		# скорость, восстанавливать надо прежний курс, а не задний ход.
 		if _recent_hspeed > 1.0:
 			_recent_hdir = hh / _recent_hspeed
+	# Песчаная трасса: за кромкой полотна — рыхлый песок. Тяга и потолок
+	# скорости режутся в _drive, из-под колёс всегда идёт песчаная пыль.
+	_on_sand = alive and on_ground and track != null \
+			and track.kind == TrackBuilder.KIND_SAND \
+			and track.distance_from_axis(global_position) \
+			> track.half_width_at_pos(global_position)
 	if alive and controls_enabled:
 		if is_player:
 			_player_control(delta, on_ground)
@@ -440,7 +453,8 @@ func _physics_process(delta: float) -> void:
 	# небольшие сносы дымить не должны.
 	var smoking := alive and on_ground and (
 			(absf(_side_speed) > 5.0 and hh.length() > 8.0)
-			or (_slip_time > 0.0 and hh.length() > 3.0))
+			or (_slip_time > 0.0 and hh.length() > 3.0)
+			or (_on_sand and hh.length() > 3.0))
 	for p in _smoke:
 		p.emitting = smoking
 	_ext_push_time = maxf(0.0, _ext_push_time - delta)
@@ -845,6 +859,10 @@ func _drive(
 		fx_mult = 0.55
 	elif _boost_time > 0.0:
 		fx_mult = 1.45
+	# Рыхлый песок за полотном (песчаная трасса): тяга и потолок скорости
+	# заметно ниже — срезать по песку невыгодно, ограждений там нет.
+	if _on_sand:
+		fx_mult *= 0.55
 	var eff_max := max_speed * ai_rubber * fx_mult
 
 	if on_ground:
@@ -943,7 +961,9 @@ func _drive(
 ## Всё направленно: движение и руление ОТ стены свободные. Доворот
 ## держится ещё 0.35 с после схода — закрутку от касания углом гасим.
 func _wall_slide(delta: float) -> void:
-	if track == null:
+	# На трассе без ограждений (песчаная) вести не вдоль чего: съезд с
+	# полотна легален, его наказывает сам песок (см. _on_sand).
+	if track == null or not track.has_walls:
 		return
 	var curve: Curve3D = track._curve
 	var length := curve.get_baked_length()
@@ -1256,7 +1276,8 @@ func use_weapon() -> void:
 ## вблизи он почти в max_speed, машину сдёргивает с траектории и
 ## разворачивает; далёких тянет слабее (спад с расстоянием, но не до
 ## нуля — магнит достаёт всю трассу). Подброса почти нет: магнит волочит
-## по земле, а не подкидывает.
+## по земле, а не подкидывает. Тем, кто ВПЕРЕДИ по гонке, магнит вдобавок
+## режет скорость вдвое (осаживает); задних — только притягивает.
 func _use_magnet() -> void:
 	const MAGNET_PULL := 32.0     # импульс вблизи, м/с (почти max_speed)
 	const MAGNET_FAR := 18.0      # к чему сходит на дальней дистанции
@@ -1277,9 +1298,24 @@ func _use_magnet() -> void:
 		var t: float = clampf(dist / MAGNET_RANGE, 0.0, 1.0)
 		var power: float = lerpf(MAGNET_PULL, MAGNET_FAR, t)
 		var spin := MAGNET_SPIN * (1.0 - t) * (1.0 if randf() < 0.5 else -1.0)
+		# Впередиедущих осаживаем ДО рывка: срежь скорость после — порезался
+		# бы и сам импульс притяжения.
+		if _rival_is_ahead(other):
+			other.apply_speed_cut(0.5)
 		other.push_from_blast(dir / dist, power, spin, 0.12)
 		other.show_effect_icon(Weapons.MAGNET, MAGNET_ICON_TIME)
 		other.notify_hit_by(self, Weapons.MAGNET)
+
+
+## «Соперник впереди?» для магнита — по прогрессу ГОНКИ (накопленный путь
+## вдоль оси, как считает места Main), а не по геометрии: на петлях трассы
+## машина «перед носом» может по заезду быть позади. Вне заезда (стенды
+## без Main) — фолбэк по геометрии, перед носом = впереди.
+func _rival_is_ahead(other: Car) -> bool:
+	if race != null and race.has_method("progress_of"):
+		return race.progress_of(other) > race.progress_of(self)
+	var fwd := -global_transform.basis.z
+	return fwd.dot(other.global_position - global_position) > 0.0
 
 
 ## Лазер: один луч вперёд, уничтожает ВСЕ машины на пути.
@@ -1403,6 +1439,20 @@ func apply_boost() -> void:
 	_boost_time = boost_duration
 
 
+## Разовый срез скорости (магнит осаживает впередиедущих). По сети машина
+## живого игрока клиент-авторитетна — эффект пересылается владельцу
+## (NetFx.SLOW), иначе он его не почувствует. Память скорости
+## (_recent_hspeed) срезается вслед — иначе защита приземления или ведение
+## у стены вернули бы срезанное обратно.
+func apply_speed_cut(factor: float) -> void:
+	if not alive:
+		return
+	_forward_fx(NetFx.SLOW, [factor])
+	linear_velocity.x *= factor
+	linear_velocity.z *= factor
+	_recent_hspeed *= factor
+
+
 ## Заморозка: машина «синеет» и едет медленнее. Дебаф ЗАРАЗЕН — при
 ## контакте машин передаётся остаток времени (см. _bounce_off_cars).
 func apply_freeze(duration: float) -> void:
@@ -1443,7 +1493,7 @@ func apply_oil_slip() -> void:
 ## берём в ТЕКУЩЕЙ точке трассы — как в _wall_slide).
 func _spin_away_from_wall() -> float:
 	const SPIN_WALL_MARGIN := 3.0
-	if track == null:
+	if track == null or not track.has_walls:
 		return 0.0
 	var curve: Curve3D = track._curve
 	var off := curve.get_closest_offset(global_position)
@@ -1584,7 +1634,12 @@ func _animate_wheels(delta: float) -> void:
 					+ angular_velocity.cross(hub - global_position)
 			var approach := -point_v.dot(hit["normal"])
 			pen += maxf(0.0, approach) * delta * 2.0
-		var target := clampf(pen, 0.0, 0.6)
+		# Подъём ограничен долей РАДИУСА колеса: при жёсткой посадке pen с
+		# упреждением доходил до десятков сантиметров, пивот взлетал и колесо
+		# вылезало НАД кузовом («колёса поверх машины»). Выше 60% радиуса
+		# колесо гарантированно торчит из арки — дальше пусть лучше на
+		# кадр-два нырнёт в асфальт (обычное утопание ≤ 11 см и так меньше).
+		var target := clampf(pen, 0.0, radius * 0.6)
 		var lift: float = pivot.get_meta("lift")
 		lift = target if target > lift else lerpf(lift, target, 12.0 * delta)
 		pivot.set_meta("lift", lift)

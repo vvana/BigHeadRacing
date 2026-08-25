@@ -30,14 +30,16 @@ func _ready() -> void:
 
 	var col := CollisionShape3D.new()
 	var sphere := SphereShape3D.new()
-	sphere.radius = 0.4
+	sphere.radius = 0.5
 	col.shape = sphere
 	add_child(col)
 
+	# Снаряд заметно крупнее прежнего (0.26): мелкую «пульку» на скорости
+	# 55 м/с было плохо видно, просьба игрока — «пульки побольше».
 	var mesh := MeshInstance3D.new()
 	var ball := SphereMesh.new()
-	ball.radius = 0.26
-	ball.height = 0.52
+	ball.radius = 0.42
+	ball.height = 0.84
 	mesh.mesh = ball
 	var mat := StandardMaterial3D.new()
 	if freeze:

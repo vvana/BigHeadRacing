@@ -39,8 +39,30 @@ const ICONS := {
 }
 
 
-static func random_weapon() -> int:
-	return randi() % COUNT
+## Случайное оружие, шансы с поправкой на положение в гонке:
+## - is_last: машина идёт ПОСЛЕДНЕЙ — мина и масло выпадают вдвое реже
+##   (они бьют назад, а сзади никого нет);
+## - behind_gap: отставание от лидера, м — сильно отставшему чаще выпадает
+##   ускорение: вес растёт с 30 м отставания и к 110 м достигает ×3.
+## Без аргументов — равновероятно (старт заезда, стенды).
+static func random_weapon(is_last := false, behind_gap := 0.0) -> int:
+	var weights: Array[float] = []
+	weights.resize(COUNT)
+	weights.fill(1.0)
+	if is_last:
+		weights[MINE] = 0.5
+		weights[OIL] = 0.5
+	var far: float = clampf((behind_gap - 30.0) / 80.0, 0.0, 1.0)
+	weights[BOOST] = 1.0 + 2.0 * far
+	var total := 0.0
+	for w in weights:
+		total += w
+	var roll := randf() * total
+	for kind in COUNT:
+		roll -= weights[kind]
+		if roll <= 0.0:
+			return kind
+	return COUNT - 1  # страховка от накопленной погрешности float
 
 
 static func display_name(kind: int) -> String:

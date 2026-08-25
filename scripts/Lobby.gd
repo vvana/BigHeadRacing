@@ -1,17 +1,19 @@
 class_name Lobby
 extends Control
-## Полноэкранное сетевое лобби: тёмный «гараж», два подиума с вращающимися
-## машинами подключённых игроков (Player 1 / Player 2), статус ожидания и
-## подсказки. Экран живёт ВНУТРИ сцены Main и просто перекрывает её:
-## отдельной сценой лобби быть не может — RPC адресуются по пути узла, и
-## клиент обязан сидеть в /root/Main с самого рукопожатия.
+## Полноэкранное сетевое лобби: тёмный «гараж», четыре подиума в ряд с
+## вращающимися машинами подключённых игроков (Player 1..4), статус
+## ожидания и подсказки. Экран живёт ВНУТРИ сцены Main и просто
+## перекрывает её: отдельной сценой лобби быть не может — RPC адресуются
+## по пути узла, и клиент обязан сидеть в /root/Main с самого рукопожатия.
 
 ## Человеческие названия машин — из экрана выбора (у CarSelect нет
 ## class_name, поэтому preload скрипта).
 const CAR_NAMES: Dictionary = preload("res://scripts/CarSelect.gd").DISPLAY_NAMES
-const SLOTS := 2          # столько же, сколько Net.PLAYER_SLOTS
-const SLOT_W := 360.0
+const SLOTS := 4          # столько же, сколько Net.PLAYER_SLOTS
+# 4 панели в ряд: 4×288 + 3×14 = 1194 — умещается в окно 1280.
+const SLOT_W := 288.0
 const SLOT_H := 330.0
+const SLOT_GAP := 14.0
 
 var _font: FontFile
 var _status: Label
@@ -21,7 +23,7 @@ var _wait_labels: Array[Label] = []
 var _views: Array[SubViewportContainer] = []
 var _viewports: Array[SubViewport] = []
 var _turntables: Array[Node3D] = []
-var _slot_ids := PackedStringArray(["", ""])
+var _slot_ids := PackedStringArray(["", "", "", ""])
 
 
 func _ready() -> void:
@@ -65,7 +67,7 @@ func _ready() -> void:
 		_build_slot(s)
 
 	var hint := _label(self,
-			"Пробел — старт с ботами, не дожидаясь второго  |  Esc — в гараж",
+			"Пробел — старт, не дожидаясь остальных (пустые слоты возьмут боты)  |  Esc — в гараж",
 			16, Color(1, 1, 1, 0.7), 4)
 	hint.anchor_left = 0.0
 	hint.anchor_right = 1.0
@@ -150,7 +152,9 @@ func _build_slot(s: int) -> void:
 	panel.anchor_right = 0.5
 	panel.anchor_top = 0.5
 	panel.anchor_bottom = 0.5
-	var x0 := (-SLOT_W - 20.0) if s == 0 else 20.0
+	# Ряд из SLOTS панелей, центрированный по горизонтали.
+	var total := SLOT_W * SLOTS + SLOT_GAP * (SLOTS - 1)
+	var x0 := -total * 0.5 + s * (SLOT_W + SLOT_GAP)
 	panel.offset_left = x0
 	panel.offset_right = x0 + SLOT_W
 	panel.offset_top = -SLOT_H * 0.5 + 40.0

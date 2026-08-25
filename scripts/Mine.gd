@@ -34,15 +34,15 @@ func _ready() -> void:
 
 	var col := CollisionShape3D.new()
 	var sphere := SphereShape3D.new()
-	sphere.radius = 0.7
+	sphere.radius = 0.9
 	col.shape = sphere
 	add_child(col)
 
 	var body_mesh := MeshInstance3D.new()
 	var cyl := CylinderMesh.new()
-	cyl.top_radius = 0.32
-	cyl.bottom_radius = 0.38
-	cyl.height = 0.16
+	cyl.top_radius = 0.5
+	cyl.bottom_radius = 0.6
+	cyl.height = 0.26
 	body_mesh.mesh = cyl
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.15, 0.15, 0.17)
@@ -51,10 +51,10 @@ func _ready() -> void:
 
 	var dot := MeshInstance3D.new()
 	var dot_mesh := SphereMesh.new()
-	dot_mesh.radius = 0.07
-	dot_mesh.height = 0.14
+	dot_mesh.radius = 0.11
+	dot_mesh.height = 0.22
 	dot.mesh = dot_mesh
-	dot.position.y = 0.1
+	dot.position.y = 0.17
 	var dot_mat := StandardMaterial3D.new()
 	dot_mat.albedo_color = Color(1, 0.1, 0.1)
 	dot_mat.emission_enabled = true
@@ -101,7 +101,7 @@ func _fall(delta: float) -> void:
 		if global_position.y < -60.0:  # улетела в пропасть за краем мира
 			queue_free()
 	else:
-		global_position.y = (hit.position as Vector3).y + 0.08
+		global_position.y = (hit.position as Vector3).y + 0.13
 		_grounded = true
 
 

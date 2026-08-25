@@ -112,11 +112,15 @@ func _physics_process(delta: float) -> void:
 				_main._cars[i].global_position.distance_to(_start_pos[i]))
 	_ok["своя машина поехала"] = moved_me > MOVE_MIN
 	_ok["снимки ботов идут"] = moved_bot > MOVE_MIN
-	# Метка соперника СОЗДАНА, но пока он не подключился — СКРЫТА: слот
-	# ведёт бот, а оранжевая стрелка означает живого игрока. Тест одиночный,
-	# поэтому ждём именно скрытую.
-	_ok["метка соперника есть"] = _main._rival_marker != null
-	_ok["метка соперника скрыта без него"] = 			_main._rival_marker != null and not _main._rival_marker.visible
+	# Метки соперников СОЗДАНЫ (по одной на каждый чужой слот игрока), но
+	# пока никто не подключился — СКРЫТЫ: слоты ведут боты, а оранжевая
+	# стрелка означает живого игрока. Тест одиночный, ждём именно скрытые.
+	_ok["метки соперников есть"] = 			_main._rival_markers.size() == Net.PLAYER_SLOTS - 1
+	var any_visible := false
+	for m: Node3D in _main._rival_markers.values():
+		if m.visible:
+			any_visible = true
+	_ok["метки соперников скрыты без них"] = 			not _main._rival_markers.is_empty() and not any_visible
 	_ok["своя машина не марионетка"] = me.net_role == Car.NetRole.OWNED
 	var jitter := _jitter()
 	print("  марионетка: шаг расходится со скоростью на %.1f%%, рывков назад %d из %d"
@@ -153,13 +157,24 @@ func _physics_process(delta: float) -> void:
 ## меняется. В _process мерить бессмысленно — headless крутит его в разы чаще
 ## физики, и почти все шаги нулевые (тоже проверено на себе).
 func _sample_smoothness(delta: float) -> void:
-	var idx := 2 if Net.my_slot != 2 else 3     # заведомо бот-марионетка
-	_sample_one(_main._cars[idx], delta, _sm_steps, false)
-	# Соперник-игрок (если второй клиент подключён — иначе это бот и он
+	# Бот-марионетка: чужой слот БЕЗ видимой метки соперника (видимая метка
+	# означает, что слот занял живой игрок — теперь их может быть до 4).
+	var idx := -1
+	var rv := -1
+	for i in _main._cars.size():
+		if i == Net.my_slot:
+			continue
+		var taken: bool = _main._rival_markers.has(i) \
+				and _main._rival_markers[i].visible
+		if taken and rv < 0:
+			rv = i
+		elif not taken and idx < 0:
+			idx = i
+	if idx >= 0:
+		_sample_one(_main._cars[idx], delta, _sm_steps, false)
+	# Соперник-игрок (если другой клиент подключён — иначе это бот и он
 	# уже покрыт общим замером, второй раз не считаем).
-	var rv := 1 - Net.my_slot
-	if rv >= 0 and rv < _main._cars.size() and _main._rival_marker != null \
-			and _main._rival_marker.visible:
+	if rv >= 0:
 		_sample_one(_main._cars[rv], delta, _rv_steps, true)
 
 

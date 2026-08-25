@@ -73,6 +73,8 @@ func _process(delta: float) -> void:
 func _start_race() -> void:
 	Net.leave()   # вдруг остались хвосты прошлого сетевого заезда
 	GameState.selected_car_id = CarModelLibrary.CAR_IDS[_index]
+	# Трасса на заезд — случайная из доступных.
+	GameState.track_kind = TrackBuilder.pick_random_kind()
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
 
 
@@ -190,6 +192,9 @@ func _watch_connect_timeout() -> void:
 
 
 func _on_joined() -> void:
+	# По сети вид трассы диктует сервер (_rx_track): строим классику, а
+	# если сервер выбрал другую — Main перезагрузит сцену с нужной.
+	GameState.track_kind = ""
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
 
 

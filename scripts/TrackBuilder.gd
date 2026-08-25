@@ -22,6 +22,31 @@ const SHOULDER := 5.0           # ширина ровной обочины у д
 # ограждение, продлённое вниз на ту же величину.
 const GROUND_DROP := 1.2
 
+# ---------- Виды трасс ----------
+# Трасса на заезд выбирается СЛУЧАЙНО (оффлайн — гараж, по сети — сервер,
+# см. Main._pick_track_kind). Тесты, грузящие Main напрямую, ничего не
+# выбирают и получают классику — регрессия детерминирована.
+const KIND_GRASS := "grass"   # классика: трава, ограждения, горка
+const KIND_SAND := "sand"     # пустыня: песок, БЕЗ ограждений, съезд разрешён
+const KINDS: Array[String] = [KIND_GRASS, KIND_SAND]
+# Насколько дальше кромки полотна пускает автовозврат на песке: съезд на
+# песок — легальная (медленная) езда, возвращаем только уехавших в дюны.
+const SAND_OFFTRACK_MARGIN := 12.0
+
+## Вид трассы. Выставить ДО добавления узла в дерево (читается в _ready).
+var kind := KIND_GRASS
+## Есть ли ограждения. Читают Car (_wall_slide) и Main (порог вылета).
+var has_walls := true
+## Запас до автовозврата за кромкой полотна (см. Main._check_recovery).
+var offtrack_margin := 0.5
+var _segments: Array = []     # конфигурация участков (ставится в _ready)
+var _ground_drop := GROUND_DROP
+
+
+static func pick_random_kind() -> String:
+	return KINDS[randi() % KINDS.size()]
+
+
 var _curve := Curve3D.new()
 # Предрассчитанные точки контура и векторы «вправо» в каждой из них.
 var _pts := PackedVector3Array()
@@ -34,12 +59,23 @@ var _straights: Array[Vector2] = []
 
 
 func _ready() -> void:
+	_segments = SEGMENTS
+	if kind == KIND_SAND:
+		_segments = SEGMENTS_SAND
+		has_walls = false
+		offtrack_margin = SAND_OFFTRACK_MARGIN
+		# Без стен просвет между полотном и землёй нечем прятать — обочина
+		# идёт почти вровень (полотно приподнято на 0.05, ступенька 0.10 м
+		# проезжается незаметно, а z-fighting'а нет — поверхности не совпадают).
+		_ground_drop = 0.05
 	_build_curve()
 	_sample_frames()
 	_build_ground()
 	_build_road()
-	_build_walls()
+	if has_walls:
+		_build_walls()
 	_build_ramps()
+	_build_boost_pads()
 	_build_start_line()
 	_build_decor()
 
@@ -138,7 +174,35 @@ const SEGMENTS: Array = [
 	["A", 36.0, 75.0, 10.0],     # 15 выход на стартовую прямую
 ]
 
+## ПЕСЧАНАЯ трасса (kind == KIND_SAND): плоская пустыня без ограждений.
+## Длина 685 м — сопоставима с классикой (727). Те же правила: сумма углов
+## дуг ±360°, ровно две свободные прямые с непараллельными направлениями.
+## Конфигурация подобрана перебором с проверкой замыкания (обе свободные
+## длины положительные: 44 и 72 м) и отсутствия сближения витков < 26 м.
+## Сумма углов: правые 50+110+50+135+125+30 = 500, левые 55+85 = 140 → 360. ✓
+const SEGMENTS_SAND: Array = [
+	["S", -1.0, 10.0],           # 0  СТАРТОВАЯ ПРЯМАЯ (свободная, ~44 м)
+	["A", 20.0, 50.0, 7.0],      # 1  тесный правый сразу за стартом
+	["S", 30.0, 8.5],            # 2  короткая прямая
+	["A", 36.0, -55.0, 8.5],     # 3  левый
+	["A", 46.0, 110.0, 9.0],     # 4  размашистый правый
+	["S", -1.0, 10.0],           # 5  ДЛИННАЯ ПРЯМАЯ (свободная, ~72 м)
+	["A", 46.0, 50.0, 9.5],      # 6  быстрый правый
+	["S", 30.0, 8.5],            # 7  прямая
+	["A", 44.0, 135.0, 8.0],     # 8  длинная правая дуга
+	["A", 40.0, -85.0, 8.5],     # 9  левый
+	["S", 30.0, 9.0],            # 10 прямая
+	["A", 50.0, 125.0, 9.5],     # 11 широкий правый
+	["A", 50.0, 30.0, 10.0],     # 12 выход на стартовую прямую
+]
+
 const TURTLE_STEP := 3.0   # шаг опорных точек вдоль трассы, м
+
+
+## Высота оси для ЭТОЙ трассы: классика — профиль с горкой, песок — плоско
+## (дюны только на земле за полотном).
+func _height_at(t: float) -> float:
+	return 0.0 if kind == KIND_SAND else _profile_height(t)
 
 
 ## Замкнутый контур из прямых и дуг (см. SEGMENTS): настоящие прямые
@@ -190,9 +254,9 @@ func _walk(free_lens: Array) -> Dictionary:
 	var raw_keys: Array[Vector2] = []   # [дистанция, полуширина]
 	var straights: Array[Vector2] = []  # [дистанция начала, длина] прямых
 	# Старт наследует ширину последнего участка — кольцо непрерывно.
-	raw_keys.append(Vector2(0.0, SEGMENTS[SEGMENTS.size() - 1][-1]))
+	raw_keys.append(Vector2(0.0, _segments[_segments.size() - 1][-1]))
 
-	for seg: Array in SEGMENTS:
+	for seg: Array in _segments:
 		if seg[0] == "S":
 			var length: float = seg[1]
 			if length < 0.0:
@@ -236,9 +300,9 @@ func _walk(free_lens: Array) -> Dictionary:
 	for s in straights:
 		straight_ratios.append(Vector2(s.x / dist, (s.x + s.y) / dist))
 
-	# Профиль высот (сейчас плоско) — по доле круга.
+	# Профиль высот — по доле круга (у песчаной трассы плоско).
 	for i in points.size():
-		points[i].y = _profile_height(float(i) / points.size())
+		points[i].y = _height_at(float(i) / points.size())
 
 	return {
 		"points": points, "dirs": dirs, "width_keys": keys,
@@ -336,14 +400,18 @@ func _ground_height(x: float, z: float) -> float:
 	var on_curve := _curve.sample_baked(_curve.get_closest_offset(p))
 	var d := Vector2(x - on_curve.x, z - on_curve.z).length()
 	var edge := TRACK_HALF_WIDTH + SHOULDER
-	var base := on_curve.y - GROUND_DROP
+	var base := on_curve.y - _ground_drop
 	if d <= edge:
 		return base
 	# За обочиной — склон вниз и рельеф, нарастающий с удалением.
+	# На песке склон и «дюны» гораздо мягче: по песку РАЗРЕШЕНО ездить
+	# (медленно), рельеф должен быть проезжаемым, а не каньоном.
 	var away := d - edge
 	var blend: float = clampf(away / 22.0, 0.0, 1.0)
 	var hills := sin(x * 0.045) * cos(z * 0.052) * 6.0 \
 			+ sin((x + z) * 0.021) * 3.0
+	if kind == KIND_SAND:
+		return base - away * 0.05 + hills * 0.35 * blend
 	return base - away * 0.28 + hills * blend
 
 
@@ -394,10 +462,17 @@ func _build_ground() -> void:
 	var mesh := MeshInstance3D.new()
 	mesh.mesh = st.commit()
 	var mat := StandardMaterial3D.new()
-	# Зелёные поля — трава из Cartoon Tracks Pack (пятна текстуры
-	# смягчены при конвертации, см. ПРОГРЕСС.md).
-	mat.albedo_texture = load(
-			"res://assets/models/track_env/cartoon/textures/grass_1.png")
+	if kind == KIND_SAND:
+		# Пустыня: гравий из того же пака, тонированный в песок (средний
+		# цвет текстуры (135,118,89) — тянем к тёплому песочному).
+		mat.albedo_texture = load(
+				"res://assets/models/track_env/cartoon/textures/gravel.png")
+		mat.albedo_color = Color(1.45, 1.32, 1.05)
+	else:
+		# Зелёные поля — трава из Cartoon Tracks Pack (пятна текстуры
+		# смягчены при конвертации, см. ПРОГРЕСС.md).
+		mat.albedo_texture = load(
+				"res://assets/models/track_env/cartoon/textures/grass_1.png")
 	mat.vertex_color_use_as_albedo = true
 	mesh.material_override = mat
 	_add_visual(ground, mesh)
@@ -437,7 +512,10 @@ func _build_road() -> void:
 	var road := MeshInstance3D.new()
 	road.mesh = st.commit()
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.18, 0.18, 0.2)
+	# Классика — тёмный асфальт; пустыня — укатанный песок (темнее рыхлого
+	# вокруг, чтобы полотно читалось).
+	mat.albedo_color = Color(0.64, 0.53, 0.36) if kind == KIND_SAND \
+			else Color(0.18, 0.18, 0.2)
 	road.material_override = mat
 	_add_visual(body, road)
 
@@ -557,6 +635,31 @@ func _build_ramps() -> void:
 		add_child(ramp)
 		ramp.look_at(ramp.position + dir)
 		ramp.rotate_object_local(Vector3.RIGHT, deg_to_rad(9.0))  # наклон-трамплин
+
+
+## Отметки ускорителей вдоль оси (м) — для тестов.
+var boost_pad_offsets := PackedFloat32Array()
+
+
+## Ускорители — В НАЧАЛЕ прямых участков (наехал — буст, выгодно именно
+## перед прямой). Совсем короткие прямые пропускаем, стартовую тоже: там
+## решётка, створ и отсчёт. Плиты есть и на сервере (срабатывание — его
+## зона ответственности), косметику BoostPad сам не строит в headless.
+func _build_boost_pads() -> void:
+	var length := _curve.get_baked_length()
+	for s: Vector2 in _straights:
+		if s.x <= 0.001:
+			continue   # стартовая прямая
+		if (s.y - s.x) * length < 25.0:
+			continue
+		var off := fposmod(s.x * length + 6.0, length)
+		var pos := _curve.sample_baked(off)
+		var ahead := _curve.sample_baked(fmod(off + 2.0, length))
+		var pad := BoostPad.new()
+		add_child(pad)
+		pad.position = pos + Vector3(0, 0.05, 0)
+		pad.look_at(pad.position + (ahead - pos).normalized())
+		boost_pad_offsets.append(off)
 
 
 ## Стартово-финишный створ: шахматная клетка на полотне. Арка, баннер и

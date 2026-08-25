@@ -31,7 +31,10 @@ const OWN_R := 5.0                 # «радиус» треугольника �
 
 var cars: Array[Car] = []
 var my_index := 0
-var rival_index := -1              # слот живого соперника, -1 — все боты
+var rivals := {}                   # слоты живых соперников (слот → true)
+# Цвет кромок полотна: красный — ограждения; на трассе без стен (песчаная)
+# кромка рисуется песочной, красные «стены» на карте врали бы.
+var edge_color := EDGE_COLOR
 
 # Ось и края трассы в «плоскости карты» (метры, уже повёрнуты под камеру).
 var _axis := PackedVector2Array()
@@ -52,6 +55,8 @@ var _road_col := PackedColorArray()
 func setup(track: TrackBuilder, cars_ref: Array[Car]) -> void:
 	cars = cars_ref
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if not track.has_walls:
+		edge_color = Color(0.93, 0.85, 0.6, 0.7)
 	var s: Dictionary = track.plan_samples()
 	var pts: PackedVector2Array = s["points"]
 	var half: PackedFloat32Array = s["half"]
@@ -132,9 +137,9 @@ func _draw() -> void:
 		return
 	RenderingServer.canvas_item_add_triangle_array(
 			get_canvas_item(), _road_idx, _road_pts, _road_col)
-	# Ограждения по обеим сторонам — тонкой линией, как красные стены.
-	_draw_loop(_left, EDGE_COLOR)
-	_draw_loop(_right, EDGE_COLOR)
+	# Кромки полотна по обеим сторонам (красные — где стоят ограждения).
+	_draw_loop(_left, edge_color)
+	_draw_loop(_right, edge_color)
 	# Стартовая линия — поперёк полотна в нулевой точке круга.
 	draw_line(_to_px(_left[0]), _to_px(_right[0]), START_COLOR, 2.0, true)
 
@@ -146,7 +151,7 @@ func _draw() -> void:
 		var car := cars[i]
 		if car == null or not is_instance_valid(car):
 			continue
-		var color := RIVAL_COLOR if i == rival_index else BOT_COLOR
+		var color := RIVAL_COLOR if rivals.has(i) else BOT_COLOR
 		if not car.alive:
 			color.a = 0.35
 		var p := world_to_px(car.global_position)
