@@ -128,6 +128,7 @@ var _track_ang_abs := 0.0       # |угол носа к оси трассы|, с
 var _side_speed := 0.0          # боковой снос с последнего кадра езды (дым)
 var _on_sand := false           # на песчаной трассе съехал с полотна на песок
 var _smoke: Array[CPUParticles3D] = []  # дым из-под задних колёс (занос)
+var _boost_flame: CPUParticles3D        # огонь из выхлопа при ускорении
 var _wheel_pivots: Array[Node3D] = []
 var _steer_visual := 0.0
 var _ai_fire_cd := 2.0
@@ -170,6 +171,7 @@ func _ready() -> void:
 		return
 	_build_ice_shell()
 	_build_smoke()
+	_build_boost_flame()
 	_build_status_icon()
 
 
@@ -297,6 +299,55 @@ func _build_smoke() -> void:
 		p.position = Vector3(sx, 0.12, 1.5)
 		add_child(p)
 		_smoke.append(p)
+
+
+## Огонь из выхлопа — бьёт из кормы, пока действует ускорение (бонус BOOST
+## или плита-ускоритель). Та же текстура облачка, что у дыма, но клубы
+## короткоживущие, летят назад струёй и перекрашены в огонь (жёлтое ядро →
+## оранжевый → прозрачный красный хвост), к концу жизни съёживаются.
+func _build_boost_flame() -> void:
+	var tex: Texture2D = load("res://assets/fx/smoke_cloud_2x2.png")
+	var shrink := Curve.new()
+	shrink.add_point(Vector2(0.0, 1.0))
+	shrink.add_point(Vector2(1.0, 0.15))
+	var p := CPUParticles3D.new()
+	p.emitting = false
+	p.amount = 26
+	p.lifetime = 0.28
+	p.local_coords = false   # струя остаётся позади машины
+	p.direction = Vector3(0.0, 0.15, 1.0)  # назад (+Z) и чуть вверх
+	p.spread = 7.0
+	p.gravity = Vector3.ZERO
+	p.initial_velocity_min = 6.0
+	p.initial_velocity_max = 9.0
+	p.angle_min = 0.0        # случайный поворот билборда
+	p.angle_max = 360.0
+	p.scale_amount_min = 0.5
+	p.scale_amount_max = 0.8
+	p.scale_amount_curve = shrink
+	p.anim_offset_min = 0.0
+	p.anim_offset_max = 1.0
+	var quad := QuadMesh.new()
+	quad.size = Vector2(0.6, 0.6)
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	mat.particles_anim_h_frames = 2
+	mat.particles_anim_v_frames = 2
+	mat.particles_anim_loop = false
+	mat.vertex_color_use_as_albedo = true
+	mat.albedo_texture = tex
+	quad.material = mat
+	p.mesh = quad
+	var grad := Gradient.new()
+	grad.set_color(0, Color(1.0, 0.9, 0.4, 0.95))
+	grad.set_color(1, Color(1.0, 0.25, 0.05, 0.0))
+	grad.add_point(0.35, Color(1.0, 0.55, 0.1, 0.8))
+	p.color_ramp = grad
+	p.position = Vector3(0.0, 0.42, 1.6)
+	add_child(p)
+	_boost_flame = p
 
 
 func _physics_process(delta: float) -> void:
@@ -472,6 +523,11 @@ func _tick_effects(delta: float) -> void:
 	_slip_time = maxf(0.0, _slip_time - delta)
 	if _ice_shell:
 		_ice_shell.visible = _freeze_time > 0.0
+	# Огонь ускорения. У марионетки по сети свой _boost_time не тикает —
+	# признак буста приезжает в снимке значком эффекта (_status_kind).
+	if _boost_flame:
+		_boost_flame.emitting = alive and (_boost_time > 0.0
+				or (_status_time > 0.0 and _status_kind == Weapons.BOOST))
 	if _ghost_time > 0.0:
 		_ghost_time -= delta
 		if _ghost_time <= 0.0:
@@ -728,6 +784,8 @@ func net_make_puppet() -> void:
 	freeze = true
 	for p in _smoke:
 		p.emitting = false
+	if _boost_flame:
+		_boost_flame.emitting = false
 
 
 ## Обратно под бота (сервер: игрок вышел). Снимки владельца больше не

@@ -32,9 +32,12 @@ func _ready() -> void:
 	collision_mask = 0b100
 	monitorable = false
 
+	# Радиус срабатывания НЕ растёт вместе с корпусом: 0.9 доставал до
+	# кормы сбросившей машины (2.4 м до центра, край «санок» ~1.5) — мина
+	# рвалась под хозяином. Побольше — только видимый корпус.
 	var col := CollisionShape3D.new()
 	var sphere := SphereShape3D.new()
-	sphere.radius = 0.9
+	sphere.radius = 0.7
 	col.shape = sphere
 	add_child(col)
 
