@@ -106,6 +106,17 @@ var _snap_rot := Quaternion.IDENTITY
 var _snap_vel := Vector3.ZERO
 var _snap_age := 0.0
 var _snap_seen := false
+# Визуальная интерполяция марионетки: тело шагает с частотой ФИЗИКИ (60 Гц),
+# и на реальном рендере (fps плавает, вертикалка, просадки) марионетки
+# видимо дёргались — даже при идеальном потоке снимков. Модель (CarModel)
+# отвязывается от тела (top_level) и каждый кадр рендера ставится МЕЖДУ
+# двумя последними положениями тела по Engine.get_physics_interpolation_
+# fraction() — классическая интерполяция фиксированного шага. Физика,
+# оружие и снимки по-прежнему видят тело; глаз видит модель.
+var _vis_prev := Transform3D.IDENTITY   # тело на предыдущем кадре физики
+var _vis_cur := Transform3D.IDENTITY    # тело на текущем кадре физики
+var _vis_base := Transform3D.IDENTITY   # локальная центровка модели (build)
+var _vis_on := false                    # пара _vis_prev/_vis_cur валидна
 var _status_icon: Sprite3D = null  # значок действующего эффекта над крышей
 var _status_kind := -1          # разовый значок (магнит): какой показываем
 var _status_time := 0.0         # и сколько ему осталось
@@ -441,6 +452,8 @@ func reset_track_offset() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if race != null and race.has_method("_wd_mark"):
+		race._wd_mark("машина")
 	sync_track_offset()
 	if net_role == NetRole.PUPPET:
 		# Таймеры эффектов тикают и у марионетки: серверу нужен живой
@@ -460,6 +473,14 @@ func _physics_process(delta: float) -> void:
 		# Если жалобы на дрожание на высокогерцовых мониторах останутся —
 		# правильное решение это встроенная интерполяция физики Godot 4.4+.
 		_follow_snapshot(delta)
+		# Пара положений для визуальной интерполяции модели (см. _process).
+		_vis_prev = _vis_cur if _vis_on else global_transform
+		_vis_cur = global_transform
+		# Телепорт (респавн, догон дальнего снимка) не интерполируем: модель
+		# должна мигнуть на новое место, а не проехать призраком пол-трассы.
+		if _vis_prev.origin.distance_to(_vis_cur.origin) > 4.0:
+			_vis_prev = _vis_cur
+		_vis_on = true
 		return
 	# Кап «депенетрации» от марионетки. Чужая машина по сети — замороженное
 	# кинематическое тело, которое ТЕЛЕПОРТИРУЕТСЯ к снимкам; шагнув в наш
@@ -662,10 +683,18 @@ func _tick_effects(delta: float) -> void:
 ## положение кузова (иначе на жёсткой посадке кузов доседал после клампа
 ## и колёса на кадр-два всё же ныряли под асфальт).
 func _process(delta: float) -> void:
-	# Марионетка тянется к снимкам с частотой РЕНДЕРА, а не физики:
-	# движение видно глазом каждый кадр, независимо от частоты монитора.
-	# Телу-марионетке (заморожена кинематически) это безопасно — физика
-	# увидит её актуальный трансформ на ближайшем тике.
+	# Марионетка: тело шагает в физике (60 Гц), а МОДЕЛЬ каждый кадр
+	# рендера встаёт между двумя последними положениями тела — движение
+	# гладкое на любом fps (см. комментарий у _vis_prev).
+	if net_role == NetRole.PUPPET and _vis_on:
+		var model := get_node_or_null("CarModel") as Node3D
+		if model != null:
+			if not model.top_level:
+				_vis_base = model.transform
+				model.top_level = true
+			model.global_transform = _vis_prev.interpolate_with(
+					_vis_cur, Engine.get_physics_interpolation_fraction()) \
+					* _vis_base
 	_animate_wheels(delta)
 	_tick_status_icon(delta)
 	if _ghost_time > 0.0:
@@ -716,11 +745,32 @@ func _protect_landing_speed(on_ground: bool, delta: float) -> void:
 ## сближения — упругие столкновения в духе RnRR без подскоков о полотно.
 func _bounce_off_cars() -> void:
 	var now := {}
+	var partners: Array[Car] = []
 	for body in get_colliding_bodies():
 		var other := body as Car
-		if other == null or not other.alive:
+		if other != null:
+			partners.append(other)
+	# Марионетки для решателя НЕ ТВЁРДЫЕ (см. net_make_puppet) — контактов
+	# по ним не будет. Их «касание» меряем сами, капсулами вдоль кузова:
+	# машина ~3.2×1.7 м → отрезок ±0.9 м по курсу, контакт при сближении
+	# осей ближе 1.7 м. Толчок дальше идёт ОБЩИМ кодом — тем же, что и для
+	# солверных контактов, так что аркадный рикошет одинаков для всех.
+	if not is_ghost():
+		for node in get_tree().get_nodes_in_group("cars"):
+			var other := node as Car
+			if other == null or other == self \
+					or other.net_role != NetRole.PUPPET:
+				continue
+			if absf(other.global_position.y - global_position.y) > 1.3:
+				continue
+			if _capsule_gap(other) < 1.7:
+				partners.append(other)
+	for other in partners:
+		if other == null or not other.alive or other.is_ghost():
 			continue
 		var id := other.get_instance_id()
+		if now.has(id):
+			continue
 		now[id] = true
 		if other.net_role == NetRole.PUPPET:
 			_puppet_touch = true
@@ -777,6 +827,31 @@ func _bounce_off_cars() -> void:
 			# Без окна руление в _drive съело бы закрутку за пару кадров.
 			_bump_spin_time = 0.6
 	_touch_cars = now
+
+
+## Зазор между осевыми отрезками двух кузовов в плане (капсулы): 0 —
+## отрезки пересекаются. Отрезок = позиция ± курс×0.9 (полукузов без
+## бамперов, радиус капсулы добирает остальное).
+func _capsule_gap(other: Car) -> float:
+	var fa := -global_transform.basis.z
+	fa.y = 0.0
+	fa = fa.normalized() * 0.9 if fa.length_squared() > 1e-6 else Vector3.ZERO
+	var fb := -other.global_transform.basis.z
+	fb.y = 0.0
+	fb = fb.normalized() * 0.9 if fb.length_squared() > 1e-6 else Vector3.ZERO
+	var pa := global_position
+	var pb := other.global_position
+	pa.y = 0.0
+	pb.y = 0.0
+	# Ближайшие точки двух отрезков — перебором по 5 точкам каждого:
+	# для аркадного «коснулись/нет» точности хватает, а кода на порядок
+	# меньше, чем у точного сегмент-сегмент решения.
+	var best := 1e9
+	for i in 5:
+		var qa := pa + fa * (i * 0.5 - 1.0)
+		for j in 5:
+			best = minf(best, qa.distance_to(pb + fb * (j * 0.5 - 1.0)))
+	return best
 
 
 ## Сброс памяти скорости. Звать при телепорте/респавне: иначе защита
@@ -909,10 +984,41 @@ func net_make_puppet() -> void:
 	is_player = false
 	freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
 	freeze = true
+	# Марионетка НЕ ТВЁРДАЯ для решателя: замороженное тело телепортируется
+	# к снимкам, и шагнув в чужой кузов, решатель выдавливал того диким
+	# импульсом («врезаются в меня на рывке — вылетаю за трассу»). Пара с
+	# исключением решателем пропускается, а честный аркадный толчок машина
+	# получает из СВОЕЙ логики (_bounce_off_cars меряет сближение капсул).
+	# Оружию исключения не мешают: снаряды ловят машины по слою 4, а не
+	# контактами тел.
+	_set_solid_to_cars(false)
 	for p in _smoke:
 		p.emitting = false
 	if _boost_flame:
 		_boost_flame.emitting = false
+
+
+## Твёрдость к ДРУГИМ МАШИНАМ в решателе физики (дорога и стены не
+## трогаются). Исключение действует на пару, если стоит хотя бы у одной
+## стороны, поэтому достаточно править список у себя.
+func _set_solid_to_cars(solid: bool) -> void:
+	for node in get_tree().get_nodes_in_group("cars"):
+		if node == self or not (node is PhysicsBody3D):
+			continue
+		if solid:
+			remove_collision_exception_with(node)
+		else:
+			add_collision_exception_with(node)
+
+
+## Модель обратно под тело (выход из марионетки): интерполяция выключается,
+## центровка из build восстанавливается.
+func net_visual_reset() -> void:
+	_vis_on = false
+	var model := get_node_or_null("CarModel") as Node3D
+	if model != null and model.top_level:
+		model.top_level = false
+		model.transform = _vis_base
 
 
 ## Обратно под бота (сервер: игрок вышел). Снимки владельца больше не
@@ -923,6 +1029,8 @@ func net_make_local() -> void:
 	freeze = false
 	_snap_seen = false
 	net_fire = false
+	_set_solid_to_cars(true)
+	net_visual_reset()
 
 
 ## Сервер: эффект оружия по машине живого игрока пересылается её клиенту —
@@ -1414,6 +1522,7 @@ func notify_hit_by(attacker: Car, kind: int) -> void:
 func use_weapon() -> void:
 	if not alive or weapon < 0:
 		return
+	var _wd0 := Time.get_ticks_msec()
 	var kind := weapon
 	weapon = -1
 	# По сети выстрел считает сервер, но клиенты должны его УВИДЕТЬ:
@@ -1458,6 +1567,9 @@ func use_weapon() -> void:
 					Color(0.3, 0.9, 1.0))
 			FxKit.ring(get_parent(), global_position, 2.2,
 					Color(0.3, 0.9, 1.0))
+	var _wd := Time.get_ticks_msec() - _wd0
+	if _wd > 100:
+		print("[slow] use_weapon(%d) занял %d мс" % [kind, _wd])
 
 
 ## Магнит: все машины разово получают сильный импульс К этой машине —
@@ -1559,6 +1671,7 @@ func _use_airstrike() -> void:
 func destroy() -> void:
 	if not alive or is_ghost():
 		return
+	var _wd0 := Time.get_ticks_msec()
 	_forward_fx(NetFx.DESTROY)
 	FlashFx.spawn(get_parent(), global_position, 2.4, Color(1.0, 0.45, 0.1))
 	FxKit.ring(get_parent(), global_position, 3.4, Color(1.0, 0.55, 0.15))
@@ -1582,6 +1695,9 @@ func destroy() -> void:
 	# дорога (1) и стены (2) остаются.
 	collision_layer = 0
 	collision_mask = 0b011
+	var _wd := Time.get_ticks_msec() - _wd0
+	if _wd > 100:
+		print("[slow] destroy() занял %d мс" % _wd)
 
 
 ## Значок эффекта над машиной: что показывать и как он живёт.

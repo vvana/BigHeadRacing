@@ -77,6 +77,19 @@ var _state_seen := 0
 var _state_gap_sum := 0.0
 var _state_gap_max := 0.0
 var _wd_last := 0                   # вачдог фризов: мс прошлого кадра физики
+# Вачдог-«между чем»: имя и мс последней пройденной точки кадра. Если между
+# двумя точками прошло >250 мс — печатаем, между какими: это делит фриз на
+# «внутри физики» / «между физикой и рендером» / «в рендере+ОС».
+var _wd_pt_name := ""
+var _wd_pt_time := 0
+
+
+func _wd_mark(pt: String) -> void:
+	var now := Time.get_ticks_msec()
+	if _wd_pt_time > 0 and now - _wd_pt_time > 250:
+		print("[freeze-где] %s -> %s: %d мс" % [_wd_pt_name, pt, now - _wd_pt_time])
+	_wd_pt_name = pt
+	_wd_pt_time = now
 var _lobby_wait := -1.0             # сервер: остаток ожидания, <0 — не идёт
 # Сервер: синхронный старт. Гонку нельзя начинать, пока у подключённого
 # игрока ещё грузится сцена (первый вход — компиляция шейдеров): он
@@ -410,6 +423,7 @@ func _physics_process(_delta: float) -> void:
 	# 250 мс — это уже видимый фриз у ВСЕХ (на сервере встаёт поток снимков
 	# всем клиентам разом). Печатаем всегда — событие редкое, а жалобу
 	# «все дёргаются одновременно» без этой строки не отладить.
+	_wd_mark("физика")
 	var wd_now := Time.get_ticks_msec()
 	if _wd_last > 0 and wd_now - _wd_last > 250:
 		print("[freeze] кадр физики встал на %d мс (%s, t=%.1f c, гонка=%s)"
@@ -475,6 +489,7 @@ func _physics_process(_delta: float) -> void:
 		_server_tick(_delta)
 	elif Net.is_client():
 		_client_tick(_delta)
+	_wd_mark("физика-конец")
 
 
 ## Стрелка-указатель (конус остриём вниз) над машиной.
@@ -499,6 +514,7 @@ func _build_player_marker(color: Color) -> Node3D:
 
 
 func _process(delta: float) -> void:
+	_wd_mark("рендер")
 	# Лёгкое покачивание по высоте (без вращения — оно отвлекало).
 	_marker_time += delta
 	var bob := 2.4 + 0.12 * sin(_marker_time * 3.0)
@@ -649,6 +665,7 @@ func _finish_race() -> void:
 
 ## Возврат i-й машины на ось трассы (+6 м вперёд), скорость в ноль.
 func _respawn_car(i: int) -> void:
+	var _wd0 := Time.get_ticks_msec()
 	var car := _cars[i]
 	# От СВОЕЙ отметки (ведётся по непрерывности), а не от ближайшей точки
 	# оси: улетевшая за ограждение машина бывает ближе к чужому витку
@@ -665,6 +682,9 @@ func _respawn_car(i: int) -> void:
 	_stall_time[i] = 0.0
 	if _warn_panel and i == _my_index():
 		_warn_panel.visible = false
+	print("[respawn] машина %d, заняло %d мс (t=%.1f)"
+			% [i, Time.get_ticks_msec() - _wd0,
+			Time.get_ticks_msec() / 1000.0])
 
 
 ## Автовозврат на трассу по трём причинам: вылет за ограждение, переворот
@@ -1509,6 +1529,11 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	car.freeze = false
 	car.net_role = Car.NetRole.OWNED
 	car.is_player = true
+	# Модель обратно под тело (у марионетки она отвязана и интерполируется).
+	# Исключения решателя с марионетками НАМЕРЕННО остаются: чужие машины
+	# телепортируются к снимкам, и твёрдый контакт с ними — это дикая
+	# депенетрация; толчки считает _bounce_off_cars по сближению капсул.
+	car.net_visual_reset()
 	_car = car
 	var cam := get_node_or_null("IsoCamera") as IsoCamera
 	if cam:

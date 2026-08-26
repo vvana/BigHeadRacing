@@ -6,6 +6,9 @@ extends MeshInstance3D
 
 
 static func spawn(parent: Node, from: Vector3, dir: Vector3, length: float) -> void:
+	# Выделенному серверу косметика не нужна и вредна (см. FxKit._skip).
+	if FxKit._skip():
+		return
 	var fx := LaserFx.new()
 	var beam := BoxMesh.new()
 	beam.size = Vector3(0.22, 0.22, length)

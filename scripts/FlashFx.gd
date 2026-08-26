@@ -10,6 +10,9 @@ const FPS := 20.0  # 9 кадров ≈ 0.45 с
 
 
 static func spawn(parent: Node, pos: Vector3, radius: float, color: Color) -> void:
+	# Выделенному серверу косметика не нужна и вредна (см. FxKit._skip).
+	if FxKit._skip():
+		return
 	var fx := FlashFx.new()
 	var sheet: Texture2D = load(SHEET)
 	var fw := sheet.get_width() / 3

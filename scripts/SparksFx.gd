@@ -6,6 +6,9 @@ extends CPUParticles3D
 
 
 static func spawn(parent: Node, pos: Vector3, power: float) -> void:
+	# Выделенному серверу косметика не нужна и вредна (см. FxKit._skip).
+	if FxKit._skip():
+		return
 	var fx := SparksFx.new()
 	fx.one_shot = true
 	fx.explosiveness = 1.0

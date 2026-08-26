@@ -6,6 +6,18 @@ extends RefCounted
 ## и SparksFx (искры) — кольцо ударной волны, клубы дыма, вспышка
 ## выстрела, снежный разлёт.
 
+# ВЫДЕЛЕННОМУ СЕРВЕРУ косметика не нужна и ВРЕДНА: headless-рендер на
+# каждый созданный меш сыпет в stderr «Parameter m is null» с бэктрейсом.
+# Локальный замер: этот поток, уходя в пайп/консоль, стопорил ГЛАВНЫЙ
+# поток на 1-2 с (TestLap с 2>/dev/null — ноль фризов, с пайпом — по два
+# за заезд); на VDS тот же спам уже включал rate limit journald (см.
+# ПРОГРЕСС 2026-08-25). Все static-точки входа эффектов выходят сразу.
+# Проверка та же, что в TrackBuilder._headless_server: autoload Net в
+# static-контексте недоступен для стендов --script.
+static func _skip() -> bool:
+	return OS.get_cmdline_user_args().has("--server")
+
+
 const TEX_RING := "res://assets/fx/ring_shockwave.png"
 const TEX_SMOKE := "res://assets/fx/smoke_cloud_2x2.png"
 const TEX_SNOW := "res://assets/fx/snowflake.png"
@@ -20,6 +32,8 @@ const TEX_FIRE := "res://assets/fx/fire_6x3.png"
 ## Кольцо ударной волны: лежит на земле, разлетается от эпицентра до
 ## radius и тает. Аддитивное — «светится» поверх дороги.
 static func ring(parent: Node, pos: Vector3, radius: float, color: Color) -> void:
+	if _skip():
+		return
 	var fx := MeshInstance3D.new()
 	var quad := QuadMesh.new()
 	quad.size = Vector2(radius * 2.0, radius * 2.0)
@@ -50,6 +64,8 @@ static func ring(parent: Node, pos: Vector3, radius: float, color: Color) -> voi
 ## каждой частице) лениво всплывают и растворяются.
 static func smoke_burst(parent: Node, pos: Vector3, amount := 10,
 		size := 1.0) -> void:
+	if _skip():
+		return
 	var fx := CPUParticles3D.new()
 	# ВАЖНО: у нового узла emitting=true по умолчанию — при add_child разовый
 	# залп (explosiveness) уходит в точке (0,0,0) ДО установки global_position.
@@ -105,6 +121,8 @@ static func smoke_burst(parent: Node, pos: Vector3, amount := 10,
 ## Снежный разлёт заморозки: бело-голубые снежинки брызгают во все
 ## стороны и опадают.
 static func snow_burst(parent: Node, pos: Vector3, amount := 22) -> void:
+	if _skip():
+		return
 	var fx := CPUParticles3D.new()
 	# ВАЖНО: у нового узла emitting=true по умолчанию — при add_child разовый
 	# залп (explosiveness) уходит в точке (0,0,0) ДО установки global_position.
@@ -151,6 +169,8 @@ static func snow_burst(parent: Node, pos: Vector3, amount := 22) -> void:
 ## Атлас 4×4 — каждой частице свой случайный вариант звезды.
 static func stars_burst(parent: Node, pos: Vector3, amount := 7,
 		color := Color(1.0, 0.9, 0.25)) -> void:
+	if _skip():
+		return
 	var fx := CPUParticles3D.new()
 	# ВАЖНО: у нового узла emitting=true по умолчанию — при add_child разовый
 	# залп (explosiveness) уходит в точке (0,0,0) ДО установки global_position.
@@ -203,6 +223,8 @@ static func stars_burst(parent: Node, pos: Vector3, amount := 7,
 ## кадр) вспыхивают вокруг точки и мгновенно гаснут. Аддитивные — светятся.
 static func lightning_burst(parent: Node, pos: Vector3, color: Color,
 		amount := 5, size := 1.0) -> void:
+	if _skip():
+		return
 	var fx := CPUParticles3D.new()
 	# ВАЖНО: у нового узла emitting=true по умолчанию — при add_child разовый
 	# залп (explosiveness) уходит в точке (0,0,0) ДО установки global_position.
@@ -251,6 +273,8 @@ static func lightning_burst(parent: Node, pos: Vector3, color: Color,
 ## Залп конфетти: разноцветные ленточки (цветной атлас 3×3 как есть, без
 ## перекраски) фонтаном вверх, кружатся и опадают. Праздник на финише.
 static func confetti_burst(parent: Node, pos: Vector3, amount := 90) -> void:
+	if _skip():
+		return
 	var fx := CPUParticles3D.new()
 	# ВАЖНО: у нового узла emitting=true по умолчанию — при add_child разовый
 	# залп (explosiveness) уходит в точке (0,0,0) ДО установки global_position.
@@ -304,6 +328,8 @@ static func confetti_burst(parent: Node, pos: Vector3, amount := 90) -> void:
 ## (луч вниз ищет дорогу — на склоне пятно ляжет по рельефу) и медленно
 ## растворяется. Чисто косметика, коллизий нет.
 static func scorch(parent: Node, pos: Vector3, radius := 2.4) -> void:
+	if _skip():
+		return
 	var up := Vector3.UP
 	var ground := pos
 	var p3 := parent as Node3D
@@ -347,6 +373,8 @@ static func scorch(parent: Node, pos: Vector3, radius := 2.4) -> void:
 ## Сноп огня на месте взрыва: языки пламени (атлас 6×3, кадры листаются
 ## по жизни) коротко полыхают и гаснут. Аддитивные — светятся.
 static func fire_burst(parent: Node, pos: Vector3, amount := 14) -> void:
+	if _skip():
+		return
 	var fx := CPUParticles3D.new()
 	# ВАЖНО: у нового узла emitting=true по умолчанию — при add_child разовый
 	# залп (explosiveness) уходит в точке (0,0,0) ДО установки global_position.
@@ -401,6 +429,8 @@ static func fire_burst(parent: Node, pos: Vector3, amount := 14) -> void:
 ## Вспышка у дула при выстреле снарядом: билборд, «выпрыгивает» и гаснет
 ## за десятую секунды.
 static func muzzle_flash(parent: Node, pos: Vector3, color: Color) -> void:
+	if _skip():
+		return
 	var fx := MeshInstance3D.new()
 	var quad := QuadMesh.new()
 	quad.size = Vector2(1.5, 1.5)
