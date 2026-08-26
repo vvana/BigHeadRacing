@@ -16,11 +16,13 @@ func _ready() -> void:
 	_lobby = Lobby.new()
 	add_child(_lobby)
 	_lobby.show_screen()
-	_lobby.set_status("Ждём игроков: 2/4… старт через 12 с")
+	# Ровно то, что видит игрок, когда людей на все слоты не нашлось:
+	# два человека, свободные слоты забрали боты (см. Main._rx_bots).
+	_lobby.set_status("Больше игроков не нашлось.\nПустые слоты заняли боты (2) — поехали!")
 	_lobby.set_slot(0, true, "sharky", true)
 	_lobby.set_slot(1, true, "twinmill", false)
-	_lobby.set_slot(2, false, "", false)
-	_lobby.set_slot(3, false, "", false)
+	_lobby.set_slot(2, false, "invader", false, true)
+	_lobby.set_slot(3, false, "dakar", false, true)
 
 
 func _physics_process(_d: float) -> void:

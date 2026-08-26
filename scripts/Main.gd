@@ -22,6 +22,13 @@ const SNAP_HZ := 60.0
 # Пробел по-прежнему запрашивает старт сразу (но старт ждёт, пока у всех
 # подключённых загрузится сцена — см. _maybe_start).
 const LOBBY_WAIT := 20.0
+# Сколько ждать ещё, когда в лобби заходит очередной игрок (см.
+# _on_peer_joined): ожидание продлевается до этой отметки, если оставалось
+# меньше, — чтобы зашедшие вразнобой всё равно стартовали вместе.
+const JOIN_GRACE := 8.0
+# Сколько лобби показывает «слоты заняли боты», прежде чем начать отсчёт.
+# Без паузы игрок не успевает увидеть, с кем едет: отсчёт прячет лобби.
+const BOTS_SHOW := 2.2
 # Полотно переменной ширины, поэтому порог вылета считается в точке машины:
 # полуширина здесь + 0.5 м (машина у самой стены отстоит от оси почти ровно
 # на полуширину, дальше — уже за ограждением).
@@ -71,6 +78,12 @@ var _lobby_wait := -1.0             # сервер: остаток ожидан�
 var _hello_done := {}               # слот → true: клиент прислал hello
 var _join_time := {}                # слот → секунда подключения (для грейса)
 var _want_start := false
+# Сервер: старт решён, но лобби ещё показывает ботов, занявших пустые
+# слоты (_start_with_bots). Гонка ещё не идёт — второй раз стартовать нельзя.
+var _starting := false
+# Номер попытки старта: если во время показа ботов подключился живой игрок,
+# попытка отменяется (номер меняется), и заезд снова ждёт людей.
+var _start_gen := 0
 var _loading_told := false          # статус «ждём загрузки» уже разослан
 # Подключился, но hello так и не пришёл (старый клиент, зависшая загрузка) —
 # спустя столько секунд перестаём ждать такого и стартуем без него.
@@ -79,6 +92,9 @@ var _roster := PackedStringArray()  # id моделей машин по слот
 var _lobby: Lobby                   # полноэкранное лобби на клиенте
 # Клиент: какие слоты заняты живыми игроками (для экрана лобби).
 var _slot_taken: Array[bool] = [false, false, false, false]
+# Клиент: битовая маска слотов, которые перед стартом забрали боты (сервер
+# шлёт её в _rx_bots) — лобби показывает их машины вместо «ждём игрока…».
+var _bot_mask := 0
 var _feed_box: VBoxContainer        # лента «кто кого чем» (события оружия)
 var _feed_pending: Array[Array] = []  # события, ждущие места в ленте
 
@@ -220,7 +236,8 @@ func _spawn_cars() -> void:
 
 	var length := _track._curve.get_baked_length()
 	for i in _cars.size():
-		var off := _track._curve.get_closest_offset(_cars[i].global_position)
+		_cars[i].reset_track_offset()
+		var off := _cars[i].track_offset
 		_last_offset[i] = off
 		# Стартовый прогресс = фактическая отметка относительно ЛИНИИ
 		# (решётка стоит до линии, off у конца круга → прогресс < 0).
@@ -387,7 +404,12 @@ func _physics_process(_delta: float) -> void:
 	var length := curve.get_baked_length()
 
 	for i in _cars.size():
-		var off := curve.get_closest_offset(_cars[i].global_position)
+		# Отметка НЕПРЕРЫВНАЯ (см. Car.sync_track_offset): глобальный поиск
+		# ближайшей точки перепрыгивал на соседний виток кольца, стоило
+		# машине уехать за ограждение, и прогресс прибавлял сотни метров —
+		# круги, места и «резинка» ИИ сходили с ума.
+		_cars[i].sync_track_offset()
+		var off := _cars[i].track_offset
 		var d := off - _last_offset[i]
 		if d > length * 0.5:
 			d -= length
@@ -609,7 +631,13 @@ func _finish_race() -> void:
 ## Возврат i-й машины на ось трассы (+6 м вперёд), скорость в ноль.
 func _respawn_car(i: int) -> void:
 	var car := _cars[i]
-	car.global_transform = _track.respawn_transform(car.global_position)
+	# От СВОЕЙ отметки (ведётся по непрерывности), а не от ближайшей точки
+	# оси: улетевшая за ограждение машина бывает ближе к чужому витку
+	# кольца, и тогда возврат «на трассу» выбрасывал её через пол-трассы
+	# вперёд — на это и жаловались.
+	car.global_transform = _track.respawn_transform_at(car.track_offset)
+	car.reset_track_offset()
+	_last_offset[i] = car.track_offset
 	car.linear_velocity = Vector3.ZERO
 	car.angular_velocity = Vector3.ZERO
 	car.reset_speed_memory()
@@ -651,10 +679,16 @@ func _check_recovery(delta: float) -> void:
 		var reason := ""
 		var left := 0.0
 
-		var dist := _track.distance_from_axis(car.global_position)
+		# И расстояние, и полуширина — от СВОЕЙ отметки (ведётся по
+		# непрерывности): у машины, уехавшей далеко от полотна, ближайшей
+		# точкой оси бывает чужой виток кольца — вылет тогда не замечался
+		# вовсе, а замеченный лечился респавном на другом конце трассы.
+		car.sync_track_offset()
+		var dist := _track.distance_from_axis_at(
+				car.global_position, car.track_offset)
 		# Запас — у трассы: классика 0.5 м (за ним ограждение), песчаная
 		# 12 м (съезд на песок легален, возвращаем только уехавших в дюны).
-		if dist > _track.half_width_at_pos(car.global_position) \
+		if dist > _track.half_width_at_offset(car.track_offset) \
 				+ _track.offtrack_margin:
 			_offtrack_time[i] += delta
 			var wait := OFFTRACK_WAIT_PLAYER if i == _my_index() \
@@ -1042,6 +1076,12 @@ func _on_peer_joined(_id: int, slot: int) -> void:
 	if _net_started:
 		_rx_lobby.rpc(Net.slot_of_peer.size(), 0)
 		return
+	# Зашёл человек, пока лобби показывало ботов, — отменяем эту попытку
+	# старта: слот отдаём ему, а не боту (см. _start_with_bots).
+	if _starting:
+		_starting = false
+		_start_gen += 1
+		_rx_bots.rpc(0)
 	# Стартовать ЗДЕСЬ нельзя, даже если все слоты заняты: подключение —
 	# это ENet-рукопожатие, а сцена у игрока может ещё грузиться (первый
 	# вход = компиляция шейдеров). Старт — только когда все загрузились
@@ -1049,6 +1089,11 @@ func _on_peer_joined(_id: int, slot: int) -> void:
 	# Первый игрок: даём LOBBY_WAIT секунд на то, чтобы подтянулись остальные.
 	if _lobby_wait < 0.0:
 		_lobby_wait = LOBBY_WAIT
+	# Пришёл ещё один — продлеваем ожидание до JOIN_GRACE, если оставалось
+	# меньше. Друзья жмут «играть» не по секундомеру: один заходит на
+	# двадцатой секунде чужого ожидания, и без продления заезд стартовал бы
+	# у него под носом, а он подсел бы к идущей гонке.
+	_lobby_wait = maxf(_lobby_wait, JOIN_GRACE)
 	_rx_lobby.rpc(Net.slot_of_peer.size(), ceili(_lobby_wait))
 
 
@@ -1150,14 +1195,14 @@ func _all_loaded() -> bool:
 ## Так вход из лобби в гонку синхронный: никто не стартует, пока у
 ## кого-то ещё крутится загрузка.
 func _maybe_start() -> void:
-	if not Net.is_server() or _net_started:
+	if not Net.is_server() or _net_started or _starting:
 		return
 	var full := Net.slot_of_peer.size() >= Net.PLAYER_SLOTS
 	if not (_want_start or full):
 		return
 	if _all_loaded():
 		_lobby_wait = -1.0
-		_start_net_race()
+		_start_with_bots()
 	elif not _loading_told:
 		# Ждём загрузку: скажем игрокам, чего именно ждём (secs = −1).
 		# Один раз, не каждый тик — _tick_lobby зовёт нас каждый кадр.
@@ -1171,6 +1216,31 @@ func _start_net_race() -> void:
 	_net_started = true
 	print("[net] старт заезда, игроков: %d" % Net.slot_of_peer.size())
 	_countdown()
+
+
+## Живых игроков хватило не на все слоты — свободные берут боты. Прежде
+## чем начинать отсчёт, показываем это в лобби: слот перестаёт быть «ждём
+## игрока…» и становится ботом с его машиной. Пауза BOTS_SHOW — чтобы
+## игрок успел разглядеть, с кем едет (отсчёт лобби уже прячет).
+func _start_with_bots() -> void:
+	if _net_started or _starting:
+		return
+	var bot_mask := ~_taken_mask() & ((1 << Net.PLAYER_SLOTS) - 1)
+	if bot_mask == 0:
+		_start_net_race()
+		return
+	_starting = true
+	_start_gen += 1
+	var gen := _start_gen
+	print("[net] свободные слоты заняли боты (маска %d)" % bot_mask)
+	_rx_bots.rpc(bot_mask)
+	await get_tree().create_timer(BOTS_SHOW).timeout
+	# Успел зайти живой игрок — попытка отменена (см. _on_peer_joined):
+	# человек лучше бота, ждём его загрузку и стартуем заново.
+	if not is_inside_tree() or gen != _start_gen:
+		return
+	_starting = false
+	_start_net_race()
 
 
 ## Сервер: раз в 1/SNAP_HZ рассылаем состояние всех машин.
@@ -1188,7 +1258,7 @@ func _server_tick(delta: float) -> void:
 ## слоты так и остаются за ботами (см. _spawn_cars), и заезд ничем не хуже
 ## одиночного. Подсевший позже игрок просто заберёт машину у бота.
 func _tick_lobby(delta: float) -> void:
-	if _net_started:
+	if _net_started or _starting:
 		return
 	# Старт уже запрошен, но кто-то ещё грузится — проверяем каждый тик:
 	# hello может прийти в любой момент, а молчуна отпустит HELLO_GRACE.
@@ -1298,7 +1368,18 @@ func _rx_hello(car_id: String, proto: int) -> void:
 	if _net_started:
 		# Заезд уже идёт: отсчёт этот игрок пропустил, и без отдельной
 		# команды он навсегда остался бы в лобби с выключенным управлением.
-		_rx_race_running.rpc_id(id)
+		# Вместе с командой отдаём МЕСТО его машины: у себя он строит сцену
+		# с нуля и его машина стоит на стартовой решётке, а по трассе в это
+		# время едет её серверная копия (её вёл бот). Без этого игрок
+		# появлялся у старта посреди заезда — «мы начали вместе, а оказались
+		# в разных местах», — а у остальных его машина в тот же миг
+		# телепортировалась с трассы назад к решётке («бот приехал откуда-то
+		# сзади»).
+		var car := _cars[slot]
+		var q := car.global_transform.basis.get_rotation_quaternion()
+		var p := car.global_position
+		_rx_race_running.rpc_id(id, PackedFloat32Array(
+				[p.x, p.y, p.z, q.x, q.y, q.z, q.w]))
 		# И прогресс всех машин: иначе подсевший считал бы круги с нуля,
 		# и его HUD (круг, место) врал бы до конца заезда.
 		_rx_progress.rpc_id(id, PackedFloat32Array(_progress),
@@ -1553,6 +1634,38 @@ func _rx_fx(kind: int, args: Array) -> void:
 				_car.apply_speed_cut(args[0])
 
 
+## Живых игроков на все слоты не нашлось — свободные забрали боты. Лобби
+## показывает их машины вместо «ждём игрока…», чтобы игрок видел, с кем
+## поедет, а не гадал, куда делись остальные. mask = 0 — попытка старта
+## отменена (подключился человек), слоты снова ждут людей.
+@rpc("authority", "call_remote", "reliable")
+func _rx_bots(mask: int) -> void:
+	_bot_mask = mask
+	if _lobby == null:
+		return
+	_update_lobby_slots()
+	if mask == 0:
+		_lobby.set_status("Игроков: %d/%d\nПодключился игрок — ждём его…"
+				% [_taken_count(), Net.PLAYER_SLOTS])
+		return
+	var bots := 0
+	for s in Net.PLAYER_SLOTS:
+		if mask & (1 << s):
+			bots += 1
+	_lobby.show_screen()
+	_lobby.set_status("Больше игроков не нашлось.\nПустые слоты заняли боты (%d) — поехали!"
+			% bots)
+
+
+## Сколько слотов занято живыми игроками (по нашей маске _slot_taken).
+func _taken_count() -> int:
+	var n := 0
+	for t in _slot_taken:
+		if t:
+			n += 1
+	return n
+
+
 ## Слот занял или освободил живой игрок — показываем/прячем оранжевую метку.
 @rpc("authority", "call_remote", "reliable")
 func _rx_slot_taken(slot: int, taken: bool) -> void:
@@ -1593,13 +1706,17 @@ func _rx_progress(progress: PackedFloat32Array, laps: PackedInt32Array) -> void:
 	# _last_offset — по фактическим позициям, иначе первый же кадр счёта
 	# прибавил бы к прогрессу разницу «ноль → текущая точка трассы».
 	for i in _cars.size():
-		_last_offset[i] = _track._curve.get_closest_offset(
-				_cars[i].global_position)
+		_cars[i].reset_track_offset()
+		_last_offset[i] = _cars[i].track_offset
 
 
 ## Клиент подсел к уже идущему заезду — отсчёта не будет, включаемся сразу.
+## xf — где сейчас едет НАША машина (её вёл бот, пока слот пустовал): своя
+## сцена построена с нуля и машина стоит на стартовой решётке, так что без
+## этой пересадки игрок появлялся у старта посреди заезда, а у остальных
+## его машина прыгала с трассы к решётке.
 @rpc("authority", "call_remote", "reliable")
-func _rx_race_running() -> void:
+func _rx_race_running(xf: PackedFloat32Array) -> void:
 	if _my_finished or _finished:
 		return
 	_net_started = true
@@ -1607,6 +1724,16 @@ func _rx_race_running() -> void:
 		_lobby.hide_screen()
 	if _count_label:
 		_count_label.visible = false
+	if xf.size() >= 7 and _car != null and _car.net_role == Car.NetRole.OWNED:
+		var pos := Vector3(xf[0], xf[1], xf[2])
+		if pos.is_finite() and pos.length() < 600.0:
+			_car.global_transform = Transform3D(
+					Basis(Quaternion(xf[3], xf[4], xf[5], xf[6]).normalized()),
+					pos)
+			_car.linear_velocity = Vector3.ZERO
+			_car.angular_velocity = Vector3.ZERO
+			_car.reset_track_offset()
+			_last_offset[_my_index()] = _car.track_offset
 	for c in _cars:
 		c.controls_enabled = true
 
@@ -1713,7 +1840,8 @@ func _update_lobby_slots() -> void:
 		return
 	for s in _slot_taken.size():
 		var id := _roster[s] if s < _roster.size() else ""
-		_lobby.set_slot(s, _slot_taken[s], id, s == Net.my_slot)
+		_lobby.set_slot(s, _slot_taken[s], id, s == Net.my_slot,
+				(_bot_mask & (1 << s)) != 0)
 
 
 # ════════════════════ ЛЕНТА СОБЫТИЙ ОРУЖИЯ ════════════════════

@@ -104,24 +104,32 @@ func hide_screen() -> void:
 		vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
 
-## Обновить слот: занят ли живым игроком, на какой машине приехал, я ли это.
-## Пустой слот — приглушённый «Ждём игрока…» без машины.
-func set_slot(slot: int, taken: bool, car_id: String, is_me: bool) -> void:
+## Обновить слот: занят ли живым игроком, на какой машине приехал, я ли это
+## и не забрал ли слот бот. Пустой слот — приглушённый «Ждём игрока…» без
+## машины; слот бота — его машина на подиуме и подпись «БОТ», чтобы игрок
+## видел, с кем поедет, когда людей на все слоты не нашлось.
+func set_slot(slot: int, taken: bool, car_id: String, is_me: bool,
+		is_bot := false) -> void:
 	if slot < 0 or slot >= SLOTS:
 		return
 	var name_l := _name_labels[slot]
 	name_l.text = "Player %d" % (slot + 1) + (" — ты" if is_me else "")
 	# Цвета — те же, что у стрелок над машинами: свой зелёный, соперник
-	# оранжевый (один язык меток по всей игре).
+	# оранжевый (один язык меток по всей игре). Бот — блёклый серо-стальной:
+	# он и в гонке без стрелки, метки живых людей не размываем.
 	var color := Color(1, 1, 1, 0.5)
 	if is_me:
 		color = UiKit.GREEN_ME
 	elif taken:
 		color = UiKit.ORANGE_RIVAL
+	if is_bot and not taken:
+		name_l.text = "БОТ"
+		color = Color(0.72, 0.76, 0.8)
 	name_l.add_theme_color_override("font_color", color)
-	_views[slot].visible = taken
-	_wait_labels[slot].visible = not taken
-	if not taken:
+	var show_car := taken or is_bot
+	_views[slot].visible = show_car
+	_wait_labels[slot].visible = not show_car
+	if not show_car:
 		_car_labels[slot].text = ""
 		if _slot_ids[slot] != "":
 			_slot_ids[slot] = ""

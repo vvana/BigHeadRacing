@@ -44,7 +44,10 @@ func _ready() -> void:
 	_fall_offset = Vector3.UP * FALL_HEIGHT + screen_top * FALL_SIDE
 	var curve: Curve3D = track._curve
 	var length := curve.get_baked_length()
-	var off := curve.get_closest_offset(target.global_position)
+	# Отметка ЖЕРТВЫ (ведётся по непрерывности): у лидера, сошедшего с
+	# полотна, ближайшей точкой оси бывает чужой виток — бомбы легли бы
+	# в другом конце трассы.
+	var off: float = target.track_offset
 	for ahead: float in AHEAD:
 		var o := fposmod(off + ahead, length)
 		var pos := curve.sample_baked(o)

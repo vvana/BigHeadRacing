@@ -90,6 +90,15 @@ var net_fire := false           # сервер: клиент просил выс
 ## физику эффекта (толчок, разворот, телепорт) применяет клиент-владелец.
 enum NetFx { DESTROY, BLAST, FREEZE, OIL, BOOST, SLOW }
 var has_marker := false         # над машиной висит стрелка-указатель
+## Отметка машины на оси трассы, м. Считается с оглядкой на предыдущую
+## (TrackBuilder.closest_offset_near): улетевшая за ограждение машина
+## оказывается ближе к ЧУЖОМУ витку кольца, и «ближайшая точка вообще»
+## отправляла её респавн, прогресс, прицел ИИ и кламп курса на другой конец
+## трассы. Обновляется раз за кадр физики (sync_track_offset), после
+## телепортов сбрасывается (reset_track_offset).
+var track_offset := 0.0
+# В каком кадре физики отметка уже посчитана; −1 — ещё ни разу.
+var _offset_frame := -1
 # Последний снимок с сервера и его возраст. Марионетка тянется к нему,
 # ЭКСТРАПОЛИРУЯ по присланной скорости, — см. _follow_snapshot.
 var _snap_pos := Vector3.ZERO
@@ -403,7 +412,36 @@ func _build_boost_flame() -> void:
 	_boost_flame = p
 
 
+## Подвинуть отметку на оси вслед за машиной. Раз за кадр физики: её просит
+## и Main (ему нужен прогресс), и сама машина (ведение у стены, кламп курса,
+## линия ИИ), а на «прыжке» поиск не бесплатный.
+func sync_track_offset() -> void:
+	if track == null:
+		return
+	# Ни одной отметки ещё не было (машину только что создали и поставили) —
+	# сравнивать с прошлой нечего, берём её как после телепорта.
+	if _offset_frame < 0:
+		reset_track_offset()
+		return
+	var frame := Engine.get_physics_frames()
+	if frame == _offset_frame:
+		return
+	_offset_frame = frame
+	track_offset = track.closest_offset_near(global_position, track_offset)
+
+
+## После ТЕЛЕПОРТА (спавн, респавн, первый снимок марионетки) непрерывности
+## нет — отметку берём глобальным поиском: машина в этот момент стоит на
+## полотне, и он не ошибётся.
+func reset_track_offset() -> void:
+	if track == null:
+		return
+	track_offset = track._curve.get_closest_offset(global_position)
+	_offset_frame = Engine.get_physics_frames()
+
+
 func _physics_process(delta: float) -> void:
+	sync_track_offset()
 	if net_role == NetRole.PUPPET:
 		# Таймеры эффектов тикают и у марионетки: серверу нужен живой
 		# «призрак» для снимков, а марионетке на клиенте — его мигание.
@@ -454,8 +492,8 @@ func _physics_process(delta: float) -> void:
 	# скорости режутся в _drive, из-под колёс всегда идёт песчаная пыль.
 	_on_sand = alive and on_ground and track != null \
 			and track.kind == TrackBuilder.KIND_SAND \
-			and track.distance_from_axis(global_position) \
-			> track.half_width_at_pos(global_position)
+			and track.distance_from_axis_at(global_position, track_offset) \
+			> track.half_width_at_offset(track_offset)
 	if alive and controls_enabled:
 		if is_player:
 			_player_control(delta, on_ground)
@@ -571,7 +609,7 @@ func _physics_process(delta: float) -> void:
 			and ((absf(_side_speed) > 6.5 and hh.length() > 11.0)
 				or (_slip_time > 0.0 and hh.length() > 6.0)) \
 			and (track == null or (track.kind != TrackBuilder.KIND_SAND
-				and track.distance_from_axis(global_position)
+				and track.distance_from_axis_at(global_position, track_offset)
 					< TrackBuilder.TRACK_HALF_WIDTH + 0.3))
 	_ext_push_time = maxf(0.0, _ext_push_time - delta)
 	_blast_time = maxf(0.0, _blast_time - delta)
@@ -785,6 +823,9 @@ func net_apply_snapshot(pos: Vector3, rot: Quaternion, vel: Vector3) -> void:
 		_snap_seen = true
 		global_position = pos
 		global_transform.basis = Basis(rot)
+		# Первый снимок — телепорт куда угодно (машина могла уехать полкруга,
+		# пока мы её не видели): непрерывность отметки тут ни при чём.
+		reset_track_offset()
 
 
 ## Марионетка: свою физику не считаем вовсе, тянемся к снимку. Снимки идут
@@ -890,7 +931,7 @@ func _ai_control(delta: float, on_ground: bool) -> void:
 		return
 	var curve: Curve3D = track._curve
 	var length := curve.get_baked_length()
-	var my_off := curve.get_closest_offset(global_position)
+	var my_off := track_offset
 	var look := 6.0 + linear_velocity.length() * 0.45
 	var target := curve.sample_baked(fposmod(my_off + look, length))
 
@@ -1099,7 +1140,7 @@ func _wall_slide(delta: float) -> void:
 		return
 	var curve: Curve3D = track._curve
 	var length := curve.get_baked_length()
-	var off := curve.get_closest_offset(global_position)
+	var off := track_offset
 	var axis_pos := curve.sample_baked(off)
 	var tangent := curve.sample_baked(fposmod(off + 0.5, length)) - axis_pos
 	tangent.y = 0.0
@@ -1266,7 +1307,7 @@ func _clamp_heading(delta: float) -> void:
 		return
 	var curve: Curve3D = track._curve
 	var length := curve.get_baked_length()
-	var off := curve.get_closest_offset(global_position)
+	var off := track_offset
 	var tangent := curve.sample_baked(fposmod(off + 0.5, length)) \
 			- curve.sample_baked(off)
 	tangent.y = 0.0
@@ -1514,7 +1555,10 @@ func destroy() -> void:
 	FxKit.fire_burst(get_parent(), global_position + Vector3.UP * 0.3)
 	FxKit.scorch(get_parent(), global_position)
 	if track:
-		global_transform = track.respawn_transform(global_position)
+		# Отметка СВОЯ (по непрерывности): уничтоженную у ограждения машину
+		# глобальный поиск мог вернуть на чужой виток кольца.
+		global_transform = track.respawn_transform_at(track_offset)
+		reset_track_offset()
 	linear_velocity = Vector3.ZERO
 	angular_velocity = Vector3.ZERO
 	reset_speed_memory()
@@ -1653,7 +1697,7 @@ func _spin_away_from_wall() -> float:
 	if track == null or not track.has_walls:
 		return 0.0
 	var curve: Curve3D = track._curve
-	var off := curve.get_closest_offset(global_position)
+	var off := track_offset
 	var axis_pos := curve.sample_baked(off)
 	# Наружу — от оси трассы к ближнему борту (работает для обоих).
 	var n := global_position - axis_pos

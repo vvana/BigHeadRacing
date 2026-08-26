@@ -896,6 +896,91 @@ func distance_from_axis(world_pos: Vector3) -> float:
 	return Vector2(world_pos.x - p.x, world_pos.z - p.z).length()
 
 
+## То же, но от ЗАРАНЕЕ ИЗВЕСТНОЙ отметки (см. closest_offset_near): для
+## машины, которая уже уехала от полотна, глобальный поиск врёт.
+func distance_from_axis_at(world_pos: Vector3, off: float) -> float:
+	var p := _curve.sample_baked(fposmod(off, _curve.get_baked_length()))
+	return Vector2(world_pos.x - p.x, world_pos.z - p.z).length()
+
+
+# ─────────── ОТМЕТКА НА ОСИ ПО НЕПРЕРЫВНОСТИ ───────────
+# Curve3D.get_closest_offset ищет ближайшую точку по ВСЕЙ кривой. Пока
+# машина на полотне, это ровно то, что нужно. Но кольцо подходит само к
+# себе (замер tools/LoopGap.tscn: 53 м на классике, 43 м на неоне, 55 м на
+# песке между участками, разнесёнными по ходу гонки на сотни метров), и
+# машине достаточно улететь за ограждение или проехать по песку пару
+# секунд — ближайшим станет ЧУЖОЙ участок кольца. Тогда:
+#   • респавн выкидывает «вперёд через пол-трассы» (он берёт +6 м от
+#     найденной отметки);
+#   • прогресс, круги и места скачут (Main._physics_process считает
+#     разницу отметок за кадр);
+#   • бот правит на чужой участок и приезжает «откуда-то сзади»;
+#   • Car._clamp_heading разворачивает машину по чужой касательной.
+# Поэтому отметку ищем В ОКНЕ вокруг предыдущей: за кадр физики машина
+# проходит меньше метра, а окно ±45 м переживает и подброс взрывом.
+# Проверка «у стены» (tools/check_axis_jump.gd) прыжков не находила — она
+# и не могла: точки брались на полотне, а ломается всё именно СНАРУЖИ.
+#
+# ВАЖНО: пока ответ движка ПРАВДОПОДОБЕН (сдвинулся не дальше, чем машина
+# физически могла проехать за кадр), берём именно его — на полотне ничего
+# не меняется вовсе, и все замеры, которые от отметки зависят (ведение у
+# стены, кламп курса, линия ИИ), остаются прежними до бита. Свой поиск
+# включается только на «прыжке», то есть в аварии.
+const OFFSET_WINDOW := 45.0   # полуширина окна поиска, м
+const OFFSET_COARSE := 1.5    # шаг грубого прохода, м
+# Насколько отметке позволено сдвинуться между двумя опросами. За кадр
+# физики машина проезжает меньше метра даже на буст-скорости; 12 м — запас
+# на пропущенные кадры, и всё равно вчетверо меньше самого короткого
+# «прыжка» на чужой виток.
+const OFFSET_MAX_STEP := 12.0
+
+
+## Отметка на оси, ближайшая к world_pos и НЕПРЕРЫВНАЯ относительно
+## prev_off. Обычный путь — ответ Curve3D.get_closest_offset; если он
+## прыгнул на чужой виток, ищем сами В ОКНЕ ±OFFSET_WINDOW вокруг
+## предыдущей отметки: грубый проход шагом OFFSET_COARSE и шесть уточнений
+## половинным делением (точность ~2 см).
+func closest_offset_near(world_pos: Vector3, prev_off: float) -> float:
+	var length := _curve.get_baked_length()
+	if length <= 0.0:
+		return 0.0
+	var naive := _curve.get_closest_offset(world_pos)
+	var jump := absf(naive - fposmod(prev_off, length))
+	jump = minf(jump, length - jump)
+	if jump <= OFFSET_MAX_STEP:
+		return naive
+	var best := prev_off
+	var best_d := _dist2_at(world_pos, prev_off, length)
+	var steps := int(OFFSET_WINDOW * 2.0 / OFFSET_COARSE)
+	for i in steps + 1:
+		var off := prev_off - OFFSET_WINDOW + OFFSET_COARSE * i
+		var d := _dist2_at(world_pos, off, length)
+		if d < best_d:
+			best_d = d
+			best = off
+	var span := OFFSET_COARSE
+	for _i in 6:
+		span *= 0.5
+		var a := _dist2_at(world_pos, best - span, length)
+		var b := _dist2_at(world_pos, best + span, length)
+		if a < best_d and a <= b:
+			best_d = a
+			best -= span
+		elif b < best_d:
+			best_d = b
+			best += span
+	return fposmod(best, length)
+
+
+## Квадрат расстояния от точки до оси у отметки off. Расстояние ПОЛНОЕ (с
+## высотой) — ровно то, что меряет Curve3D.get_closest_offset: на трассе
+## отметка обязана совпадать со старой до сантиметров, иначе поедут все
+## замеры, которые от неё зависят (ведение у стены, кламп курса, линия ИИ).
+## Квадрат — чтобы не звать sqrt в самом горячем цикле поиска.
+func _dist2_at(world_pos: Vector3, off: float, length: float) -> float:
+	return world_pos.distance_squared_to(_curve.sample_baked(fposmod(off, length)))
+
+
 ## Точка старта и направление для спавна машины.
 func start_transform() -> Transform3D:
 	var pos := _curve.sample_baked(0.0)
@@ -911,8 +996,17 @@ func start_transform() -> Transform3D:
 ## (вперёд — чтобы не вернуть машину в ту же ловушку, где она застряла,
 ## например прямо на трамплин).
 func respawn_transform(world_pos: Vector3) -> Transform3D:
+	return respawn_transform_at(_curve.get_closest_offset(world_pos))
+
+
+## Респавн от ИЗВЕСТНОЙ отметки — так возвращают машину Main._respawn_car и
+## Car.destroy(): у машины отметка ведётся по непрерывности
+## (closest_offset_near), а глобальный поиск по позиции улетевшей за
+## ограждение машины мог указать на чужой виток и выкинуть её через
+## пол-трассы вперёд.
+func respawn_transform_at(off: float) -> Transform3D:
 	var length := _curve.get_baked_length()
-	var offset := fposmod(_curve.get_closest_offset(world_pos) + 6.0, length)
+	var offset := fposmod(off + 6.0, length)
 	var pos := _curve.sample_baked(offset)
 	var ahead := _curve.sample_baked(fposmod(offset + 3.0, length))
 	var basis := Basis.looking_at((ahead - pos).normalized())
