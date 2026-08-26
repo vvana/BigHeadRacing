@@ -56,6 +56,13 @@ var _rv_prev := Vector3.ZERO
 var _rv_steps: Array[float] = []
 var _rv_back := 0
 var _rv_frames := 0
+# РОВНОСТЬ ПОТОКА СНИМКОВ: интервалы между приходами. Это разделяет две
+# совершенно разные причины дёрганого движения — «сервер шлёт неровно»
+# (интервалы пляшут) и «клиент неровно применяет» (интервалы ровные, а
+# движение всё равно рваное). Без этого замера чинить нечего: марионетку
+# уже дважды переписывали вслепую и оба раза делали хуже (см. ПРОГРЕСС).
+var _arr_seen0 := -1        # счётчик снимков на момент начала замера
+var _arr_sum0 := 0.0        # сумма интервалов на тот же момент
 
 
 func _ready() -> void:
@@ -98,6 +105,7 @@ func _physics_process(delta: float) -> void:
 		return
 	if _t > _started_at + 2.0 and _t <= _end_t:
 		_sample_smoothness(delta)
+		_sample_arrivals()
 	# Газ в пол ЧЕРЕЗ Input: своя машина клиент-авторитетна — её физику
 	# целиком считает клиент и сам шлёт серверу состояние (_client_tick).
 	Input.action_press("accelerate")
@@ -127,6 +135,7 @@ func _physics_process(delta: float) -> void:
 	var jitter := _jitter()
 	print("  марионетка: шаг расходится со скоростью на %.1f%%, рывков назад %d из %d"
 			% [jitter, _sm_back, _sm_frames])
+	_report_arrivals()
 	# Машина соперника-игрока (только при двух клиентах): двойной прыжок
 	# клиент→сервер→клиент. Критерий как у бота + рывки назад = 0.
 	if _rv_frames >= 30:
@@ -158,6 +167,31 @@ func _physics_process(delta: float) -> void:
 ## Замер в _physics_process: там работает Car._follow_snapshot, там позиция и
 ## меняется. В _process мерить бессмысленно — headless крутит его в разы чаще
 ## физики, и почти все шаги нулевые (тоже проверено на себе).
+## Итог по ровности потока: сколько снимков в секунду реально дошло и как
+## пляшут интервалы. Идеал при SNAP_HZ = 60 — 60/с и все интервалы 16.7 мс.
+func _report_arrivals() -> void:
+	var n: int = _main._state_seen - _arr_seen0
+	if n < 10:
+		print("  снимки: замер не набрался (%d)" % n)
+		return
+	var mean: float = (_main._state_gap_sum - _arr_sum0) / float(n)
+	var snap_hz: float = load("res://scripts/Main.gd").SNAP_HZ
+	print("  поток снимков: %.1f/с (заявлено %.0f), средний интервал %.1f мс, "
+			% [1.0 / mean, snap_hz, mean * 1000.0]
+			+ "худшая пауза %.0f мс" % [_main._state_gap_max * 1000.0])
+
+
+## Счётчики потока снимков ведёт сам Main._rx_state (опрос отсюда занижал
+## бы поток: он идёт с частотой физики, ровно как и снимки). Здесь только
+## запоминаем точку отсчёта — что было накоплено до начала замера.
+func _sample_arrivals() -> void:
+	if _arr_seen0 >= 0:
+		return
+	_arr_seen0 = _main._state_seen
+	_arr_sum0 = _main._state_gap_sum
+	_main._state_gap_max = 0.0   # худшую паузу меряем только за окно замера
+
+
 func _sample_smoothness(delta: float) -> void:
 	# Бот-марионетка: чужой слот БЕЗ видимой метки соперника (видимая метка
 	# означает, что слот занял живой игрок — теперь их может быть до 4).

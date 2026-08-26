@@ -39,15 +39,36 @@ const CAR_IDS: Array[String] = [
 ## variant — номер слота, если машина встречается в паке несколько раз
 ## (в Turbo Driver каждая есть в двух рядах текстур).
 ## Вернёт null, если машина не нашлась ни в одном паке.
+# Кэш РАСПАКОВАННЫХ паков: путь → корень инстанциированной сцены (вне
+# дерева, живёт до конца игры). Инстанциация пака — это сотни узлов и
+# 300-600 мс; раньше она делалась НА КАЖДУЮ машину, и раздача ростера
+# (4 машины заезда + 4 подиума лобби) замораживала клиент на 1-2 секунды —
+# у игрока в этот момент «прыгали» все соперники разом, а прыгнувшая в
+# него марионетка выбивала его с трассы. С кэшем пак распаковывается один
+# раз, сборка машины — только копирование её собственных деталей.
+static var _pack_cache: Dictionary = {}
+
+
+static func _pack_src(path: String) -> Node:
+	if not _pack_cache.has(path):
+		var scene: PackedScene = load(path)
+		_pack_cache[path] = scene.instantiate() if scene else null
+	return _pack_cache[path]
+
+
 static func build(
 	car_id: String,
 	target_length := 3.2,
 	base_y := -0.35,
 	variant := 0
 ) -> Node3D:
+	var t0 := Time.get_ticks_msec()
 	for path in GLB_PATHS:
 		var model := _build_from(path, car_id.to_lower(), target_length, base_y, variant)
 		if model:
+			var dt := Time.get_ticks_msec() - t0
+			if dt > 100:
+				print("[slow] CarModelLibrary.build('%s') занял %d мс" % [car_id, dt])
 			return model
 	push_warning("CarModelLibrary: машина '%s' не найдена" % car_id)
 	return null
@@ -60,10 +81,11 @@ static func _build_from(
 	base_y: float,
 	variant: int
 ) -> Node3D:
-	var scene: PackedScene = load(glb_path)
-	if scene == null:
+	# Пак из кэша (см. _pack_src): src ЖИВЁТ между вызовами, освобождать
+	# и модифицировать его нельзя — только читать и duplicate() детали.
+	var src := _pack_src(glb_path)
+	if src == null:
 		return null
-	var src := scene.instantiate()
 
 	# Слоты, где стоит деталь с именем машины (может быть несколько рядов).
 	var needle := "_%s_" % car_id
@@ -74,8 +96,7 @@ static func _build_from(
 				and not slots.has(child.position):
 			slots.append(child.position)
 	if slots.is_empty():
-		src.free()
-		return null
+		return null   # src кэширован — не освобождаем
 	slots.sort_custom(func(a: Vector3, b: Vector3) -> bool: return a.z > b.z)
 	var slot: Vector3 = slots[clampi(variant, 0, slots.size() - 1)]
 
@@ -100,7 +121,6 @@ static func _build_from(
 			})
 			if String(copy.name).to_lower().contains("wheel_front"):
 				front_z = aabb.get_center().z
-	src.free()
 
 	var s := target_length / combined.size.z
 	var flipped := front_z > 0.0  # модель смотрит в +Z — надо развернуть

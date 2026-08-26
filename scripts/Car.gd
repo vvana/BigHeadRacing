@@ -469,10 +469,22 @@ func _physics_process(delta: float) -> void:
 	# ограничиваем 5 м/с. Честный рикошет машин добавляется НАШИМ импульсом
 	# в _bounce_off_cars (кап его не трогает — тот идёт позже в этом же
 	# кадре), а толчок взрыва защищён окном _blast_time.
-	if _puppet_touch and _blast_time <= 0.0:
-		var dv_solver := linear_velocity - _post_vel
-		if dv_solver.length() > 5.0:
-			linear_velocity = _post_vel + dv_solver.limit_length(5.0)
+	# Касание марионетки смотрим ПО ТЕКУЩЕМУ списку контактов, а не по
+	# флагу с прошлого кадра (_puppet_touch): флаг взводился на кадр ПОЗЖЕ
+	# удара, и самый первый — самый дикий — импульс от прыгнувшей в нас
+	# марионетки проходил мимо капа. Ровно это игрок и ловил: «при рывке
+	# врезаются в меня — огромный импульс, вылетаю за трассу».
+	if _blast_time <= 0.0:
+		var puppet_now := false
+		for body in get_colliding_bodies():
+			var oc := body as Car
+			if oc != null and oc.net_role == NetRole.PUPPET:
+				puppet_now = true
+				break
+		if puppet_now or _puppet_touch:
+			var dv_solver := linear_velocity - _post_vel
+			if dv_solver.length() > 5.0:
+				linear_velocity = _post_vel + dv_solver.limit_length(5.0)
 	_puppet_touch = false   # заново выставит _bounce_off_cars этим кадром
 	_apply_suspension(delta)
 	var on_ground := _grounded_wheels >= 2

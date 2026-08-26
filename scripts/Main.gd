@@ -69,6 +69,14 @@ var _snap_accum := 0.0              # накопитель до следующе
 var _net_lost := false              # клиент: связь пропала, уходим в гараж
 var _kicked := false                # клиент: сервер отказал (версии и т.п.)
 var _last_state_time := 0.0         # клиент: когда пришёл последний снимок
+# Диагностика потока снимков (см. _rx_state и tools/test_net.gd): сколько
+# снимков пришло, сумма и максимум интервалов между ними. Три сложения на
+# снимок — по ним видно, ровно ли сервер шлёт, а это первое, что надо знать
+# при жалобе «соперники едут дёргано».
+var _state_seen := 0
+var _state_gap_sum := 0.0
+var _state_gap_max := 0.0
+var _wd_last := 0                   # вачдог фризов: мс прошлого кадра физики
 var _lobby_wait := -1.0             # сервер: остаток ожидания, <0 — не идёт
 # Сервер: синхронный старт. Гонку нельзя начинать, пока у подключённого
 # игрока ещё грузится сцена (первый вход — компиляция шейдеров): он
@@ -398,6 +406,17 @@ func _pop_count(txt: String, color: Color) -> void:
 
 ## Прогресс, круги, рефилл боезапаса, «резинка» ИИ.
 func _physics_process(_delta: float) -> void:
+	# Вачдог замирания главного потока: пауза между кадрами физики дольше
+	# 250 мс — это уже видимый фриз у ВСЕХ (на сервере встаёт поток снимков
+	# всем клиентам разом). Печатаем всегда — событие редкое, а жалобу
+	# «все дёргаются одновременно» без этой строки не отладить.
+	var wd_now := Time.get_ticks_msec()
+	if _wd_last > 0 and wd_now - _wd_last > 250:
+		print("[freeze] кадр физики встал на %d мс (%s, t=%.1f c, гонка=%s)"
+				% [wd_now - _wd_last,
+				"сервер" if Net.is_server() else "клиент",
+				wd_now / 1000.0, str(_net_started)])
+	_wd_last = wd_now
 	if _cars.is_empty():
 		return
 	var curve: Curve3D = _track._curve
@@ -686,6 +705,17 @@ func _check_recovery(delta: float) -> void:
 		car.sync_track_offset()
 		var dist := _track.distance_from_axis_at(
 				car.global_position, car.track_offset)
+		# ПРОВАЛ ПОД ПОЛОТНО: машина в границах дороги, но ЗАМЕТНО ниже её
+		# уровня — жёсткий удар (переворот, депенетрация) продавил тонкий
+		# тримеш, и машина ездила под асфальтом. Ни одна старая проверка
+		# этого не ловила: вылет меряет расстояние В ПЛАНЕ (под дорогой
+		# оно ~0), переворот и застревание под дорогой не обязательны.
+		# Возвращаем сразу: под полотном легальной езды не бывает.
+		var road_y := _track._curve.sample_baked(car.track_offset).y
+		if dist < _track.half_width_at_offset(car.track_offset) \
+				and car.global_position.y < road_y - 1.0:
+			_respawn_car(i)
+			continue
 		# Запас — у трассы: классика 0.5 м (за ним ограждение), песчаная
 		# 12 м (съезд на песок легален, возвращаем только уехавших в дюны).
 		if dist > _track.half_width_at_offset(car.track_offset) \
@@ -1570,7 +1600,18 @@ func _rx_count(txt: String) -> void:
 ## высокочастотный поток и редкие надёжные события по каналам.
 @rpc("authority", "call_remote", "unreliable_ordered", 1)
 func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray) -> void:
-	_last_state_time = Time.get_ticks_msec() / 1000.0
+	var now := Time.get_ticks_msec() / 1000.0
+	# Диагностика ровности потока (читает tools/test_net.gd). Считать
+	# приходы ОПРОСОМ из _physics_process нельзя: опрос идёт 60 раз в
+	# секунду, снимки — тоже, и два прихода между кадрами сливаются в один.
+	# Такой замер занижал поток до «43 из 60» даже на локалхосте, где терять
+	# нечего. Поэтому счёт здесь, в самом обработчике.
+	if _last_state_time > 0.0:
+		var gap := now - _last_state_time
+		_state_gap_sum += gap
+		_state_gap_max = maxf(_state_gap_max, gap)
+		_state_seen += 1
+	_last_state_time = now
 	for i in _cars.size():
 		var o := i * 10
 		var f := i * 3
