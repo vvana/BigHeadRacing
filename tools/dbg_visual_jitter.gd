@@ -12,6 +12,7 @@ var _prev_body := Vector3.ZERO
 var _prev_model := Vector3.ZERO
 var _body_dev: Array[float] = []
 var _model_dev: Array[float] = []
+var _stalls := 0
 
 
 func _ready() -> void:
@@ -38,6 +39,10 @@ func _process(delta: float) -> void:
 			if i != Net.my_slot:
 				_car = _main._cars[i]
 				break
+		# Худшую паузу потока меряем ТОЛЬКО с этого места: перезагрузка
+		# сцены при выборе трассы (_rx_track) сама держит главный поток
+		# ~0.4 с, и без сброса она выглядела как «дыра канала 400 мс».
+		_main._state_gap_max = 0.0
 		return
 	var body := _car.global_position
 	var model_node := _car.get_node_or_null("CarModel") as Node3D
@@ -54,6 +59,10 @@ func _process(delta: float) -> void:
 		mstep.y = 0.0
 		_body_dev.append(absf(bstep.length() - expected) / expected)
 		_model_dev.append(absf(mstep.length() - expected) / expected)
+		# ЗАМИРАНИЕ — то, что глаз читает как «дёргается»: кадр, в котором
+		# картинка проехала меньше пятой части положенного.
+		if mstep.length() < expected * 0.2:
+			_stalls += 1
 	_prev_body = body
 	_prev_model = model
 	if _body_dev.size() >= 600:
@@ -61,6 +70,15 @@ func _process(delta: float) -> void:
 				_body_dev.size(), Engine.get_frames_per_second()])
 		print("  ТЕЛО:   шаг расходится со скоростью на %.1f%%" % _avg(_body_dev))
 		print("  МОДЕЛЬ: шаг расходится со скоростью на %.1f%%" % _avg(_model_dev))
+		print("  ЗАМИРАНИЙ картинки: %d из %d кадров (%.1f%%)"
+				% [_stalls, _model_dev.size(),
+				100.0 * _stalls / _model_dev.size()])
+		# Ровность прихода снимков (счётчики ведёт Main._rx_state) — чтобы
+		# отличать «канал плохой» от «клиент рисует плохо».
+		if _main._state_seen > 10:
+			var mean: float = _main._state_gap_sum / _main._state_seen
+			print("  поток: %.1f снимков/с, худшая пауза %.0f мс"
+					% [1.0 / mean, _main._state_gap_max * 1000.0])
 		get_tree().quit(0)
 
 

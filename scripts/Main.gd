@@ -90,6 +90,7 @@ var _last_state_time := 0.0         # клиент: когда пришёл по
 var _state_seen := 0
 var _state_gap_sum := 0.0
 var _state_gap_max := 0.0
+var _state_gaps_big := 0        # сколько дыр потока длиннее 100 мс
 var _wd_last := 0                   # вачдог фризов: мс прошлого кадра физики
 # Вачдог-«между чем»: имя и мс последней пройденной точки кадра. Если между
 # двумя точками прошло >250 мс — печатаем, между какими: это делит фриз на
@@ -1613,10 +1614,10 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	car.net_role = Car.NetRole.OWNED
 	car.is_player = true
 	# Интерполяция гасится на кадр (пересадка в свою машину — телепорт).
-	# Твёрдость с 27.08 включена у всех: сквозной проезд через соперника
-	# оказался хуже депенетрации, которую и так держит кап 5 м/с за кадр.
+	# Исключения решателя с марионетками ОСТАЮТСЯ (см. net_make_puppet:
+	# «твёрдая» версия вешала GodotPhysics на 300+ мс) — непроницаемость
+	# даёт ручное выдавливание в _bounce_off_cars.
 	car.net_visual_reset()
-	car._set_solid_to_cars(true)
 	_car = car
 	var cam := get_node_or_null("IsoCamera") as IsoCamera
 	if cam:
@@ -1739,6 +1740,12 @@ func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray) -> void:
 		_state_gap_sum += gap
 		_state_gap_max = maxf(_state_gap_max, gap)
 		_state_seen += 1
+		# Крупные дыры печатаем поимённо: «средняя пауза» их прячет, а
+		# видно на экране именно их (машина замирает и догоняет).
+		if gap > 0.1:
+			_state_gaps_big += 1
+			print("[gap] снимки не шли %d мс (t=%.1f c)"
+					% [int(gap * 1000.0), now])
 	_last_state_time = now
 	for i in _cars.size():
 		var o := i * 10

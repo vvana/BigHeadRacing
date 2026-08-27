@@ -14,7 +14,7 @@ extends Node3D
 ##
 ## Запуск: godot --headless --path . res://tools/TestPuppetSolid.tscn
 
-const APPROACH := 14.0     # с какой скоростью таранит, м/с
+const APPROACH := 30.0     # с какой скоростью таранит, м/с (почти максимум)
 const CONTACT_MIN := 1.0   # ближе этого центры кузовов сходиться не должны
 const WATCH := 150         # кадров наблюдения после разгона
 
