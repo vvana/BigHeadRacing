@@ -13,6 +13,7 @@ var _prev_model := Vector3.ZERO
 var _body_dev: Array[float] = []
 var _model_dev: Array[float] = []
 var _stalls := 0
+var _ratios: Array[float] = []
 
 
 func _ready() -> void:
@@ -49,7 +50,10 @@ func _process(delta: float) -> void:
 	if model_node == null:
 		return
 	var model := model_node.global_position
-	var vel: Vector3 = _car._snap_vel
+	# contact_velocity: у клиентской марионетки это скорость воспроизводимого
+	# КУСКА ЗАПИСИ — именно по нему едет картинка. Сверять с последним
+	# пакетом нечестно: при воспроизведении пачки машина едет по истории.
+	var vel: Vector3 = _car.contact_velocity()
 	vel.y = 0.0
 	if _prev_body != Vector3.ZERO and vel.length() > 5.0 and delta > 0.0001:
 		var expected := vel.length() * delta
@@ -59,6 +63,7 @@ func _process(delta: float) -> void:
 		mstep.y = 0.0
 		_body_dev.append(absf(bstep.length() - expected) / expected)
 		_model_dev.append(absf(mstep.length() - expected) / expected)
+		_ratios.append(mstep.length() / expected)
 		# ЗАМИРАНИЕ — то, что глаз читает как «дёргается»: кадр, в котором
 		# картинка проехала меньше пятой части положенного.
 		if mstep.length() < expected * 0.2:
@@ -73,6 +78,19 @@ func _process(delta: float) -> void:
 		print("  ЗАМИРАНИЙ картинки: %d из %d кадров (%.1f%%)"
 				% [_stalls, _model_dev.size(),
 				100.0 * _stalls / _model_dev.size()])
+		# Гистограмма «шаг/положенное»: горб не на 1.0 — плеер систематически
+		# идёт не в темпе; два горба — дёргается между режимами.
+		var buckets := {}
+		for r: float in _ratios:
+			var b := int(clampf(r, 0.0, 2.0) * 10.0)
+			buckets[b] = int(buckets.get(b, 0)) + 1
+		var keys := buckets.keys()
+		keys.sort()
+		var line := "  темп:"
+		for kk: int in keys:
+			if buckets[kk] > 12:
+				line += " %.1f:%d" % [kk / 10.0, buckets[kk]]
+		print(line)
 		# Ровность прихода снимков (счётчики ведёт Main._rx_state) — чтобы
 		# отличать «канал плохой» от «клиент рисует плохо».
 		if _main._state_seen > 10:

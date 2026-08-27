@@ -106,6 +106,13 @@ var _snap_rot := Quaternion.IDENTITY
 var _snap_vel := Vector3.ZERO
 var _snap_age := 0.0
 var _snap_seen := false
+# Буфер снимков КЛИЕНТСКОЙ марионетки (см. _follow_buffered): каждый снимок
+# получает время на СИНТЕТИЧЕСКОЙ шкале (+1/60 к прошлому) — пачка,
+# слипшаяся в канале, раскладывается обратно в ритм отправки сервера.
+var _buf: Array[Dictionary] = []
+var _buf_t := 0.0        # время последнего снимка на этой шкале
+var _play_t := -1.0      # часы воспроизведения (<0 — ещё не начаты)
+var _play_vel := Vector3.ZERO  # скорость ВОСПРОИЗВОДИМОГО куска записи
 # Визуальная интерполяция марионетки: тело шагает с частотой ФИЗИКИ (60 Гц),
 # и на реальном рендере (fps плавает, вертикалка, просадки) марионетки
 # видимо дёргались — даже при идеальном потоке снимков. Модель (CarModel)
@@ -910,7 +917,11 @@ func _capsule_gap(other: Car) -> float:
 ## брать нельзя: Godot пересчитывает её по сдвигу замороженного трансформа
 ## (завышает вдвое, а на рывке канала — многократно), берём присланную.
 func contact_velocity() -> Vector3:
-	return _snap_vel if net_role == NetRole.PUPPET else linear_velocity
+	if net_role != NetRole.PUPPET:
+		return linear_velocity
+	# У клиентской марионетки — скорость воспроизводимого КУСКА ЗАПИСИ
+	# (машина на экране едет по нему), у серверной — последний снимок.
+	return _play_vel if Net.is_client() and _play_t >= 0.0 else _snap_vel
 
 
 func reset_speed_memory() -> void:
@@ -956,6 +967,22 @@ func net_apply_snapshot(pos: Vector3, rot: Quaternion, vel: Vector3) -> void:
 	_snap_rot = rot
 	_snap_vel = vel
 	_snap_age = 0.0
+	# Клиентская марионетка ведётся по БУФЕРУ (сервер — по экстраполяции,
+	# ему отставание вредно: по позициям марионеток бьёт оружие).
+	if Net.is_client():
+		# Шкала: обычно +1/60 к прошлому снимку (ритм отправки). Но если
+		# плеер УЖЕ ОБОГНАЛ запись — после паузы дубликатов (машина стояла,
+		# дубли в буфер не попадают) или дыры аплинка её владельца — новую
+		# запись кладём прямо под плеер: старая шкала протухла, и без
+		# перепривязки буфер до конца заезда жил бы в режиме вечного
+		# недобора (гистограмма темпа расползалась на 0.6-1.4 — те самые
+		# рывки). Пара «протухшая запись -> свежая» при этом растягивается
+		# на длину настоящей паузы, то есть пропуск доигрывается примерно
+		# с настоящей средней скоростью.
+		_buf_t = maxf(_buf_t + 1.0 / 60.0, _play_t + 0.001)
+		_buf.append({"pos": pos, "rot": rot, "vel": vel, "t": _buf_t})
+		if _buf.size() > 90:   # полторы секунды истории за глаза
+			_buf.pop_front()
 	if not _snap_seen:
 		_snap_seen = true
 		global_position = pos
@@ -1016,6 +1043,11 @@ const LEAD := 0.03
 func _follow_snapshot(delta: float) -> void:
 	if not _snap_seen:
 		return
+	# Клиент рисует марионетку ПО ЗАПИСИ (см. _follow_buffered), экстраполяция
+	# ниже остаётся серверу и страховкой на пустой буфер.
+	if Net.is_client() and not _buf.is_empty():
+		_follow_buffered(delta)
+		return
 	# Возраст снимка ОГРАНИЧЕН. Без ограничения запоздавший пакет уводил
 	# цель далеко вперёд, а следующий снимок возвращал её назад — машину
 	# дёргало. На одном клиенте по локалхосту этого не видно (пакеты идут
@@ -1047,6 +1079,71 @@ func _follow_snapshot(delta: float) -> void:
 	var cur := global_transform.basis.get_rotation_quaternion()
 	global_transform.basis = Basis(cur.slerp(_snap_rot, k))
 	linear_velocity = _snap_vel
+
+
+# Насколько позади свежайшего снимка идёт воспроизведение. Это плата за
+# честность: дыры канала короче этой величины заполняются НАСТОЯЩИМИ
+# снимками (интерполяция между соседними), а не гаданием по скорости —
+# гадание на повороте врёт вбок, и приехавшая пачка дёргала машину
+# («боты движутся с рывками» после всех прочих правок).
+# Подбор по замерам DbgVisualJitter против ЖИВОГО VDS (дрожание картинки /
+# замираний на 600 кадров, 4-7 прогонов на вариант):
+#   только экстраполяция 0.40:  5-13% / 1-16   (гадание + рывки коррекции)
+#   буфер 0.20:                 7-14% / 3-11   (дыры канала 350-420 мс
+#                                              длиннее отставания)
+#   буфер 0.35:                2.6-7.4% / 0-1  ← берём
+# Плата: соперник на экране позади себя настоящего на ~0.35 с (до 7 м на
+# полном ходу). Для аркады с клиент-авторитетными машинами это честно:
+# толчки на экране считаются от ВИДИМЫХ положений (contact_velocity), а
+# оружие и подборы боксов и так решает сервер по своей картине.
+const BUF_DELAY := 0.35
+## Воспроизведение записи снимков с отставанием BUF_DELAY и адаптивной
+## скоростью: буфер разбухает (пачка приехала) — плеер идёт до 15% быстрее,
+## буфер тает (дыра канала) — до 15% медленнее, растягивая остаток настоящих
+## данных на дыру. Кончился буфер совсем — короткая экстраполяция и, если
+## дыра затянулась, честное замирание (см. историю в _follow_snapshot:
+## далеко угадывать хуже, чем стоять).
+func _follow_buffered(delta: float) -> void:
+	if _play_t < 0.0:
+		_play_t = _buf_t - BUF_DELAY
+	var err := (_buf_t - _play_t) - BUF_DELAY
+	_play_t += delta * (1.0 + clampf(err * 0.5, -0.15, 0.15))
+	# Выкинуть прожитое, оставив одну запись ПЕРЕД плеером (левый конец пары).
+	while _buf.size() > 1 and (_buf[1]["t"] as float) <= _play_t:
+		_buf.pop_front()
+	var a: Dictionary = _buf[0]
+	var target: Vector3
+	var target_rot: Quaternion
+	if _buf.size() >= 2:
+		var b: Dictionary = _buf[1]
+		var span := (b["t"] as float) - (a["t"] as float)
+		var u := clampf((_play_t - (a["t"] as float)) / maxf(span, 0.001),
+				0.0, 1.0)
+		target = (a["pos"] as Vector3).lerp(b["pos"] as Vector3, u)
+		target_rot = (a["rot"] as Quaternion).slerp(b["rot"] as Quaternion, u)
+		_play_vel = (a["vel"] as Vector3).lerp(b["vel"] as Vector3, u)
+	else:
+		# Плеер догнал запись: чуть-чуть угадываем по скорости. Кап нарочно
+		# короткий — буфер уже съел типичную дыру, дальше лучше замереть.
+		var over := minf(_play_t - (a["t"] as float), MAX_EXTRAP)
+		target = (a["pos"] as Vector3) + (a["vel"] as Vector3) * over
+		target_rot = a["rot"] as Quaternion
+		_play_vel = a["vel"] as Vector3
+	# Тело к цели: телепорт при большой невязке, иначе быстрая подтяжка
+	# (запись сама гладкая — сглаживание лишь прячет стыки после недоборов)
+	# и страховка «назад против хода не едем».
+	var k := 1.0 - pow(0.5, delta * 60.0)
+	if global_position.distance_to(target) > 8.0:
+		global_position = target
+	else:
+		var next := global_position.lerp(target, k)
+		var step := next - global_position
+		if _play_vel.length() > 1.0 and step.dot(_play_vel) < 0.0:
+			next = global_position
+		global_position = next
+	var cur := global_transform.basis.get_rotation_quaternion()
+	global_transform.basis = Basis(cur.slerp(target_rot, k))
+	linear_velocity = _play_vel
 
 
 ## Перевод машины в марионетку: своя физика выключается, позиция тянется
@@ -1108,6 +1205,8 @@ func net_make_local() -> void:
 	is_player = false
 	freeze = false
 	_snap_seen = false
+	_buf.clear()
+	_play_t = -1.0
 	net_fire = false
 	_set_solid_to_cars(true)
 	net_visual_reset()
