@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_teststampswap"]
+
+[ext_resource type="Script" path="res://tools/test_stamp_swap.gd" id="1_testss"]
+
+[node name="TestStampSwap" type="Node3D"]
+script = ExtResource("1_testss")
