@@ -74,6 +74,12 @@ var _marker_time := 0.0
 
 var _net_started := false           # сервер: гонка идёт (иначе лобби)
 var _race_start_time := -1.0        # сервер: секунда старта заезда (для подсадки)
+# Комната-процесс (Net.is_room), простоявшая пустой без гонки столько
+# секунд, гасится и освобождает память VDS — ворота поднимут новую при
+# нужде (см. Rooms.gd).
+const ROOM_IDLE_EXIT := 120.0
+var _card_accum := 0.0              # сервер: до следующей визитки Rooms
+var _room_idle := 0.0               # комната: сколько секунд стоит пустой
 # Сервер: слоты, чей игрок подключился к УЖЕ ИДУЩЕМУ заезду слишком поздно
 # и ждёт следующего. Их машины остаются за ботами, состояние от этих
 # клиентов сервер не принимает (см. _rx_pstate) — иначе машина в гонке
@@ -211,6 +217,10 @@ func _ready() -> void:
 		# ещё не закончилось (сцену могли открыть сразу), ждём сигнала —
 		# RPC, отправленный до соединения, просто пропадёт.
 		Net.left.connect(_on_net_lost)
+		# После перенаправления в комнату (_rx_redirect) сцена грузится, пока
+		# соединение ещё устанавливается, — обрыв на этом этапе (комната
+		# умерла) должен показать причину, а не молча висеть в лобби.
+		Net.join_failed.connect(_on_join_failed_in_race, CONNECT_ONE_SHOT)
 		if _lobby:
 			_lobby.show_screen()
 		var peer := multiplayer.multiplayer_peer
@@ -1374,6 +1384,25 @@ func _start_with_bots() -> void:
 ## Сервер: раз в 1/SNAP_HZ рассылаем состояние всех машин.
 func _server_tick(delta: float) -> void:
 	_tick_lobby(delta)
+	# Визитка в реестре заездов (Rooms): раз в секунду сообщаем, сколько
+	# у нас игроков и есть ли место новому, — по ней ворота и комнаты
+	# перенаправляют лишних игроков (_route_elsewhere).
+	_card_accum += delta
+	if _card_accum >= 1.0:
+		_card_accum = 0.0
+		Rooms.write_card(Net.port, Net.slot_of_peer.size(), _joinable_here())
+	# Пустая комната без гонки живёт не вечно: погасла — память свободна.
+	if Net.is_room:
+		if Net.slot_of_peer.is_empty() and not _net_started:
+			_room_idle += delta
+			if _room_idle > ROOM_IDLE_EXIT:
+				print("[rooms] комната на порту %d пуста %d с — гасимся"
+						% [Net.port, int(ROOM_IDLE_EXIT)])
+				Rooms.remove_card(Net.port)
+				get_tree().quit()
+				return
+		else:
+			_room_idle = 0.0
 	_snap_accum += delta
 	if _snap_accum < 1.0 / SNAP_HZ:
 		return
@@ -1421,8 +1450,12 @@ func _client_tick(_delta: float) -> void:
 	# страховка в _check_recovery вернёт машину, а сервер не отравится.
 	if not (p.is_finite() and v.is_finite()):
 		return
+	# 11-е число — наш тик физики: по этим меткам буферы других клиентов
+	# восстанавливают РОВНУЮ шкалу нашей машины (см. net_apply_snapshot;
+	# протокол 9).
 	_rx_pstate.rpc_id(1, PackedFloat32Array([
-			p.x, p.y, p.z, q.x, q.y, q.z, q.w, v.x, v.y, v.z]))
+			p.x, p.y, p.z, q.x, q.y, q.z, q.w, v.x, v.y, v.z,
+			float(Engine.get_physics_frames())]))
 	if not _car.controls_enabled:
 		return
 	if Input.is_action_just_pressed("fire") \
@@ -1430,7 +1463,8 @@ func _client_tick(_delta: float) -> void:
 		_rx_press.rpc_id(1)
 
 
-## Снимок: на машину 10 float (позиция, кватернион, скорость) и 3 байта
+## Снимок: на машину 11 float (позиция, кватернион, скорость, метка тика
+## автора состояния — см. net_apply_snapshot) и 3 байта
 ## (оружие+1, живость с «призраком», значок эффекта+2). Кватернион, а не
 ## базис: 4 числа вместо 9 и корректная интерполяция поворота.
 func _pack_state() -> Array:
@@ -1441,21 +1475,29 @@ func _pack_state() -> Array:
 		var p := c.global_position
 		var v := c.linear_velocity
 		# Машину живого игрока ретранслируем КАК ПРИСЛАЛ владелец (сырое
-		# последнее состояние), а не позицию серверной марионетки: та сама
-		# сглаживает и экстраполирует, и пересылка её трансформа давала
-		# ДВОЙНОЕ сглаживание — у второго игрока машина шла рывками. Плюс
-		# linear_velocity замороженного тела и так врёт (Godot считает её
-		# по сдвигу трансформа). Серверная марионетка остаётся для физики
-		# самого сервера: боксы, оружие, боты.
+		# состояние) ВМЕСТЕ С ЕГО МЕТКОЙ ТИКА: по меткам буферы клиентов
+		# строят ровную шкалу его машины. Без меток пробовано и то и другое:
+		# тело серверной марионетки — двойное сглаживание (рывки), сырой
+		# пакет — биение часов владельца и сервера (состояния в ретрансляции
+		# то пропускаются, то дублируются), соперник-игрок дёргался даже на
+		# локалхосте: 13.5%% против 3.5-6%% у ботов. Скорость — тоже из
+		# пакета: у замороженной кинематики linear_velocity врёт.
+		# Боту метка — тик самого сервера: его состояния и рождаются по
+		# одному на тик.
+		var stamp := float(Engine.get_physics_frames())
 		if c.net_role == Car.NetRole.PUPPET and c._snap_seen:
 			p = c._snap_pos
 			q = c._snap_rot
 			v = c._snap_vel
+			stamp = maxf(c._snap_stamp, 0.0)
 		xf.append_array(PackedFloat32Array([
-				p.x, p.y, p.z, q.x, q.y, q.z, q.w, v.x, v.y, v.z]))
+				p.x, p.y, p.z, q.x, q.y, q.z, q.w, v.x, v.y, v.z, stamp]))
 		flags.append(c.weapon + 1)
 		flags.append((1 if c.alive else 0) | (2 if c.is_ghost() else 0))
-		flags.append(c._status_shown + 2)
+		# ДЕЙСТВУЮЩИЙ эффект, а не _status_shown: тот обновляется лишь при
+		# живом Sprite3D, которого на выделенном сервере нет, — значок по
+		# сети не видел никто (кодировка та же: <2 — «пусто», протокол цел).
+		flags.append(c.status_icon_kind() + 2)
 	return [xf, flags]
 
 
@@ -1482,6 +1524,14 @@ func _rx_hello(car_id: String, proto: int) -> void:
 				multiplayer.multiplayer_peer.disconnect_peer(id))
 		return
 	var slot: int = Net.slot_of_peer.get(id, -1)
+	# Игроку ЗДЕСЬ ехать негде: слота нет (гость) или он опоздал к идущему
+	# заезду. Раньше гость получал отказ, а опоздавший ждал конца чужой
+	# гонки — теперь обоих отправляем в параллельный заезд-комнату
+	# (Rooms.gd). Не вышло и слота нет — отказ; слот есть — старое
+	# «жди следующего» ниже по функции остаётся запасным путём.
+	if slot < 0 or (_net_started and _late_slots.has(slot)):
+		if _route_elsewhere(id, slot):
+			return
 	if slot < 0 or slot >= _roster.size():
 		return
 	# Игрок приехал на своей машине — ставим её в его слот и раздаём
@@ -1533,7 +1583,7 @@ func _rx_hello(car_id: String, proto: int) -> void:
 ## сглаживает их неровный приход — как у марионеток на клиенте.
 @rpc("any_peer", "call_remote", "unreliable_ordered", 1)
 func _rx_pstate(xf: PackedFloat32Array) -> void:
-	if not Net.is_server() or xf.size() < 10:
+	if not Net.is_server() or xf.size() < 11:
 		return
 	var slot: int = Net.slot_of_peer.get(multiplayer.get_remote_sender_id(), -1)
 	if slot < 0 or slot >= _cars.size():
@@ -1551,7 +1601,8 @@ func _rx_pstate(xf: PackedFloat32Array) -> void:
 			or pos.length() > 600.0 or vel.length() > 60.0:
 		return
 	car.net_apply_snapshot(pos,
-			Quaternion(xf[3], xf[4], xf[5], xf[6]).normalized(), vel)
+			Quaternion(xf[3], xf[4], xf[5], xf[6]).normalized(), vel,
+			maxf(xf[10], 0.0))
 
 
 ## Клиент просит выстрел. Оружие по-прежнему применяет ТОЛЬКО сервер:
@@ -1578,6 +1629,49 @@ func _rx_start_request() -> void:
 
 # ── сервер → клиенты ──
 
+## Есть ли в ЭТОМ процессе место новому игроку: свободный слот и либо ещё
+## лобби, либо первые JOIN_LATE_MAX секунд идущего заезда (подсадка вместо
+## бота). По этому же признаку нас выбирают чужие ворота (визитка Rooms).
+func _joinable_here() -> bool:
+	if Net.slot_of_peer.size() >= Net.PLAYER_SLOTS:
+		return false
+	if not _net_started:
+		return true
+	return _race_start_time >= 0.0 and \
+			Time.get_ticks_msec() / 1000.0 - _race_start_time <= JOIN_LATE_MAX
+
+
+## Пристроить игрока, которому здесь нет места, в параллельный заезд.
+## true — вопрос закрыт (перенаправлен, ждёт поднимающуюся комнату или
+## получил отказ); false — пусть сработает старый путь «жди следующего»
+## (только для опоздавшего СО слотом). Hello клиента повторяется раз в
+## секунду (_say_hello), поэтому «комната ещё поднимается» — не состояние,
+## которое надо помнить: следующий hello застанет её визитку и уедет.
+func _route_elsewhere(id: int, slot: int) -> bool:
+	var target := Rooms.find_joinable(Net.port)
+	if target > 0:
+		print("[rooms] пир %d отправлен в заезд на порту %d" % [id, target])
+		_rx_redirect.rpc_id(id, target)
+		return true
+	if not Net.is_room:
+		# Ворота поднимают новую комнату (комнаты не плодят процессы сами).
+		if Rooms.spawn_pending():
+			return true
+		var port := Rooms.free_port(Net.port)
+		if port > 0:
+			Rooms.spawn(port)
+			return true
+	if slot >= 0:
+		return false
+	print("[rooms] пир %d: мест нет нигде — отказ" % id)
+	_rx_kick.rpc_id(id, "Все заезды заняты — попробуй через минуту.")
+	# Рвём с задержкой, чтобы сообщение успело дойти (как при отказе версии).
+	get_tree().create_timer(0.5).timeout.connect(func() -> void:
+		if multiplayer.multiplayer_peer != null and Net.guests.has(id):
+			multiplayer.multiplayer_peer.disconnect_peer(id))
+	return true
+
+
 ## Битовая маска слотов, за которыми сидит ЖИВОЙ игрок.
 func _taken_mask() -> int:
 	var mask := 0
@@ -1603,6 +1697,8 @@ func _rx_track(kind: String) -> void:
 @rpc("authority", "call_remote", "reliable")
 func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	Net.my_slot = slot
+	# Мы приняты в заезд — счёт прыжков перенаправлений (Rooms) обнуляется.
+	Net.redirect_hops = 0
 	for s in _slot_taken.size():
 		_slot_taken[s] = (taken & (1 << s)) != 0
 	_apply_roster(roster)   # заодно обновит машины на экране лобби
@@ -1665,6 +1761,40 @@ func _apply_roster(roster: PackedStringArray) -> void:
 ## машину за ботом). Флаг живёт до конца этой сцены: сервер закончит заезд,
 ## перезапустит трассу и пришлёт _rx_reset — сцена перезагрузится, и игрок
 ## войдёт в новую гонку с отсчётом.
+## Сервер отправляет нас в параллельный заезд-комнату на другом порту
+## (Rooms.gd): здесь мест нет, а там лобби или свежая гонка. Порт комнаты
+## НЕ запоминаем в net.cfg — «домашним» адресом остаются ворота. Кап
+## прыжков — защита от пинг-понга между заполнившимися наперегонки
+## комнатами: три подряд — честный отказ.
+@rpc("authority", "call_remote", "reliable")
+func _rx_redirect(port: int) -> void:
+	if not Net.is_client() or port <= 0 or port > 65535:
+		return
+	Net.redirect_hops += 1
+	if Net.redirect_hops > 3:
+		_rx_kick("Свободный заезд не нашёлся — попробуй через минуту.")
+		return
+	print("[rooms] здесь мест нет — переезжаем в заезд на порту %d" % port)
+	if _lobby:
+		_lobby.show_screen()
+		_lobby.set_status("Здесь всё занято — едем в свободный заезд…")
+	var host := Net.host
+	Net.leave()
+	Net.my_slot = -1
+	Net.join_server(host, port, false)
+	# Чистая сцена представится комнате сама (_say_hello), как при _rx_track.
+	get_tree().reload_current_scene()
+
+
+## Комната, куда нас отправили, не ответила (умерла между визиткой и
+## подключением): без обработчика клиент вечно висел бы на экране лобби.
+func _on_join_failed_in_race(reason: String) -> void:
+	if _lobby:
+		_lobby.set_status(reason + "
+Esc — в гараж")
+		_lobby.show_screen()
+
+
 @rpc("authority", "call_remote", "reliable")
 func _rx_lobby_wait_next() -> void:
 	_wait_next_race = true
@@ -1748,9 +1878,9 @@ func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray) -> void:
 					% [int(gap * 1000.0), now])
 	_last_state_time = now
 	for i in _cars.size():
-		var o := i * 10
+		var o := i * 11
 		var f := i * 3
-		if o + 9 >= xf.size() or f + 2 >= flags.size():
+		if o + 10 >= xf.size() or f + 2 >= flags.size():
 			break
 		var c := _cars[i]
 		var pos := Vector3(xf[o], xf[o + 1], xf[o + 2])
@@ -1762,7 +1892,7 @@ func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray) -> void:
 		# Эффекты оружия по ней приходят отдельным RPC (_rx_fx), а от
 		# сервера ей нужны только выданное боксом оружие и значок эффекта.
 		if c.net_role != Car.NetRole.OWNED:
-			c.net_apply_snapshot(pos, rot, vel)
+			c.net_apply_snapshot(pos, rot, vel, maxf(xf[o + 10], 0.0))
 			c.alive = (int(flags[f + 1]) & 1) != 0
 			# «Призрака» подливаем по чуть-чуть: пока сервер шлёт флаг,
 			# таймер не гаснет, а кончился флаг — быстро сойдёт на нет.
@@ -1922,6 +2052,15 @@ func _rx_car_finished(i: int, place: int) -> void:
 		return
 	var car := _cars[i]
 	car.race_over = true
+	# Порядок финиша — истина сервера, и клиент ОБЯЗАН занести его в свой
+	# _finish_order: место в HUD слева считает _place_of, и с пустым списком
+	# доехавшие продолжали «соревноваться» прогрессом — слева «МЕСТО 2/4»,
+	# а на баннере по центру честное «МЕСТО 3 ИЗ 4». Кладём по месту, а не
+	# append: RPC надёжный и упорядоченный, но так дубль не собьёт список.
+	if not _finish_order.has(i):
+		while _finish_order.size() < place:
+			_finish_order.append(-1)
+		_finish_order[place - 1] = i
 	if i == _my_index() and car.net_role == Car.NetRole.OWNED:
 		car.controls_enabled = false
 		_show_finish(place)

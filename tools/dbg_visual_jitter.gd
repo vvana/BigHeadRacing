@@ -13,6 +13,7 @@ var _prev_model := Vector3.ZERO
 var _body_dev: Array[float] = []
 var _model_dev: Array[float] = []
 var _stalls := 0
+var _jumps := 0
 var _ratios: Array[float] = []
 
 
@@ -61,9 +62,16 @@ func _process(delta: float) -> void:
 		var mstep := model - _prev_model
 		bstep.y = 0.0
 		mstep.y = 0.0
+		var ratio := mstep.length() / expected
+		# Телепорт (уничтожение, респавн, возврат на трассу) — геймплей, а
+		# не плавность: в среднее не мешаем, считаем отдельно. Без этого
+		# один респавн водителя давал «69% дрожания» при идеальном темпе.
+		if ratio > 3.0:
+			_jumps += 1
+			return
 		_body_dev.append(absf(bstep.length() - expected) / expected)
 		_model_dev.append(absf(mstep.length() - expected) / expected)
-		_ratios.append(mstep.length() / expected)
+		_ratios.append(ratio)
 		# ЗАМИРАНИЕ — то, что глаз читает как «дёргается»: кадр, в котором
 		# картинка проехала меньше пятой части положенного.
 		if mstep.length() < expected * 0.2:
@@ -75,9 +83,9 @@ func _process(delta: float) -> void:
 				_body_dev.size(), Engine.get_frames_per_second()])
 		print("  ТЕЛО:   шаг расходится со скоростью на %.1f%%" % _avg(_body_dev))
 		print("  МОДЕЛЬ: шаг расходится со скоростью на %.1f%%" % _avg(_model_dev))
-		print("  ЗАМИРАНИЙ картинки: %d из %d кадров (%.1f%%)"
+		print("  ЗАМИРАНИЙ картинки: %d из %d кадров (%.1f%%), телепортов %d"
 				% [_stalls, _model_dev.size(),
-				100.0 * _stalls / _model_dev.size()])
+				100.0 * _stalls / _model_dev.size(), _jumps])
 		# Гистограмма «шаг/положенное»: горб не на 1.0 — плеер систематически
 		# идёт не в темпе; два горба — дёргается между режимами.
 		var buckets := {}

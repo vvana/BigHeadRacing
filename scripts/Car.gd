@@ -106,6 +106,7 @@ var _snap_rot := Quaternion.IDENTITY
 var _snap_vel := Vector3.ZERO
 var _snap_age := 0.0
 var _snap_seen := false
+var _snap_stamp := -1.0   # тик ЧАСОВ АВТОРА состояния (сервер/владелец)
 # Буфер снимков КЛИЕНТСКОЙ марионетки (см. _follow_buffered): каждый снимок
 # получает время на СИНТЕТИЧЕСКОЙ шкале (+1/60 к прошлому) — пачка,
 # слипшаяся в канале, раскладывается обратно в ритм отправки сервера.
@@ -686,6 +687,11 @@ func _physics_process(delta: float) -> void:
 ## Таймеры эффектов оружия: заморозка, ускорение, занос, «призрак».
 func _tick_effects(delta: float) -> void:
 	_freeze_time = maxf(0.0, _freeze_time - delta)
+	# Таймер значка эффекта живёт ЗДЕСЬ, а не в _tick_status_icon: на
+	# выделенном сервере спрайта-значка нет, _tick_status_icon выходит сразу,
+	# и таймер там не гас бы никогда — а именно по нему сервер пакует значок
+	# в снимок (status_icon_kind).
+	_status_time = maxf(0.0, _status_time - delta)
 	_boost_time = maxf(0.0, _boost_time - delta)
 	_slip_time = maxf(0.0, _slip_time - delta)
 	if _ice_shell:
@@ -953,14 +959,23 @@ func _player_control(delta: float, on_ground: bool) -> void:
 
 ## Пришёл снимок этой машины: с сервера — для марионеток на клиенте,
 ## с клиента-владельца — для машины живого игрока на сервере.
-func net_apply_snapshot(pos: Vector3, rot: Quaternion, vel: Vector3) -> void:
-	# ДУБЛИКАТ не обнуляет возраст. Сервер ретранслирует последнее
-	# присланное владельцем состояние своим тиком: если пакет владельца
-	# не успел прийти между тиками, уходит копия прошлого. Сброс возраста
-	# на копии останавливал экстраполяцию — марионетка шла «стоп-скачок»
-	# (те самые рывки соперника). Пусть возраст растёт — экстраполяция
-	# продолжит вести машину по скорости до свежего состояния.
-	if _snap_seen and pos.is_equal_approx(_snap_pos) \
+## stamp — номер тика ЧАСОВ АВТОРА состояния (для бота — сервер, для машины
+## живого игрока — её владелец; сервер ретранслирует метку владельца как
+## есть). По меткам клиентский буфер строит шкалу воспроизведения: у потока
+## машины игрока состояния то пропускаются в ретрансляции (два пакета
+## владельца между тиками сервера), то дублируются — счёт «+1/60 на снимок»
+## для него врал, и соперник-игрок дёргался даже на локалхосте (13.5%
+## против 3.5-6% у ботов). stamp < 0 — вызов без метки (стенды, старый
+## путь): дубликаты ловятся по равенству позиций, шкала — счётом.
+func net_apply_snapshot(pos: Vector3, rot: Quaternion, vel: Vector3,
+		stamp := -1.0) -> void:
+	# ДУБЛИКАТ (метка не выросла / состояние не изменилось) не обнуляет
+	# возраст: сброс возраста на копии останавливал экстраполяцию —
+	# марионетка шла «стоп-скачок». Пусть возраст растёт.
+	if stamp >= 0.0:
+		if _snap_seen and stamp <= _snap_stamp:
+			return
+	elif _snap_seen and pos.is_equal_approx(_snap_pos) \
 			and vel.is_equal_approx(_snap_vel):
 		return
 	_snap_pos = pos
@@ -970,19 +985,29 @@ func net_apply_snapshot(pos: Vector3, rot: Quaternion, vel: Vector3) -> void:
 	# Клиентская марионетка ведётся по БУФЕРУ (сервер — по экстраполяции,
 	# ему отставание вредно: по позициям марионеток бьёт оружие).
 	if Net.is_client():
-		# Шкала: обычно +1/60 к прошлому снимку (ритм отправки). Но если
-		# плеер УЖЕ ОБОГНАЛ запись — после паузы дубликатов (машина стояла,
-		# дубли в буфер не попадают) или дыры аплинка её владельца — новую
-		# запись кладём прямо под плеер: старая шкала протухла, и без
-		# перепривязки буфер до конца заезда жил бы в режиме вечного
-		# недобора (гистограмма темпа расползалась на 0.6-1.4 — те самые
-		# рывки). Пара «протухшая запись -> свежая» при этом растягивается
-		# на длину настоящей паузы, то есть пропуск доигрывается примерно
-		# с настоящей средней скоростью.
-		_buf_t = maxf(_buf_t + 1.0 / 60.0, _play_t + 0.001)
-		_buf.append({"pos": pos, "rot": rot, "vel": vel, "t": _buf_t})
+		var t: float
+		if stamp >= 0.0:
+			# Честная шкала по часам автора. Метка прыгнула назад ИЛИ далеко
+			# вперёд — у слота сменился автор (бот <-> игрок: у сервера и у
+			# владельца свои счётчики тиков) либо дыра больше двух секунд,
+			# которую всё равно не сгладить. Запись с чужой шкалой — в печку,
+			# иначе пара «старое время -> новое» растягивалась на минуты и
+			# машина ползла (пойман хвост 203% в замере при выходе водителя).
+			if _snap_stamp >= 0.0 and (stamp < _snap_stamp
+					or stamp - _snap_stamp > 120.0):
+				_buf.clear()
+				_play_t = -1.0
+			t = stamp / 60.0
+		else:
+			# Без метки — счёт «+1/60» с перепривязкой, если плеер обогнал
+			# запись (пауза дубликатов, дыра аплинка): без неё буфер жил в
+			# вечном недоборе, темп расползался на 0.6-1.4 — те самые рывки.
+			t = maxf(_buf_t + 1.0 / 60.0, _play_t + 0.001)
+		_buf_t = t
+		_buf.append({"pos": pos, "rot": rot, "vel": vel, "t": t})
 		if _buf.size() > 90:   # полторы секунды истории за глаза
 			_buf.pop_front()
+	_snap_stamp = stamp
 	if not _snap_seen:
 		_snap_seen = true
 		global_position = pos
@@ -1205,6 +1230,7 @@ func net_make_local() -> void:
 	is_player = false
 	freeze = false
 	_snap_seen = false
+	_snap_stamp = -1.0
 	_buf.clear()
 	_play_t = -1.0
 	net_fire = false
@@ -1888,16 +1914,10 @@ func destroy() -> void:
 func _tick_status_icon(delta: float) -> void:
 	if _status_icon == null:
 		return
-	_status_time = maxf(0.0, _status_time - delta)
-	var kind := -1
-	var left := 0.0
-	if alive:
-		if _status_time > 0.0:
-			kind = _status_kind
-			left = _status_time
-		elif _boost_time > 0.0 and not _boost_from_pad:
-			kind = Weapons.BOOST
-			left = _boost_time
+	var kind := status_icon_kind()
+	# Разовый эффект приоритетнее буста (см. status_icon_kind) — остаток
+	# времени берём той же веткой.
+	var left := _status_time if _status_time > 0.0 else _boost_time
 	if kind < 0:
 		_status_icon.visible = false
 		_status_shown = -2
@@ -1924,6 +1944,21 @@ func _tick_status_icon(delta: float) -> void:
 	var pop: float = clampf(_status_age / 0.16, 0.0, 1.0)
 	_status_icon.scale = Vector3.ONE * (1.0 + 0.6 * (1.0 - pop))
 	_status_icon.modulate.a = clampf(left / 0.3, 0.0, 1.0)
+
+
+## Какой значок эффекта действует на машину сейчас (-1 — никакой). БЕЗ
+## побочных эффектов: этим же числом СЕРВЕР заполняет снимок
+## (Main._pack_state) — у него Sprite3D-значка нет вовсе, и прежняя
+## упаковка по _status_shown (обновляется только при живом спрайте)
+## означала «по сети значков не видно никому».
+func status_icon_kind() -> int:
+	if not alive:
+		return -1
+	if _status_time > 0.0:
+		return _status_kind
+	if _boost_time > 0.0 and not _boost_from_pad:
+		return Weapons.BOOST
+	return -1
 
 
 ## Показать над машиной значок РАЗОВОГО эффекта (магнит). Длящиеся

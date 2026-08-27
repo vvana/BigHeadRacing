@@ -29,7 +29,14 @@ const PORT := 9977
 ## 8 — опоздавший к идущему заезду (позже JOIN_LATE_MAX) в него больше НЕ
 ##     подсаживается, а ждёт в лобби следующего (_rx_lobby_wait_next —
 ##     новый @rpc-метод, сдвиг таблицы RPC-идентификаторов).
-const PROTOCOL := 8
+## 9 — метка тика автора в состояниях (11-е число в _rx_pstate и в снимке
+##     _rx_state): по ней клиентские буферы строят ровную шкалу машин
+##     живых игроков — без неё соперник-игрок дёргался даже на локалхосте.
+## 10 — параллельные заезды-«комнаты» (Rooms.gd): игрок, которому нет места
+##      (слоты заняты или опоздал к идущему заезду), перенаправляется в
+##      свободный заезд на соседнем порту (_rx_redirect — новый @rpc-метод,
+##      сдвиг таблицы RPC-идентификаторов).
+const PROTOCOL := 10
 const PLAYER_SLOTS := 4      # столько машин отдаётся живым игрокам
 const CONFIG_PATH := "user://net.cfg"
 const CONNECT_TIMEOUT := 5.0   # столько ждём ответа сервера, потом сдаёмся
@@ -56,10 +63,28 @@ var port := PORT
 var my_slot := -1
 ## Сервер: peer_id → слот (0..PLAYER_SLOTS-1). Слот без игрока ведёт бот.
 var slot_of_peer := {}
+## Сервер: пиры БЕЗ слота (все заняты). Их не отвергаем, как раньше, —
+## Main перенаправит такого «гостя» в свободный заезд-комнату (Rooms.gd),
+## а откажет только когда мест нет нигде.
+var guests := {}
+## Этот процесс — комната, поднятая воротами (`--room`): сам комнат не
+## плодит и гасится, простояв пустым (см. Rooms.gd, Main._server_tick).
+var is_room := false
+## Клиент: сколько раз подряд нас перенаправляли между заездами
+## (_rx_redirect). Защита от пинг-понга переполненных комнат; сбрасывается,
+## когда сервер выдал слот (_rx_welcome) или игрок подключается сам.
+var redirect_hops := 0
 
 
 func _ready() -> void:
 	_load_config()
+	# Ключи процесса-комнаты (после `--`): порт командной строки сильнее
+	# порта из user://net.cfg.
+	for a: String in OS.get_cmdline_user_args():
+		if a.begins_with("--port="):
+			port = maxi(1, int(a.trim_prefix("--port=")))
+		elif a == "--room":
+			is_room = true
 	multiplayer.connected_to_server.connect(_on_connected)
 	multiplayer.connection_failed.connect(_on_connect_failed)
 	multiplayer.server_disconnected.connect(_on_server_gone)
@@ -84,12 +109,13 @@ static func wants_server() -> bool:
 
 func start_server() -> bool:
 	var peer := ENetMultiplayerPeer.new()
-	# Слотов PLAYER_SLOTS, но пускаем чуть больше: лишний коннект получит
-	# отказ осмысленно, а не молча повиснет на таймауте.
+	# Слотов PLAYER_SLOTS, но пускаем заметно больше: пир сверх слотов —
+	# «гость», его перенаправят в свободный заезд-комнату (Rooms.gd), и
+	# запас нужен, чтобы волна гостей не упёрлась в отказ самого ENet.
 	# Каналов 8: поток состояния идёт по каналу 1, отдельно от reliable-
 	# событий (см. Main._rx_state) — каналы надо выделить явно, иначе
 	# отправка с transfer_channel > 0 молча не уйдёт.
-	var err := peer.create_server(port, PLAYER_SLOTS + 2, 8)
+	var err := peer.create_server(port, PLAYER_SLOTS + 8, 8)
 	if err != OK:
 		push_error("Не удалось поднять сервер на порту %d: %s" % [port, error_string(err)])
 		return false
@@ -110,6 +136,10 @@ func join_server(address: String, p: int, remember := true) -> bool:
 	host = address
 	port = p
 	if remember:
+		# Подключение по воле игрока (кнопка «ПО СЕТИ») — счёт прыжков
+		# перенаправлений начинается заново. При самом перенаправлении
+		# remember=false: порт комнаты в net.cfg не пишем и счёт не трогаем.
+		redirect_hops = 0
 		save_config()
 	var peer := ENetMultiplayerPeer.new()
 	# Каналов столько же, сколько у сервера (ENet берёт минимум из двух).
@@ -130,6 +160,7 @@ func leave() -> void:
 	mode = Mode.OFFLINE
 	my_slot = -1
 	slot_of_peer.clear()
+	guests.clear()
 
 
 ## Свободный слот игрока, либо −1 если все заняты.
@@ -146,8 +177,11 @@ func _free_slot() -> int:
 func _on_peer_connected(id: int) -> void:
 	var slot := _free_slot()
 	if slot < 0:
-		print("[net] пир %d отвергнут: свободных слотов нет" % id)
-		multiplayer.multiplayer_peer.disconnect_peer(id)
+		# Мест нет — но соединение НЕ рвём: это гость, Main._rx_hello
+		# перенаправит его в свободный заезд-комнату (Rooms.gd), и лишь
+		# когда мест нет нигде — откажет по-человечески.
+		guests[id] = true
+		print("[net] пир %d без слота — гость, ждёт перенаправления" % id)
 		return
 	slot_of_peer[id] = slot
 	print("[net] пир %d занял слот %d (игроков: %d)"
@@ -156,6 +190,8 @@ func _on_peer_connected(id: int) -> void:
 
 
 func _on_peer_disconnected(id: int) -> void:
+	if guests.erase(id):
+		return
 	if slot_of_peer.has(id):
 		var slot: int = slot_of_peer[id]
 		print("[net] пир %d ушёл, слот %d освобождён" % [id, slot])
