@@ -3638,3 +3638,7 @@ PlaceFinish, MarkerFollow, Weapons, Bumps (13/1 байт в байт) — PASS.
 scripts/Car.gd, tools/test_rooms.gd + TestRooms.tscn (новые),
 tools/test_late_join.gd (переписан), server/README.md (раздел про
 комнаты), «Обновить сервер.bat» (текст PROTOCOL := 10), dist/.
+
+**Проверка гашения на VDS:** комната 9978 сама вышла ровно по таймеру —
+в журнале «[rooms] комната на порту 9978 пуста 120 с — гасимся», визитка
+9978.json удалена, остался только 9977.json ворот. Память вернулась.
