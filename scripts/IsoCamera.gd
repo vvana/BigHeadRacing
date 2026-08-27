@@ -23,12 +23,26 @@ func _ready() -> void:
 		global_position = target.global_position + _look_offset
 
 
-func _physics_process(delta: float) -> void:
+## Слежение — в КАДРЕ РЕНДЕРА, а не в физике. Физика идёт ровно 60 раз в
+## секунду, рендер — со своим темпом, и когда камера двигалась только по
+## шагам физики, картинка ступенчато замирала: то за кадр рендера проходило
+## два шага, то ни одного. Своя машина при этом выглядит ровно (она стоит
+## в центре и дрожит ВМЕСТЕ с камерой), а вот трасса и соперники дёргаются —
+## это и есть жалоба «все едут дёргано, кроме меня». За цель берём ВИДИМОЕ
+## положение машины (Car.visual_origin — интерполяция между шагами физики),
+## иначе плавная камера просто показывала бы ступеньки самой машины.
+func _process(delta: float) -> void:
 	if not target:
 		return
-	var desired := target.global_position + _look_offset
+	var pos: Vector3 = target.visual_origin() \
+			if target.has_method("visual_origin") else target.global_position
+	var desired := pos + _look_offset
 	# NaN в позиции цели отравил бы камеру навсегда (lerp с NaN — NaN):
 	# кадр пропускаем, машину вернёт страховка в Main._check_recovery.
 	if not desired.is_finite():
 		return
-	global_position = global_position.lerp(desired, follow_speed * delta)
+	# Сглаживание кадронезависимое: в физике шаг был всегда 1/60, а кадр
+	# рендера гуляет (60, 144, просадка до 30) — на «follow_speed * delta»
+	# камера тянулась бы с разной скоростью на разных мониторах.
+	global_position = global_position.lerp(desired,
+			1.0 - exp(-follow_speed * delta))

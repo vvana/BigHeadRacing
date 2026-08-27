@@ -42,6 +42,13 @@ func _physics_process(delta: float) -> void:
 		# обычного потолка, и превышение не увидеть.
 		car.linear_velocity = dir * 25.0
 		car.reset_speed_memory()
+		# Боты РАЗОРУЖЕНЫ на время замера. Стартовое оружие раздаётся
+		# случайно, и бот, пустивший ракету в спину, уничтожал машину до
+		# плиты — стенд падал через раз («буст НЕ получен, максимум 0.0»)
+		# на коде, в котором ускорители исправны. Мерим плиту, а не рулетку.
+		for other: Car in _main._cars:
+			if other != car:
+				other.weapon = -1
 		Input.action_press("accelerate")
 		_placed = true
 		_t = 0.0

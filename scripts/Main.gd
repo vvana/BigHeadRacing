@@ -17,18 +17,26 @@ const NET_CARS := 4
 const SNAP_HZ := 60.0
 # Сколько ждать ОСТАЛЬНЫХ живых игроков после подключения первого.
 # Не дождались — едем по старинке, пустые слоты берут боты.
-# 5 с оказалось мало в жизни: у второго игрока игра грузится дольше
-# (первый вход — компиляция шейдеров), и первый успевал уехать с ботами.
-# Пробел по-прежнему запрашивает старт сразу (но старт ждёт, пока у всех
-# подключённых загрузится сцена — см. _maybe_start).
-const LOBBY_WAIT := 20.0
+# 27.08 по просьбе пользователя укорочено 20 -> 5 с. Былую проблему «у
+# второго игра грузится дольше и первый уезжает с ботами» это не вернёт:
+# старт всё равно ждёт hello от КАЖДОГО подключённого (_maybe_start), а
+# подключение продлевает ожидание до JOIN_GRACE.
+const LOBBY_WAIT := 5.0
 # Сколько ждать ещё, когда в лобби заходит очередной игрок (см.
 # _on_peer_joined): ожидание продлевается до этой отметки, если оставалось
 # меньше, — чтобы зашедшие вразнобой всё равно стартовали вместе.
-const JOIN_GRACE := 8.0
+# Урезано вместе с LOBBY_WAIT (8 -> 5): продление длиннее самого ожидания
+# выглядело бы как «зашёл второй — ждать стало ДОЛЬШЕ».
+const JOIN_GRACE := 5.0
 # Сколько лобби показывает «слоты заняли боты», прежде чем начать отсчёт.
 # Без паузы игрок не успевает увидеть, с кем едет: отсчёт прячет лобби.
 const BOTS_SHOW := 2.2
+# Досаживать к УЖЕ ИДУЩЕМУ заезду можно только в первые секунды: зашедший
+# на второй минуте попадает в чужую доигрываемую гонку — «запустил игру
+# заново, а началась не новая гонка, а продолжилась старая». Позже этой
+# отметки пришедший ждёт в лобби следующего заезда (машину в его слоте
+# так и ведёт бот, см. _on_peer_joined).
+const JOIN_LATE_MAX := 25.0
 # Полотно переменной ширины, поэтому порог вылета считается в точке машины:
 # полуширина здесь + 0.5 м (машина у самой стены отстоит от оси почти ровно
 # на полуширину, дальше — уже за ограждением).
@@ -65,6 +73,12 @@ var _rival_markers := {}            # слот → стрелка живого �
 var _marker_time := 0.0
 
 var _net_started := false           # сервер: гонка идёт (иначе лобби)
+var _race_start_time := -1.0        # сервер: секунда старта заезда (для подсадки)
+# Сервер: слоты, чей игрок подключился к УЖЕ ИДУЩЕМУ заезду слишком поздно
+# и ждёт следующего. Их машины остаются за ботами, состояние от этих
+# клиентов сервер не принимает (см. _rx_pstate) — иначе машина в гонке
+# скакала бы между ботом и стоящим на решётке новичком.
+var _late_slots := {}
 var _snap_accum := 0.0              # накопитель до следующего снимка
 var _net_lost := false              # клиент: связь пропала, уходим в гараж
 var _kicked := false                # клиент: сервер отказал (версии и т.п.)
@@ -116,6 +130,10 @@ var _slot_taken: Array[bool] = [false, false, false, false]
 # Клиент: битовая маска слотов, которые перед стартом забрали боты (сервер
 # шлёт её в _rx_bots) — лобби показывает их машины вместо «ждём игрока…».
 var _bot_mask := 0
+# Клиент: подключился к уже идущему заезду слишком поздно (см. JOIN_LATE_MAX)
+# и ждёт в лобби следующего. Управление выключено, машину в его слоте ведёт
+# бот сервера; дождётся _rx_reset — перезагрузится в новую гонку.
+var _wait_next_race := false
 var _feed_box: VBoxContainer        # лента «кто кого чем» (события оружия)
 var _feed_pending: Array[Array] = []  # события, ждущие места в ленте
 
@@ -179,13 +197,14 @@ func _ready() -> void:
 	if Net.is_server():
 		Net.player_joined.connect(_on_peer_joined)
 		Net.player_left.connect(_on_peer_left)
-		print("[net] трасса готова, ждём игроков")
+		print("[net] трасса готова, ждём игроков%s" % _mem_note())
 		# Сцена могла быть перезагружена после прошлого заезда — тогда
 		# игроки УЖЕ подключены, и peer_connected по ним больше не придёт.
 		# Возвращаем их машины на присланный ввод руками.
 		for pid: int in Net.slot_of_peer.keys():
 			_on_peer_joined(pid, Net.slot_of_peer[pid])
 	elif Net.is_client():
+		print("[net] сцена гонки готова%s" % _mem_note())
 		# Клиент ничего не начинает сам: представляемся серверу и ждём
 		# от него слот, ростер машин и команду отсчёта. Если рукопожатие
 		# ещё не закончилось (сцену могли открыть сразу), ждём сигнала —
@@ -299,6 +318,10 @@ func _attach_marker(index: int, rival := false) -> void:
 	var marker := _build_player_marker(
 			Color(1.0, 0.55, 0.1) if rival else Color(0.15, 0.95, 0.25))
 	_cars[index].add_child(marker)
+	# Стрелка top_level, то есть за машиной сама не едет — её ставит _process.
+	# Но первый кадр он ещё не отработал, и стрелка мигнула бы в начале
+	# координат: ставим её на место сразу.
+	marker.global_position = _cars[index].global_position + Vector3.UP * 2.4
 	_cars[index].has_marker = true
 	if rival:
 		_rival_markers[index] = marker
@@ -509,19 +532,27 @@ func _build_player_marker(color: Color) -> Node3D:
 	mat.emission_enabled = true
 	mat.emission = color * 0.85
 	marker.material_override = mat
+	# Стрелка ставится по ВИДИМОМУ положению машины (см. _process), а не
+	# висит на теле: тело шагает 60 Гц, и на плавном рендере машина уползала
+	# бы из-под собственной стрелки. Отсюда top_level.
+	marker.top_level = true
 	marker.position = Vector3(0, 2.4, 0)
 	return marker
 
 
 func _process(delta: float) -> void:
 	_wd_mark("рендер")
-	# Лёгкое покачивание по высоте (без вращения — оно отвлекало).
+	# Лёгкое покачивание по высоте (без вращения — оно отвлекало). Стрелки
+	# top_level, поэтому ставим их сами — по ВИДИМОМУ положению машины
+	# (Car.visual_origin), чтобы стрелка не отставала от машины на кадр.
 	_marker_time += delta
 	var bob := 2.4 + 0.12 * sin(_marker_time * 3.0)
-	if _player_marker:
-		_player_marker.position.y = bob
-	for m: Node3D in _rival_markers.values():
-		m.position.y = bob
+	if _player_marker and _car != null:
+		_player_marker.global_position = _car.visual_origin() + Vector3.UP * bob
+	for slot: int in _rival_markers:
+		if slot < _cars.size():
+			var m: Node3D = _rival_markers[slot]
+			m.global_position = _cars[slot].visual_origin() + Vector3.UP * bob
 	if _car and _speed_label:
 		_speed_label.text = str(int(_car.speed_kmh()))
 		if _car.weapon != _last_weapon:
@@ -566,8 +597,11 @@ func _process(delta: float) -> void:
 				and not _kicked and Input.is_action_just_pressed("ui_accept"):
 			_rx_start_request.rpc_id(1)
 		# Своя машина клиент-авторитетна — и возврат на трассу (R и
-		# автовозврат) для неё делаем мы, сервер её не двигает.
-		if _car != null and _car.net_role == Car.NetRole.OWNED:
+		# автовозврат) для неё делаем мы, сервер её не двигает. Ждущему
+		# следующего заезда возвращать нечего: он стоит на решётке за
+		# экраном лобби, и автовозврат только дёргал бы машину по застреванию.
+		if _car != null and _car.net_role == Car.NetRole.OWNED \
+				and not _wait_next_race:
 			if Input.is_action_just_pressed("respawn"):
 				_respawn_car(_my_index())
 			_check_recovery(delta)
@@ -582,10 +616,23 @@ func _my_index() -> int:
 	return Net.my_slot if Net.is_client() and Net.my_slot >= 0 else 0
 
 
+## Место машины в гонке. Уже ФИНИШИРОВАВШИЕ держат свои места навсегда —
+## по порядку пересечения линии, ровно как их раздаёт _car_finished. Без
+## этого HUD и баннер финиша расходились: доехавшая машина останавливается,
+## её прогресс замирает, едущий сзади обходит её ПО ПРОГРЕССУ, и HUD
+## показывал «МЕСТО 2», когда первое место уже было занято, — а потом
+## баннер выдавал честное «МЕСТО 3 ИЗ 4». Ровно на это игрок и жаловался.
 func _place_of(idx: int) -> int:
-	var place := 1
+	var done := _finish_order.find(idx)
+	if done >= 0:
+		return done + 1
+	# Ещё едет: все финишировавшие впереди по определению, среди остальных
+	# сравниваем накопленный путь.
+	var place := _finish_order.size() + 1
 	for j in _cars.size():
-		if j != idx and _progress[j] > _progress[idx]:
+		if j == idx or _finish_order.has(j):
+			continue
+		if _progress[j] > _progress[idx]:
 			place += 1
 	return place
 
@@ -1116,7 +1163,17 @@ func _on_peer_joined(_id: int, slot: int) -> void:
 	if slot < 0 or slot >= _cars.size():
 		return
 	var car := _cars[slot]
-	car.net_make_puppet()
+	# ОПОЗДАВШИЙ к идущему заезду машину НЕ получает: её и дальше ведёт бот,
+	# а игрок ждёт в лобби следующей гонки. Иначе он попадал в чужой заезд,
+	# доигрываемый уже вторую минуту («запустил заново — продолжилась старая
+	# игра»), да ещё и телепортировал машину бота к себе на решётку.
+	var late: bool = _net_started and _race_start_time >= 0.0 \
+			and Time.get_ticks_msec() / 1000.0 - _race_start_time > JOIN_LATE_MAX
+	if late:
+		_late_slots[slot] = true
+	else:
+		_late_slots.erase(slot)
+		car.net_make_puppet()
 	_join_time[slot] = Time.get_ticks_msec() / 1000.0
 	# О занятии слота сообщаем СРАЗУ, до всех ветвлений. Раньше это стояло в
 	# конце, и когда второй игрок запускал заезд своим подключением, функция
@@ -1126,6 +1183,8 @@ func _on_peer_joined(_id: int, slot: int) -> void:
 	if _net_started:
 		_rx_lobby.rpc(Net.slot_of_peer.size(), 0)
 		return
+	# Гонка ещё не началась — этот слот точно не «опоздавший».
+	_late_slots.erase(slot)
 	# Зашёл человек, пока лобби показывало ботов, — отменяем эту попытку
 	# старта: слот отдаём ему, а не боту (см. _start_with_bots).
 	if _starting:
@@ -1157,6 +1216,7 @@ func _on_peer_left(_id: int, slot: int) -> void:
 	car.net_make_local()
 	_hello_done.erase(slot)
 	_join_time.erase(slot)
+	_late_slots.erase(slot)
 	_rx_lobby.rpc(Net.slot_of_peer.size(), maxi(ceili(_lobby_wait), 0))
 	_rx_slot_taken.rpc(slot, false)
 	# Ушли все — заезд некому доигрывать. Перезапускаем трассу, чтобы
@@ -1164,6 +1224,15 @@ func _on_peer_left(_id: int, slot: int) -> void:
 	if Net.slot_of_peer.is_empty() and _net_started:
 		print("[net] игроков не осталось, перезапуск трассы")
 		get_tree().reload_current_scene()
+		return
+	# Ушёл последний, а гонка ещё не начиналась: ожидание лобби ОБНУЛЯЕМ.
+	# Иначе оно дотикивало в пустоту и сервер начинал заезд, в котором нет
+	# ни одного человека (в логе VDS — «старт заезда, игроков: 0»); зашедший
+	# следом игрок подсаживался к этой ничьей гонке вместо своей новой.
+	if Net.slot_of_peer.is_empty():
+		_lobby_wait = -1.0
+		_want_start = false
+		_loading_told = false
 		return
 	# Может, ждали загрузку именно ушедшего — тогда старт освободился.
 	_maybe_start()
@@ -1247,6 +1316,13 @@ func _all_loaded() -> bool:
 func _maybe_start() -> void:
 	if not Net.is_server() or _net_started or _starting:
 		return
+	# Заезд без единого человека не нужен НИКОМУ: он жжёт процессор VDS и,
+	# главное, зашедший игрок попадал не в свою новую гонку, а в чужую,
+	# идущую уже вторую минуту. Пустой сервер просто ждёт первого игрока.
+	if Net.slot_of_peer.is_empty():
+		_want_start = false
+		_lobby_wait = -1.0
+		return
 	var full := Net.slot_of_peer.size() >= Net.PLAYER_SLOTS
 	if not (_want_start or full):
 		return
@@ -1264,6 +1340,7 @@ func _start_net_race() -> void:
 	if _net_started:
 		return
 	_net_started = true
+	_race_start_time = Time.get_ticks_msec() / 1000.0
 	print("[net] старт заезда, игроков: %d" % Net.slot_of_peer.size())
 	_countdown()
 
@@ -1415,7 +1492,13 @@ func _rx_hello(car_id: String, proto: int) -> void:
 	_rx_track.rpc_id(id, _track_kind)
 	_rx_welcome.rpc_id(id, slot, _roster, _taken_mask())
 	_rx_roster.rpc(_roster)
-	if _net_started:
+	if _net_started and _late_slots.has(slot):
+		# ОПОЗДАЛ (см. _on_peer_joined): в чужую доигрываемую гонку не пускаем,
+		# машину в его слоте продолжает вести бот. Сидит в лобби до конца
+		# заезда — сервер тогда перезапустит трассу (_rx_reset), и он войдёт
+		# в НОВУЮ гонку с отсчётом, как все.
+		_rx_lobby_wait_next.rpc_id(id)
+	elif _net_started:
 		# Заезд уже идёт: отсчёт этот игрок пропустил, и без отдельной
 		# команды он навсегда остался бы в лобби с выключенным управлением.
 		# Вместе с командой отдаём МЕСТО его машины: у себя он строит сцену
@@ -1529,11 +1612,11 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	car.freeze = false
 	car.net_role = Car.NetRole.OWNED
 	car.is_player = true
-	# Модель обратно под тело (у марионетки она отвязана и интерполируется).
-	# Исключения решателя с марионетками НАМЕРЕННО остаются: чужие машины
-	# телепортируются к снимкам, и твёрдый контакт с ними — это дикая
-	# депенетрация; толчки считает _bounce_off_cars по сближению капсул.
+	# Интерполяция гасится на кадр (пересадка в свою машину — телепорт).
+	# Твёрдость с 27.08 включена у всех: сквозной проезд через соперника
+	# оказался хуже депенетрации, которую и так держит кап 5 м/с за кадр.
 	car.net_visual_reset()
+	car._set_solid_to_cars(true)
 	_car = car
 	var cam := get_node_or_null("IsoCamera") as IsoCamera
 	if cam:
@@ -1577,9 +1660,29 @@ func _apply_roster(roster: PackedStringArray) -> void:
 	_update_lobby_slots()
 
 
+## Клиент опоздал к идущему заезду и ждёт следующего (сервер держит его
+## машину за ботом). Флаг живёт до конца этой сцены: сервер закончит заезд,
+## перезапустит трассу и пришлёт _rx_reset — сцена перезагрузится, и игрок
+## войдёт в новую гонку с отсчётом.
+@rpc("authority", "call_remote", "reliable")
+func _rx_lobby_wait_next() -> void:
+	_wait_next_race = true
+	if _car != null:
+		_car.controls_enabled = false
+	if _lobby == null:
+		return
+	_lobby.show_screen()
+	_lobby.set_status("Заезд уже идёт — в него не влезть.
+Ждём следующего: начнётся, как только эта гонка закончится.")
+
+
 @rpc("authority", "call_remote", "reliable")
 func _rx_lobby(players: int, secs: int) -> void:
 	if _lobby == null:
+		return
+	# Ждущему следующего заезда общий статус лобби не показываем: он перетёр
+	# бы объяснение, ПОЧЕМУ этот игрок стоит в лобби, на «Игроков: 1/4».
+	if _wait_next_race:
 		return
 	if _net_started:
 		_lobby.hide_screen()
@@ -1819,6 +1922,10 @@ func _rx_car_finished(i: int, place: int) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _rx_finish() -> void:
+	# Ждущий следующего заезда в этом не участвовал — баннер «ФИНИШ! МЕСТО N»
+	# и опыт за чужую гонку ему не положены (сидит в лобби до _rx_reset).
+	if _wait_next_race:
+		return
 	_finish_race()
 
 
@@ -1830,9 +1937,22 @@ func _rx_finish() -> void:
 func _rx_reset() -> void:
 	if _net_lost or _kicked or not is_inside_tree():
 		return
-	print("[net] сервер начал новый заезд — перезагружаем сцену")
+	print("[net] сервер начал новый заезд — перезагружаем сцену%s" % _mem_note())
 	Net.my_slot = -1
 	get_tree().reload_current_scene()
+
+
+## Память и объекты — одной строкой. Клиент 26.08 закрывался НАСМЕРТЬ
+## ровно на перезагрузке сцены после заезда, а перезагрузка — это разом
+## снос всей графики заезда и постройка новой. Если дело в накопленном за
+## гонку (узлы эффектов, следы шин, меши трассы), это видно в цифрах ДО
+## сноса: печатаем их при готовности сцены и при каждом reset, чтобы у
+## живого игрока в user://logs осталась улика, а не только факт закрытия.
+func _mem_note() -> String:
+	return " [память %.0f МБ, узлов %d, объектов %d]" % [
+			Performance.get_monitor(Performance.MEMORY_STATIC) / 1048576.0,
+			Performance.get_monitor(Performance.OBJECT_NODE_COUNT),
+			Performance.get_monitor(Performance.OBJECT_COUNT)]
 
 
 @rpc("authority", "call_remote", "reliable")

@@ -1,0 +1,7 @@
+[gd_scene load_steps=3 format=3 uid="uid://bhr_dbgreloadhud"]
+[ext_resource type="Script" path="res://scripts/Main.gd" id="1_main"]
+[ext_resource type="Script" path="res://tools/dbg_reload_hud.gd" id="2_probe"]
+[node name="Main" type="Node3D"]
+script = ExtResource("1_main")
+[node name="Probe" type="Node" parent="."]
+script = ExtResource("2_probe")

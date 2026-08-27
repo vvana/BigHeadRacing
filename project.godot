@@ -23,6 +23,15 @@ window/size/viewport_width=1280
 window/size/viewport_height=720
 window/stretch/mode="canvas_items"
 
+[physics]
+
+; ОБЯЗАТЕЛЬНО для плавности: без этого Engine.get_physics_interpolation_fraction()
+; в 4.3 всегда возвращает 0, и вся визуальная интерполяция машин (Car._process,
+; IsoCamera) молча вырождается в «показывай прошлый кадр физики» — проверено
+; стендом tools/DbgFraction.tscn. Автоинтерполяцию 3D-узлов 4.3 не делает
+; (она появилась в 4.4), так что физика от флага не меняется — только дробь.
+common/physics_interpolation=true
+
 [rendering]
 
 anti_aliasing/quality/msaa_3d=2
