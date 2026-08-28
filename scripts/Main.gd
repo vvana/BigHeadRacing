@@ -88,6 +88,7 @@ var _late_slots := {}
 var _snap_accum := 0.0              # накопитель до следующего снимка
 var _net_lost := false              # клиент: связь пропала, уходим в гараж
 var _kicked := false                # клиент: сервер отказал (версии и т.п.)
+var _going_home := false            # клиент: комната молчит, едем к воротам
 var _last_state_time := 0.0         # клиент: когда пришёл последний снимок
 # Диагностика потока снимков (см. _rx_state и tools/test_net.gd): сколько
 # снимков пришло, сумма и максимум интервалов между ними. Три сложения на
@@ -228,6 +229,11 @@ func _ready() -> void:
 			_say_hello()
 		else:
 			Net.joined.connect(_say_hello, CONNECT_ONE_SHOT)
+			# Соединение ещё устанавливается (мы после _rx_redirect). ENet
+			# может молчать дольше, чем игрок готов ждать, — свой таймаут,
+			# как в CarSelect: не ответили — судьбу решит
+			# _on_join_failed_in_race (вернёт домой к воротам).
+			_watch_join_timeout()
 	else:
 		_countdown()
 
@@ -1244,6 +1250,14 @@ func _on_peer_left(_id: int, slot: int) -> void:
 		_lobby_wait = -1.0
 		_want_start = false
 		_loading_told = false
+		# Ушёл ВО ВРЕМЯ показа ботов (BOTS_SHOW) — отменяем и эту попытку
+		# старта, как _on_peer_joined отменяет её при входе. Без этого await
+		# в _start_with_bots дотикивал и заезд стартовал ПУСТЫМ (VDS 27.08
+		# 13:52:30: «старт заезда, игроков: 0» — и зашедший через полминуты
+		# игрок был выслан «опоздавшим» в комнату вместо своей новой гонки).
+		if _starting:
+			_starting = false
+			_start_gen += 1
 		return
 	# Может, ждали загрузку именно ушедшего — тогда старт освободился.
 	_maybe_start()
@@ -1350,6 +1364,13 @@ func _maybe_start() -> void:
 func _start_net_race() -> void:
 	if _net_started:
 		return
+	# Последний рубеж от пустого заезда: к этой точке ведут и таймер лобби,
+	# и хвост await в _start_with_bots — где бы ни прозевали уход последнего
+	# игрока, без людей не стартуем (см. _on_peer_left).
+	if Net.slot_of_peer.is_empty():
+		_want_start = false
+		print("[net] старт отменён: игроков не осталось")
+		return
 	_net_started = true
 	_race_start_time = Time.get_ticks_msec() / 1000.0
 	print("[net] старт заезда, игроков: %d" % Net.slot_of_peer.size())
@@ -1391,6 +1412,8 @@ func _server_tick(delta: float) -> void:
 	if _card_accum >= 1.0:
 		_card_accum = 0.0
 		Rooms.write_card(Net.port, Net.slot_of_peer.size(), _joinable_here())
+		# Заодно хороним завершившиеся процессы комнат (у комнат список пуст).
+		Rooms.reap_children()
 	# Пустая комната без гонки живёт не вечно: погасла — память свободна.
 	if Net.is_room:
 		if Net.slot_of_peer.is_empty() and not _net_started:
@@ -1786,9 +1809,42 @@ func _rx_redirect(port: int) -> void:
 	get_tree().reload_current_scene()
 
 
-## Комната, куда нас отправили, не ответила (умерла между визиткой и
-## подключением): без обработчика клиент вечно висел бы на экране лобби.
+## Свой таймаут на устанавливающееся соединение (сцена после _rx_redirect):
+## комната могла умереть между визиткой и подключением или оказаться
+## недоступной снаружи — ENet при этом молчит дольше CONNECT_TIMEOUT.
+func _watch_join_timeout() -> void:
+	await get_tree().create_timer(Net.CONNECT_TIMEOUT).timeout
+	if not is_inside_tree() or not Net.is_client() or _going_home:
+		return
+	var peer := multiplayer.multiplayer_peer
+	if peer != null and peer.get_connection_status() \
+			== MultiplayerPeer.CONNECTION_CONNECTED:
+		return
+	_on_join_failed_in_race("Сервер не ответил")
+
+
+## Комната, куда нас отправили, не ответила. Раньше это был тупиковый экран
+## «Сервер не ответил, Esc — в гараж» (27.08 у игрока: выслан в комнату,
+## та не ответила — а ворота-то живы). Теперь возвращаемся ДОМОЙ к воротам:
+## там либо дадут слот, либо перенаправят ещё раз (кап redirect_hops не даст
+## кругу крутиться вечно). Тупиковый экран остаётся на случай, когда не
+## ответил сам дом.
 func _on_join_failed_in_race(reason: String) -> void:
+	if _going_home:
+		return
+	if Net.port != Net.home_port:
+		_going_home = true
+		print("[rooms] заезд на порту %d не ответил — возвращаемся к воротам (%d)"
+				% [Net.port, Net.home_port])
+		if _lobby:
+			_lobby.show_screen()
+			_lobby.set_status("Заезд не ответил — возвращаемся к воротам…")
+		var host := Net.host
+		Net.leave()
+		Net.my_slot = -1
+		Net.join_server(host, Net.home_port, false)
+		get_tree().reload_current_scene()
+		return
 	if _lobby:
 		_lobby.set_status(reason + "
 Esc — в гараж")

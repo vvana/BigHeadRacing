@@ -59,6 +59,11 @@ var mode := Mode.OFFLINE
 # выбора машины — тогда он запомнится в user://net.cfg и перекроет это.
 var host := "139.100.234.166"
 var port := PORT
+## «Домашний» порт игрока — ворота. join_server при перенаправлении в
+## комнату (remember=false) его НЕ трогает: комната смертна, и если она не
+## ответила, Main возвращает игрока именно сюда (_on_join_failed_in_race),
+## а не бросает на тупиковом экране «Сервер не ответил».
+var home_port := PORT
 ## Клиент: номер машины, которой я управляю (0..PLAYER_SLOTS-1). −1 пока не выдан.
 var my_slot := -1
 ## Сервер: peer_id → слот (0..PLAYER_SLOTS-1). Слот без игрока ведёт бот.
@@ -137,9 +142,11 @@ func join_server(address: String, p: int, remember := true) -> bool:
 	port = p
 	if remember:
 		# Подключение по воле игрока (кнопка «ПО СЕТИ») — счёт прыжков
-		# перенаправлений начинается заново. При самом перенаправлении
-		# remember=false: порт комнаты в net.cfg не пишем и счёт не трогаем.
+		# перенаправлений начинается заново, а выбранный порт становится
+		# «домом». При самом перенаправлении remember=false: порт комнаты
+		# в net.cfg не пишем, дом и счёт не трогаем.
 		redirect_hops = 0
+		home_port = p
 		save_config()
 	var peer := ENetMultiplayerPeer.new()
 	# Каналов столько же, сколько у сервера (ENet берёт минимум из двух).
@@ -222,6 +229,7 @@ func _load_config() -> void:
 		return
 	host = cfg.get_value("net", "host", host)
 	port = cfg.get_value("net", "port", port)
+	home_port = port
 
 
 func save_config() -> void:

@@ -33,6 +33,20 @@ const SPAWN_GRACE := 15.0
 
 ## Порт → unix-секунда запуска процесса комнаты (только в памяти ворот).
 static var _spawn_time := {}
+## Порт → pid поднятого процесса. Нужен для уборки «зомби»: на Linux
+## завершившийся ребёнок висит defunct, пока родитель его не подождёт
+## (пойман на VDS 27.08: комната погасла по таймеру, а в ps остался
+## `[godot] <defunct>`). OS.is_process_running внутри делает
+## waitpid(WNOHANG) — он и хоронит покойника.
+static var _spawn_pid := {}
+
+
+## Похоронить завершившиеся процессы комнат. Ворота зовут раз в секунду
+## (Main._server_tick, вместе с визиткой).
+static func reap_children() -> void:
+	for p: int in _spawn_pid.keys():
+		if not OS.is_process_running(int(_spawn_pid[p])):
+			_spawn_pid.erase(p)
 
 
 static func _now() -> float:
@@ -131,4 +145,5 @@ static func spawn(port: int) -> void:
 	args.append_array(PackedStringArray(
 			["--", "--server", "--room", "--port=%d" % port]))
 	var pid := OS.create_process(OS.get_executable_path(), args)
+	_spawn_pid[port] = pid
 	print("[rooms] поднимаем комнату на порту %d (pid %d)" % [port, pid])
