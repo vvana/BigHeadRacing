@@ -192,7 +192,18 @@ godot --headless --path . res://tools/TestLap.tscn
 песке), `TestNeonLap` (ночной город: круги при стенах, у машин фары),
 `TestHeadlights` (фары не отстают от кузова и сидят на нём),
 `TestBoostPad` (ускоритель даёт буст и скорость выше обычного
-потолка), и `--script tools/test_curve.gd` (гладкость всех трасс).
+потолка), `TestFreezeSpread` (заморозка доезжает в снимке до соперника и
+заражает при касании), и `--script tools/test_curve.gd` (гладкость всех
+трасс).
+
+Парный сетевой стенд `TestNetFreeze` требует запущенного сервера и двух
+клиентов сразу (замороженного игрока обязан видеть другой игрок):
+
+```bash
+godot --headless --path . res://tools/TestNetFreeze.tscn -- freezer
+```
+
+Второй клиент — тот же стенд с аргументом `watcher`.
 
 ## Ассеты
 

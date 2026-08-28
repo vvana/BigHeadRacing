@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testfreezespread"]
+
+[ext_resource type="Script" path="res://tools/test_freeze_spread.gd" id="1_testfreezespread"]
+
+[node name="TestFreezeSpread" type="Node3D"]
+script = ExtResource("1_testfreezespread")
