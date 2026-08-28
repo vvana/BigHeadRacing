@@ -42,9 +42,9 @@ func _physics_process(delta: float) -> void:
 	var lap_ok := worst > length * 0.5
 	var lights := 0
 	for car: Car in _main._cars:
-		for child in car.get_children():
-			if child is SpotLight3D:
-				lights += 1
+		# Споты лежат в держателе Headlights (top_level, см. Car._process),
+		# а не прямо в машине — ищем во всём поддереве.
+		lights += _count_spots(car)
 	var lights_ok: bool = lights >= _main._cars.size() * 2
 	print("  худший ИИ проехал %.0f м (круг %.0f м) — %s; фар %d — %s" % [
 		worst, length, "ok" if lap_ok else "FAIL",
@@ -52,3 +52,12 @@ func _physics_process(delta: float) -> void:
 	var ok: bool = lap_ok and lights_ok
 	print("NEON LAP TEST: %s" % ("PASS" if ok else "FAIL"))
 	get_tree().quit(0 if ok else 1)
+
+
+func _count_spots(node: Node) -> int:
+	var n := 0
+	for child in node.get_children():
+		if child is SpotLight3D:
+			n += 1
+		n += _count_spots(child)
+	return n

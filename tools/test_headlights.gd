@@ -75,8 +75,16 @@ func _find_lamps(node: Node) -> Array[Node3D]:
 	for child in node.get_children():
 		if child is SpotLight3D:
 			out.append(child)
-		elif child is MeshInstance3D and String(child.name).begins_with("Lamp"):
-			out.append(child)
+		elif child is MeshInstance3D \
+				and not String(child.name).contains("Marker"):
+			# «Лампа» — кубик с несветимым (unshaded) светящимся материалом.
+			# Ищем по материалу, а не по имени: стенд должен одинаково видеть
+			# фары и до правки (лампы были безымянными детьми тела), и после.
+			var mat := (child as MeshInstance3D).material_override \
+					as StandardMaterial3D
+			if mat != null and mat.emission_enabled \
+					and mat.shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED:
+				out.append(child)
 		out.append_array(_find_lamps(child))
 	return out
 

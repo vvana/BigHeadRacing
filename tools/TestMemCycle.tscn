@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testmemcycle"]
+
+[ext_resource type="Script" path="res://tools/test_memcycle.gd" id="1_testmemcycle"]
+
+[node name="TestMemCycle" type="Node3D"]
+script = ExtResource("1_testmemcycle")

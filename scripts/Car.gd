@@ -141,6 +141,12 @@ var _status_time := 0.0         # и сколько ему осталось
 var _status_shown := -2         # что сейчас лежит в текстуре (-2 = ничего)
 var _status_age := 0.0          # возраст показа: «выпрыгивание» и покачивание
 var _ice_shell: MeshInstance3D  # визуал заморозки (голубая скорлупа)
+# Фары ночного города. Держатель top_level — как модель, стрелка и значок:
+# ставится по ВИДИМОМУ положению машины (см. _process). Списки — по паре
+# [левая, правая], нужны для посадки на нос конкретной модели.
+var _headlights: Node3D = null
+var _beams: Array[SpotLight3D] = []
+var _lamps: Array[MeshInstance3D] = []
 
 var _grounded_wheels := 0
 var _can_jump := true
@@ -243,19 +249,38 @@ func _build_status_icon() -> void:
 ## тенями — иначе луч просвечивает сквозь ограждения и стены (споты
 ## узкие и короткие, тени для них дёшевы). Плюс светящиеся «лампы» на
 ## носу — саму фару видно и сбоку.
+##
+## Всё это живёт в держателе Headlights с top_level. Детьми ТЕЛА фары
+## держать нельзя: тело шагает с частотой физики (60 Гц), а видимая
+## машина каждый кадр рендера ставится МЕЖДУ двумя его положениями
+## (см. _process), — фары отставали от собственного кузова на шаг тела
+## (на 25 м/с это ~0.4 м) и болтались на нём. Держатель каждый кадр
+## встаёт ровно туда же, куда модель, — свет прибит к машине намертво.
+## (Та же история, что со стрелкой и значком эффекта 26.08.)
+##
+## Стартовые смещения — грубые: настоящее место фарам ищет
+## fit_headlights по носу конкретной модели (её ставят уже после _ready).
 func _build_headlights() -> void:
-	for sx: float in [-0.55, 0.55]:
+	_headlights = Node3D.new()
+	_headlights.name = "Headlights"
+	_headlights.top_level = true
+	add_child(_headlights)
+	_headlights.global_transform = global_transform
+	for sx: float in [-0.45, 0.45]:
 		var beam := SpotLight3D.new()
-		beam.position = Vector3(sx, 0.45, -1.35)
+		beam.name = "HeadlightBeam"
+		beam.position = Vector3(sx, 0.1, -1.66)
 		beam.rotation_degrees = Vector3(-10, 0, 0)
 		beam.spot_range = 22.0
 		beam.spot_angle = 30.0
 		beam.light_energy = 6.0
 		beam.light_color = Color(1.0, 0.93, 0.75)
 		beam.shadow_enabled = true
-		add_child(beam)
+		_headlights.add_child(beam)
+		_beams.append(beam)
 
 		var lamp := MeshInstance3D.new()
+		lamp.name = "HeadlightLamp"
 		var lamp_mesh := BoxMesh.new()
 		lamp_mesh.size = Vector3(0.22, 0.12, 0.06)
 		var mat := StandardMaterial3D.new()
@@ -267,8 +292,138 @@ func _build_headlights() -> void:
 		lamp.mesh = lamp_mesh
 		lamp.material_override = mat
 		lamp.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		lamp.position = Vector3(sx, 0.42, -1.42)
-		add_child(lamp)
+		lamp.position = Vector3(sx, 0.1, -1.56)
+		_headlights.add_child(lamp)
+		_lamps.append(lamp)
+
+
+## Сажает фары на НОС конкретной модели. Машин в паках 41, и они очень
+## разные: высота кузова гуляет от 0.57 м (wildthing) до 1.88 м
+## (redbaron), ширина носа — от 0.28 до 0.88 м. Одно смещение на всех
+## (было x=±0.55, y=0.42) подходило только средней: у низких лампы
+## висели ВЫШЕ крыши, у узких — по бокам в воздухе.
+##
+## Вызывать после того, как модель добавлена в машину (см.
+## Main._set_car_model): в _ready модели ещё нет.
+func fit_headlights(model: Node3D) -> void:
+	if _headlights == null or _lamps.size() < 2 or model == null:
+		return
+	# Положение модели В ОСЯХ МАШИНЫ считаем через глобальные: model.transform
+	# годится, только пока модель не стала top_level (это делает _process), а
+	# у top_level-узла в transform лежит уже МИРОВОЕ положение — соблазн взять
+	# его напрямую уводит фары на другой конец трассы.
+	var a := headlight_anchor(model,
+			global_transform.affine_inverse() * model.global_transform)
+	if a.is_empty():
+		return
+	var x: float = a["x"]
+	var y: float = a["y"]
+	var z: float = a["z"]
+	var w: float = a["w"]
+	for i in 2:
+		var sx: float = -x if i == 0 else x
+		var mesh := _lamps[i].mesh as BoxMesh
+		mesh.size = Vector3(w, w * 0.5, 0.08)
+		# Лампа сидит в кузове по самую «стекляшку»: наружу 2 см, остальные
+		# 6 утоплены. Совсем впритык её съедает скошенный капот, а вылези
+		# она целиком — читается как наклейка перед машиной. Спот — на 6 см
+		# ПЕРЕД кромкой: у спотов включены тени, и капот резал бы луч.
+		_lamps[i].position = Vector3(sx, y, z + 0.02)
+		_beams[i].position = Vector3(sx, y, z - 0.06)
+
+
+## Куда садить ПРАВУЮ фару модели: {x, y, z кромки, w — ширина лампы} в
+## осях машины; пустой словарь — не получилось (пустая модель).
+## model_xf — положение модели в осях машины.
+##
+## Меряем вершины модели БЕЗ КОЛЁС. Порядок важен: сначала высота фары по
+## носу, потом ширина носа НА ЭТОЙ ВЫСОТЕ и только потом кромка возле
+## самой лампы. Мерить ширину по всему носу нельзя — он почти всегда
+## сужается кверху и к передку, и лампы уезжали наружу, в воздух
+## (видно на wildthing/sharky).
+##
+## Отдельной функцией — чтобы отладочный дамп (tools/DbgCarBox.tscn)
+## считал ровно то же самое, что игра.
+static func headlight_anchor(model: Node3D, model_xf: Transform3D) -> Dictionary:
+	var pts := model_points(model, model_xf)
+	if pts.size() < 8:
+		return {}
+	var tip_z := pts[0].z
+	for p in pts:
+		tip_z = minf(tip_z, p.z)
+	# Нос — передние 30 см кузова (все машины пака приведены к длине 3.2 м).
+	var y_min := 1e9
+	var y_max := -1e9
+	for p in pts:
+		if p.z > tip_z + 0.30:
+			continue
+		y_min = minf(y_min, p.y)
+		y_max = maxf(y_max, p.y)
+	if y_min > y_max:
+		return {}
+	# Чуть выше середины носа: у грузовика фара окажется высоко, у
+	# «плоской» машины низко — доля работает на обеих.
+	var lamp_y := y_min + (y_max - y_min) * 0.55
+	# Полуширина носа на высоте фары.
+	var half := 0.0
+	for p in pts:
+		if p.z > tip_z + 0.30 or absf(p.y - lamp_y) > 0.14:
+			continue
+		half = maxf(half, absf(p.x))
+	if half < 0.12:
+		return {}
+	# Лампа целиком внутри этой полуширины: центр на 0.60, половина
+	# ширины 0.275 — край на 0.875 полуширины, до борта ещё есть запас.
+	var lamp_x := half * 0.60
+	var lamp_w := minf(half * 0.55, 0.26)
+	# Кромка кузова у ВНЕШНЕГО края лампы, а не в середине носа: нос
+	# скруглён, к краям поверхность уходит назад, и по середине лампа
+	# садилась на 5-10 см впереди борта — висела в воздухе (wildthing).
+	# Если у самого края вершин не нашлось (модель низкополигональная) —
+	# расширяем окно и в крайнем случае берём кончик носа.
+	var front_z := tip_z
+	for tol: float in [0.06, 0.12, 0.24]:
+		var z := _front_z(pts, lamp_x + lamp_w * 0.5, tol,
+				lamp_y, maxf(lamp_w * 0.3, 0.06))
+		if z < 1e8:
+			front_z = z
+			break
+	return {"x": lamp_x, "y": lamp_y, "z": front_z, "w": lamp_w}
+
+
+## Самая передняя вершина в окошке вокруг точки (|x| = x_at, y = y_at).
+## 1e9 — в окошке пусто.
+static func _front_z(pts: PackedVector3Array, x_at: float, x_tol: float,
+		y_at: float, y_tol: float) -> float:
+	var z := 1e9
+	for p in pts:
+		if absf(absf(p.x) - x_at) > x_tol or absf(p.y - y_at) > y_tol:
+			continue
+		z = minf(z, p.z)
+	return z
+
+
+## Вершины модели в осях МАШИНЫ, без колёс (колесо в пивоте с мета
+## wheel_radius — его целиком пропускаем, иначе «нос» ловит переднее
+## колесо и лампы уезжают вниз и вбок).
+static func model_points(model: Node3D, model_xf: Transform3D
+		) -> PackedVector3Array:
+	var out := PackedVector3Array()
+	var stack: Array = [[model, model_xf]]
+	while not stack.is_empty():
+		var item: Array = stack.pop_back()
+		var node: Node3D = item[0]
+		var xf: Transform3D = item[1]
+		if node.has_meta("wheel_radius"):
+			continue
+		var mi := node as MeshInstance3D
+		if mi != null and mi.mesh != null:
+			for v in mi.mesh.get_faces():
+				out.append(xf * v)
+		for child in node.get_children():
+			if child is Node3D:
+				stack.append([child, xf * (child as Node3D).transform])
+	return out
 
 
 ## Форма корпуса — «санки»: плоское днище-упор (не даёт провалиться под
@@ -741,19 +896,23 @@ func _process(delta: float) -> void:
 	# fps (см. комментарий у _vis_prev). Раньше так вели только марионеток,
 	# и это было полдела: камера и своя машина по-прежнему ходили
 	# ступеньками, а на ступеньке дрожит ВЕСЬ кадр — соперники вместе с ним.
+	# Пара положений ещё не набрана (первый кадр, только что был телепорт) —
+	# ставим картинку прямо на тело, иначе она на кадр зависла бы на старом
+	# месте: она top_level и сама за телом не едет.
+	var xf := global_transform
+	if _vis_on:
+		xf = _vis_prev.interpolate_with(
+				_vis_cur, Engine.get_physics_interpolation_fraction())
 	var model := get_node_or_null("CarModel") as Node3D
 	if model != null:
 		if not model.top_level:
 			_vis_base = model.transform
 			model.top_level = true
-		# Пара положений ещё не набрана (первый кадр, только что был телепорт)
-		# — ставим модель прямо на тело, иначе она на кадр зависла бы на
-		# старом месте: она top_level и сама за телом не едет.
-		var xf := global_transform
-		if _vis_on:
-			xf = _vis_prev.interpolate_with(
-					_vis_cur, Engine.get_physics_interpolation_fraction())
 		model.global_transform = xf * _vis_base
+	# Фары — в то же самое место: висели бы на теле, отставали бы от
+	# собственного кузова на шаг физики (см. _build_headlights).
+	if _headlights != null:
+		_headlights.global_transform = xf
 	_animate_wheels(delta)
 	_tick_status_icon(delta)
 	if _ghost_time > 0.0:

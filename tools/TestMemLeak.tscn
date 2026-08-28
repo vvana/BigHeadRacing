@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testmemleak"]
+
+[ext_resource type="Script" path="res://tools/test_memleak.gd" id="1_testmemleak"]
+
+[node name="TestMemLeak" type="Node3D"]
+script = ExtResource("1_testmemleak")

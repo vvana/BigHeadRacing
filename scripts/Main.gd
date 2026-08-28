@@ -329,6 +329,9 @@ func _set_car_model(car: Car, id: String) -> void:
 		model.name = "CarModel"
 		car.add_child(model)
 		car.collect_wheels(model)
+		# Фары (ночной город) строятся в Car._ready, когда модели ещё нет, —
+		# на нос конкретной машины их сажаем здесь.
+		car.fit_headlights(model)
 	else:
 		_build_placeholder_visual(car)
 

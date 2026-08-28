@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testheadlights"]
+
+[ext_resource type="Script" path="res://tools/test_headlights.gd" id="1_testheadlights"]
+
+[node name="TestHeadlights" type="Node3D"]
+script = ExtResource("1_testheadlights")

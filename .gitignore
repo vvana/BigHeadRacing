@@ -8,6 +8,10 @@
 # export_presets.cfg коммитится: ключей в нём нет, а сборка dist/
 # должна воспроизводиться у любого разработчика.
 
+# Отчёты стендов памяти (tools/TestMemLeak, tools/TestMemCycle)
+/memleak_report.txt
+/memcycle_report.txt
+
 # Системное
 Thumbs.db
 desktop.ini
