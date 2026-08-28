@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testselprefill"]
+
+[ext_resource type="Script" path="res://tools/test_select_prefill.gd" id="1_testsp"]
+
+[node name="TestSelectPrefill" type="Node" ]
+script = ExtResource("1_testsp")

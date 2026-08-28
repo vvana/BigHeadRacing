@@ -104,8 +104,15 @@ func _build_net_ui(canvas: Node) -> void:
 	_net_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
 	_host_edit = LineEdit.new()
-	_host_edit.text = "%s:%d" % [Net.host, Net.port]
-	_host_edit.placeholder_text = "адрес:порт"
+	# В поле — ДОМАШНИЙ порт, а не Net.port: тот после перенаправления в
+	# комнату (_rx_redirect) равен порту КОМНАТЫ, и игрок, вернувшись в
+	# гараж и нажав «ПО СЕТИ», сохранял его себе в net.cfg как постоянный —
+	# комната смертна, и дальше вечное «Сервер не ответил за 5 с» (поймано
+	# у живого игрока 28.08: в поле оказалось :9978, на экране обрезано до
+	# «:99»). Стандартный порт не показываем вовсе — меньше мусора в поле.
+	_host_edit.text = Net.host if Net.home_port == Net.PORT \
+			else "%s:%d" % [Net.host, Net.home_port]
+	_host_edit.placeholder_text = "адрес[:порт]"
 	_host_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	if _ui_font:
 		_host_edit.add_theme_font_override("font", _ui_font)
@@ -121,8 +128,11 @@ func _build_net_ui(canvas: Node) -> void:
 	_host_edit.anchor_right = 0.0
 	_host_edit.anchor_top = 1.0
 	_host_edit.anchor_bottom = 1.0
-	_host_edit.offset_left = 470
-	_host_edit.offset_right = 670
+	# Ширина как у кнопки ниже: в 200 px «адрес:порт» не влезал, и хвост
+	# порта ОБРЕЗАЛСЯ на экране («:9978» выглядел как «:99») — игрок не мог
+	# увидеть, куда на самом деле стучится игра.
+	_host_edit.offset_left = 450
+	_host_edit.offset_right = 690
 	_host_edit.offset_top = -166
 	_host_edit.offset_bottom = -130
 	canvas.add_child(_host_edit)
