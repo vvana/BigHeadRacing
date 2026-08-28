@@ -89,6 +89,12 @@ var _snap_accum := 0.0              # накопитель до следующе
 var _net_lost := false              # клиент: связь пропала, уходим в гараж
 var _kicked := false                # клиент: сервер отказал (версии и т.п.)
 var _going_home := false            # клиент: комната молчит, едем к воротам
+# Толчки игрок-игроку (протокол 11): на клиенте — время последнего доклада
+# по жертве, на сервере — по паре (агрессор*100+жертва). Оба — антидребезг.
+var _shove_sent := {}
+# Когда мы сами нарисовали свой лазер, не дожидаясь сервера (см.
+# _client_tick): эхо _rx_weapon_fx об этом же выстреле рисовать не надо.
+var _laser_predicted := -10.0
 var _last_state_time := 0.0         # клиент: когда пришёл последний снимок
 # Диагностика потока снимков (см. _rx_state и tools/test_net.gd): сколько
 # снимков пришло, сумма и максимум интервалов между ними. Три сложения на
@@ -1484,6 +1490,19 @@ func _client_tick(_delta: float) -> void:
 	if Input.is_action_just_pressed("fire") \
 			or Input.is_action_just_pressed("drop"):
 		_rx_press.rpc_id(1)
+		# Лазер — мгновенное оружие: рисуем СВОЙ луч сразу, не дожидаясь,
+		# пока просьба слетает на сервер и картинка вернётся (полный пинг:
+		# «нажал E, а лазер увидел позже»). Урон по-прежнему решает сервер
+		# (с отмоткой целей — см. Car._use_laser); эхо своего выстрела
+		# гасится в _rx_weapon_fx.
+		if _car.weapon == Weapons.LASER and _car.alive:
+			var fwd := -_car.global_transform.basis.z
+			fwd.y = 0.0
+			if fwd.length_squared() > 1e-6:
+				LaserFx.spawn(self,
+						_car.global_position + Vector3.UP * 0.5,
+						fwd.normalized(), 70.0)
+				_laser_predicted = Time.get_ticks_msec() / 1000.0
 
 
 ## Снимок: на машину 11 float (позиция, кватернион, скорость, метка тика
@@ -1626,6 +1645,42 @@ func _rx_pstate(xf: PackedFloat32Array) -> void:
 	car.net_apply_snapshot(pos,
 			Quaternion(xf[3], xf[4], xf[5], xf[6]).normalized(), vel,
 			maxf(xf[10], 0.0))
+
+
+## Клиент доложил: он протаранил машину другого ЖИВОГО игрока (протокол 11).
+## Сервер — арбитр: проверяет правдоподобие по СВОЕЙ картине (обе машины
+## рядом), зажимает величины теми же капами, что у рикошета, и пересылает
+## толчок владельцу жертвы (_rx_fx SHOVE) — тот применит его к своей
+## клиент-авторитетной машине. Без этого таран игрока игроком никого не
+## двигал: каждый экран считает только СВОЮ машину, а на экране жертвы
+## агрессор отстаёт на буфер и до неё не дотягивается.
+@rpc("any_peer", "call_remote", "reliable")
+func _rx_shove(victim_slot: int, dir: Vector3, closing: float,
+		spin: float) -> void:
+	if not Net.is_server():
+		return
+	var s: int = Net.slot_of_peer.get(multiplayer.get_remote_sender_id(), -1)
+	if s < 0 or s >= _cars.size() \
+			or victim_slot < 0 or victim_slot >= _cars.size() \
+			or victim_slot == s:
+		return
+	var victim := _cars[victim_slot]
+	# Жертва должна быть машиной живого игрока (боты толкаются здесь же,
+	# на сервере, обычным рикошетом) и рядом с агрессором ПО НАШЕЙ картине.
+	# Допуск 8 м — щедрый: у агрессора жертва отстаёт на ~0.35 c буфера.
+	if victim.net_role != Car.NetRole.PUPPET:
+		return
+	if not (dir.is_finite() and is_finite(closing) and is_finite(spin)):
+		return
+	if _cars[s].global_position.distance_to(victim.global_position) > 8.0:
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	var key := s * 100 + victim_slot
+	if now - float(_shove_sent.get(key, -1.0e12)) < 0.15:
+		return
+	_shove_sent[key] = now
+	net_forward_fx(victim, Car.NetFx.SHOVE,
+			[s, dir, clampf(closing, 0.0, 20.0), clampf(spin, -3.0, 3.0)])
 
 
 ## Клиент просит выстрел. Оружие по-прежнему применяет ТОЛЬКО сервер:
@@ -1959,6 +2014,25 @@ func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray) -> void:
 			c.show_effect_icon(kind, 0.25)
 
 
+## Клиент: мой рикошет о марионетку ЖИВОГО ИГРОКА (бота двигает сам сервер).
+## Его машину моя половина рикошета не сдвинет — она клиент-авторитетна;
+## докладываем серверу, тот проверит и перешлёт толчок владельцу (28.08:
+## «при столкновении не могу его сдвинуть или поддеть»).
+func net_report_shove(victim: Car, dir: Vector3, closing: float,
+		spin: float) -> void:
+	if not Net.is_client() or Net.my_slot < 0:
+		return
+	var v := _cars.find(victim)
+	if v < 0 or v >= _slot_taken.size() or not _slot_taken[v]:
+		return
+	# Не чаще, чем раз в 0.15 c на жертву: контакт может мигать серией.
+	var now := Time.get_ticks_msec() / 1000.0
+	if now - float(_shove_sent.get(v, -1.0e12)) < 0.15:
+		return
+	_shove_sent[v] = now
+	_rx_shove.rpc_id(1, v, dir, closing, spin)
+
+
 ## Сервер: переслать эффект оружия владельцу машины (зовёт Car._forward_fx).
 ## Машина живого игрока клиент-авторитетна — физику эффекта применит он.
 func net_forward_fx(car: Car, kind: int, args: Array) -> void:
@@ -1994,6 +2068,12 @@ func _rx_fx(kind: int, args: Array) -> void:
 		Car.NetFx.SLOW:
 			if args.size() >= 1:
 				_car.apply_speed_cut(args[0])
+		Car.NetFx.SHOVE:
+			if args.size() >= 4:
+				var a := int(args[0])
+				_car.apply_net_shove(
+						_cars[a] if a >= 0 and a < _cars.size() else null,
+						args[1], args[2], args[3])
 
 
 ## Живых игроков на все слоты не нашлось — свободные забрали боты. Лобби
@@ -2160,6 +2240,11 @@ func _mem_note() -> String:
 @rpc("authority", "call_remote", "reliable")
 func _rx_weapon_fx(idx: int, kind: int, pos: Vector3, dir: Vector3) -> void:
 	if idx < 0 or idx >= _cars.size():
+		return
+	# Эхо СВОЕГО лазера: луч уже нарисован в момент нажатия (_client_tick),
+	# второй — с задержкой на пинг — рисовался бы поверх и «двоил» выстрел.
+	if kind == Weapons.LASER and idx == _my_index() \
+			and Time.get_ticks_msec() / 1000.0 - _laser_predicted < 1.0:
 		return
 	_spawn_weapon_visual(kind, pos, dir)
 

@@ -88,7 +88,7 @@ var net_role := NetRole.LOCAL
 var net_fire := false           # сервер: клиент просил выстрел (гасится сразу)
 ## Эффекты оружия, пересылаемые сервером владельцу машины (Main._rx_fx):
 ## физику эффекта (толчок, разворот, телепорт) применяет клиент-владелец.
-enum NetFx { DESTROY, BLAST, FREEZE, OIL, BOOST, SLOW }
+enum NetFx { DESTROY, BLAST, FREEZE, OIL, BOOST, SLOW, SHOVE }
 var has_marker := false         # над машиной висит стрелка-указатель
 ## Отметка машины на оси трассы, м. Считается с оглядкой на предыдущую
 ## (TrackBuilder.closest_offset_near): улетевшая за ограждение машина
@@ -107,6 +107,16 @@ var _snap_vel := Vector3.ZERO
 var _snap_age := 0.0
 var _snap_seen := false
 var _snap_stamp := -1.0   # тик ЧАСОВ АВТОРА состояния (сервер/владелец)
+# Мои недавние ЛОКАЛЬНЫЕ рикошеты о марионеток: instance id -> ticks_msec.
+# Приехавший следом толчок-событие (_rx_fx SHOVE) о том же контакте
+# отбрасывается — иначе при тёрке бок-о-бок машину било бы дважды (свой
+# рикошет + событие соперника).
+var _touch_mute := {}
+# История позиций на СЕРВЕРЕ (~0.7 c, кадр физики): по ней лазер игрока
+# отматывает цели назад — стрелявший целится в картину, отстающую на
+# буфер воспроизведения (~0.35 c) и полёт пакета, и без отмотки «попал на
+# экране — сервер промахнулся». Заполняется только на сервере.
+var _pos_hist: Array[Vector3] = []
 # Буфер снимков КЛИЕНТСКОЙ марионетки (см. _follow_buffered): каждый снимок
 # получает время на СИНТЕТИЧЕСКОЙ шкале (+1/60 к прошлому) — пачка,
 # слипшаяся в канале, раскладывается обратно в ритм отправки сервера.
@@ -486,6 +496,12 @@ func _physics_process(delta: float) -> void:
 	if race != null and race.has_method("_wd_mark"):
 		race._wd_mark("машина")
 	sync_track_offset()
+	# История позиций для отмотки лазера (см. past_position). До ранних
+	# выходов: пишется и марионеткам, и ботам. 44 кадра ≈ 0.7 c.
+	if Net.is_server():
+		_pos_hist.push_back(global_position)
+		if _pos_hist.size() > 44:
+			_pos_hist.pop_front()
 	# Пара положений тела для визуальной интерполяции (см. _process). Ведём
 	# её для ВСЕХ машин, а не только для марионеток: тело шагает 60 раз в
 	# секунду, а кадры рендера идут своим темпом, и на равных частотах эти
@@ -865,6 +881,20 @@ func _bounce_off_cars() -> void:
 		var closing := minf((other_vel - linear_velocity).dot(away), 20.0)
 		if closing > 0.5:
 			apply_central_impulse(away * closing * 0.4 * mass)
+			if other.net_role == NetRole.PUPPET:
+				# Помечаем контакт: если соперник пришлёт толчок-событие об
+				# этом же касании, apply_net_shove его отбросит как дубль.
+				_touch_mute[id] = float(Time.get_ticks_msec())
+				# А машину ЖИВОГО ИГРОКА моя половина рикошета не сдвинет —
+				# она клиент-авторитетна. Отправляем ЕМУ толчок через сервер:
+				# все величины — с его стороны той же формулы (dir от меня к
+				# нему, темп сближения симметричен, закрутка — его плечо).
+				if net_role == NetRole.OWNED and race != null \
+						and race.has_method("net_report_shove"):
+					var rel_v := (linear_velocity - other_vel).limit_length(15.0)
+					var lever_v := away * minf(dist * 0.5, 1.5)
+					var spin_v := lever_v.cross(rel_v).y * bump_spin
+					race.net_report_shove(other, -away, closing, spin_v)
 			# Искры в точке удара. Обе машины видят один и тот же контакт —
 			# спавнит только одна из пары (меньший instance id), не обе.
 			if closing > 2.0 and get_instance_id() < id:
@@ -890,6 +920,46 @@ func _bounce_off_cars() -> void:
 			# Без окна руление в _drive съело бы закрутку за пару кадров.
 			_bump_spin_time = 0.6
 	_touch_cars = now
+
+
+## Где машина была age секунд назад (по серверной истории _pos_hist).
+## Нет истории — текущая позиция.
+func past_position(age: float) -> Vector3:
+	if _pos_hist.is_empty():
+		return global_position
+	var back := clampi(int(round(age * 60.0)), 0, _pos_hist.size() - 1)
+	return _pos_hist[_pos_hist.size() - 1 - back]
+
+
+## Толчок от машины ЖИВОГО ИГРОКА, доставленный сервером (_rx_fx SHOVE).
+## Свой рикошет соперник о мою марионетку считает у себя, но МОЮ машину
+## подвинуть не может — она клиент-авторитетна: без события таран игрока
+## игроком «не сдвигал и не поддевал» (жалоба 28.08). dir — куда толкать
+## (от агрессора ко мне), closing — темп сближения (как в рикошете),
+## spin — закрутка. Все величины считает агрессор ПО СВОЕЙ картине —
+## именно её он и видел в момент удара.
+func apply_net_shove(attacker: Car, dir: Vector3, closing: float,
+		spin: float) -> void:
+	if not alive or is_ghost():
+		return
+	# Этот контакт я уже отработал сам (тёрка бок-о-бок видна на обоих
+	# экранах): событие — дубль, пропускаем.
+	if attacker != null:
+		var t: float = _touch_mute.get(attacker.get_instance_id(), -1.0e12)
+		if Time.get_ticks_msec() - t < 400.0:
+			return
+	dir.y = 0.0
+	if not dir.is_finite() or dir.length() < 0.5:
+		return
+	dir = dir.normalized()
+	# Каппы те же, что у собственного рикошета: сближение ≤ 20 (толчок
+	# ≤ 8 м/с), закрутка в пределах ±3.
+	_ext_push_time = 0.3
+	apply_central_impulse(dir * clampf(closing, 0.0, 20.0) * 0.4 * mass)
+	if absf(spin) > 0.15:
+		angular_velocity.y = clampf(
+				angular_velocity.y + clampf(spin, -3.0, 3.0), -3.0, 3.0)
+		_bump_spin_time = 0.6
 
 
 ## Зазор между осевыми отрезками двух кузовов в плане (капсулы): 0 —
@@ -1846,13 +1916,20 @@ func _rival_is_ahead(other: Car) -> bool:
 func _use_laser(fwd: Vector3) -> void:
 	const RANGE := 70.0
 	const HALF_WIDTH := 1.6
+	# Отмотка целей для выстрела ЖИВОГО ИГРОКА (на сервере его машина —
+	# марионетка): стрелявший целился в картину своего экрана, где соперник
+	# отстаёт на буфер воспроизведения (~0.35 c, Car.BUF_DELAY) и полёт
+	# пакета. Сервер меряет попадание по позициям НА ТОТ МОМЕНТ (история
+	# _pos_hist) — «попал в то, что видел». Боты и оффлайн стреляют по
+	# текущему миру: их картина и есть правда.
+	var lag := 0.4 if Net.is_server() and net_role == NetRole.PUPPET else 0.0
 	var from := global_position + Vector3.UP * 0.5
 	LaserFx.spawn(get_parent(), from, fwd, RANGE)
 	for node in get_tree().get_nodes_in_group("cars"):
 		var other := node as Car
 		if other == self or not other.alive or other.is_ghost():
 			continue
-		var to := other.global_position - global_position
+		var to := other.past_position(lag) - global_position
 		to.y = 0.0
 		var along := to.dot(fwd)
 		if along < 0.0 or along > RANGE:

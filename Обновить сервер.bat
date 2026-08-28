@@ -20,7 +20,7 @@ if errorlevel 1 goto fail
 
 echo.
 rem The number below must match Net.PROTOCOL in the code you just uploaded.
-echo === DONE. Server updated. Expected above: 'active' and 'PROTOCOL := 10'.
+echo === DONE. Server updated. Expected above: 'active' and 'PROTOCOL := 11'.
 pause
 exit /b 0
 
