@@ -96,6 +96,29 @@ var _shove_sent := {}
 # и номер нашего кадра на прошлом приходе.
 var _srv_stamp_prev := -1.0
 var _gap_frames_prev := 0
+# Замер потерь по меткам (включают стенды): длина пропажи -> сколько раз.
+var _loss_probe := false
+var _loss_prev := -1.0
+var _loss_hist := {}
+var _loss_total := 0
+var _loss_got := 0
+
+
+## Отчёт замера потерь: сколько снимков пропало и КАКИМИ СЕРИЯМИ. Серии по
+## 1-3 лечатся избыточностью (прошлые состояния в том же пакете), длинные —
+## только буфером.
+func net_loss_report() -> String:
+	if _loss_got <= 0:
+		return "нет данных"
+	var keys := _loss_hist.keys()
+	keys.sort()
+	var parts := PackedStringArray()
+	for k: int in keys:
+		parts.append("%d:%d" % [k, _loss_hist[k]])
+	return "дошло %d, пропало %d (%.1f%%); серии пропаж %s" % [
+			_loss_got, _loss_total,
+			100.0 * float(_loss_total) / float(_loss_got + _loss_total),
+			" ".join(parts)]
 # Когда мы сами нарисовали свой лазер, не дожидаясь сервера (см.
 # _client_tick): эхо _rx_weapon_fx об этом же выстреле рисовать не надо.
 var _laser_predicted := -10.0
@@ -2029,13 +2052,35 @@ func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray) -> void:
 		# разные минуты — фиксированные 0.35 c платили за худший случай всегда.
 		if Net.is_client():
 			Car.net_note_gap(gap)
+		# ЗАМЕР ПРИРОДЫ ПОТЕРЬ: сколько снимков подряд не дошло. Метка бота —
+		# часы сервера, поэтому разрыв меток и есть число пропавших. От этого
+		# распределения зависит, поможет ли избыточность (лечит потери) или
+		# нужен только буфер (лечит опоздания).
+		if _loss_probe:
+			var sv := -1.0
+			for i in _cars.size():
+				var lo := i * 11
+				if lo + 10 >= xf.size():
+					break
+				if i < _slot_taken.size() and not _slot_taken[i]:
+					sv = xf[lo + 10]
+					break
+			if sv >= 0.0:
+				if _loss_prev >= 0.0:
+					var miss := int(sv - _loss_prev) - 1
+					if miss > 0:
+						_loss_hist[miss] = int(_loss_hist.get(miss, 0)) + 1
+						_loss_total += miss
+					_loss_got += 1
+				_loss_prev = sv
 		if gap > 0.1:
 			_state_gaps_big += 1
 			var ticks := -1
 			if srv >= 0.0 and _srv_stamp_prev >= 0.0:
 				ticks = int(srv - _srv_stamp_prev)
-			print("[gap] снимки не шли %d мс (t=%.1f c): тиков сервера %d, "
-					% [int(gap * 1000.0), now, ticks]
+			print("[gap] снимки не шли %d мс (часы %s): тиков сервера %d, "
+					% [int(gap * 1000.0),
+					Time.get_time_string_from_system(), ticks]
 					+ "наших кадров %d"
 					% int(Engine.get_process_frames() - _gap_frames_prev))
 		if srv >= 0.0:

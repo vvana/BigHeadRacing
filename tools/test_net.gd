@@ -81,6 +81,7 @@ func _ready() -> void:
 	print("  сервер: %s:%d" % [addr, Net.PORT])
 	# remember=false: иначе каждый прогон стенда затирал бы игроку
 	# сохранённый адрес VDS в user://net.cfg своим 127.0.0.1.
+	_main._loss_probe = true   # считать пропажи снимков по меткам
 	Net.join_server(addr, Net.PORT, false)
 
 
@@ -185,6 +186,9 @@ func _report_arrivals() -> void:
 	print("  поток снимков: %.1f/с (заявлено %.0f), средний интервал %.1f мс, "
 			% [1.0 / mean, snap_hz, mean * 1000.0]
 			+ "худшая пауза %.0f мс" % [_main._state_gap_max * 1000.0])
+	print("  ПОТЕРИ: %s" % _main.net_loss_report())
+	print("  ОТСТАВАНИЕ: среднее %.0f мс, сейчас %.0f мс"
+			% [Car.buf_avg() * 1000.0, Car.net_buf_delay * 1000.0])
 
 
 ## Счётчики потока снимков ведёт сам Main._rx_state (опрос отсюда занижал

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_teststretch"]
+
+[ext_resource type="Script" path="res://tools/test_stretch.gd" id="1_testst"]
+
+[node name="TestStretch" type="Node3D"]
+script = ExtResource("1_testst")
