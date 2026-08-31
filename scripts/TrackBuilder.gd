@@ -34,7 +34,8 @@ const GROUND_DROP := 1.2
 const KIND_GRASS := "grass"   # классика: трава, ограждения, горка
 const KIND_SAND := "sand"     # пустыня: песок, БЕЗ ограждений, съезд разрешён
 const KIND_NEON := "neon"     # ночной город: тёмный асфальт, неон на стенах
-const KINDS: Array[String] = [KIND_GRASS, KIND_SAND, KIND_NEON]
+const KIND_SPACE := "space"   # космос: трасса среди звёзд, планеты вокруг
+const KINDS: Array[String] = [KIND_GRASS, KIND_SAND, KIND_NEON, KIND_SPACE]
 # Насколько дальше кромки полотна пускает автовозврат на песке: съезд на
 # песок — легальная (медленная) езда, возвращаем только уехавших в дюны.
 const SAND_OFFTRACK_MARGIN := 12.0
@@ -79,8 +80,9 @@ func _ready() -> void:
 	_build_road()
 	if has_walls:
 		_build_walls()
-		# Неоновые трубки по верху ограждений — фирменный вид ночного города.
-		if kind == KIND_NEON and not _headless_server():
+		# Светящиеся трубки по верху ограждений: фирменный вид ночного
+		# города, у космической трассы — свои цвета (см. _build_neon_strips).
+		if (kind == KIND_NEON or kind == KIND_SPACE) and not _headless_server():
 			_build_neon_strips()
 	_build_ramps()
 	_build_boost_pads()
@@ -244,6 +246,30 @@ const SEGMENTS_NEON: Array = [
 	["A", 32.0, 120.0, 10.5],    # 13 размашистый выход на стартовый проспект
 ]
 
+## КОСМОС (kind == KIND_SPACE): «орбитальное шоссе» — две длинные прямые
+## (~110 и ~117 м) и размашистые дуги, одна тесная связка. Плоско,
+## ограждения ЕСТЬ (за ними пустота со звёздами — падать некуда), по верху
+## стен светящиеся полосы (см. _build_neon_strips, у космоса свои цвета).
+## Длина 746 м — сопоставима с классикой (727). Конфигурация подобрана
+## численным перебором (как песок и неон): замыкание точное, свободные
+## прямые 109.5 и 117.0 м, витки не сближаются ближе 39 м, габарит
+## 244×205 м. Сумма углов: правые 60+90+90+125+130 = 495,
+## левые 50+85 = 135 → 495−135 = 360. ✓
+const SEGMENTS_SPACE: Array = [
+	["S", -1.0, 11.0],           # 0  СТАРТОВАЯ ПРЯМАЯ (свободная, ~110 м)
+	["A", 48.0, 60.0, 10.0],     # 1  быстрый правый
+	["S", 34.0, 9.0],            # 2  короткая прямая
+	["A", 26.0, 90.0, 7.5],      # 3  прямоугольный правый
+	["S", -1.0, 10.5],           # 4  ДЛИННАЯ ПРЯМАЯ (свободная, ~117 м)
+	["A", 30.0, -50.0, 9.0],     # 5  левый
+	["A", 44.0, 90.0, 11.0],     # 6  широкий правый
+	["S", 46.0, 9.0],            # 7  прямая к тесной связке
+	["A", 23.0, 125.0, 6.5],     # 8  ТЕСНАЯ СВЯЗКА — самое узкое место
+	["S", 38.0, 9.5],            # 9  выход
+	["A", 38.0, -85.0, 10.0],    # 10 длинный левый
+	["A", 48.0, 130.0, 11.0],    # 11 размашистый выход на стартовую прямую
+]
+
 const TURTLE_STEP := 3.0   # шаг опорных точек вдоль трассы, м
 
 
@@ -255,12 +281,14 @@ static func segments_for(kind_: String) -> Array:
 			return SEGMENTS_SAND
 		KIND_NEON:
 			return SEGMENTS_NEON
+		KIND_SPACE:
+			return SEGMENTS_SPACE
 		_:
 			return SEGMENTS
 
 
-## Высота оси для ЭТОЙ трассы: классика — профиль с горкой, песок и ночной
-## город — плоско (улицы; рельеф только на земле за полотном).
+## Высота оси для ЭТОЙ трассы: классика — профиль с горкой, остальные
+## (песок, ночной город, космос) — плоско; рельеф только на земле за полотном.
 func _height_at(t: float) -> float:
 	return _profile_height(t) if kind == KIND_GRASS else 0.0
 
@@ -491,6 +519,11 @@ func _ground_height(x: float, z: float) -> float:
 	if kind == KIND_NEON:
 		# Город: пустыри почти плоские — на них стоят здания (TrackDecor).
 		return base - away * 0.03 + hills * 0.15 * blend
+	if kind == KIND_SPACE:
+		# Космос: за обочиной «пустота» уходит вниз — трасса читается как
+		# парящая платформа (земля есть, но она чёрная в звёздах и ниже;
+		# страховка возврата работает как всюду).
+		return base - away * 0.35 + hills * 0.3 * blend
 	return base - away * 0.28 + hills * blend
 
 
@@ -523,8 +556,10 @@ func _build_ground() -> void:
 			var c := Vector3(x1, h[ix + 1][iz + 1], z1)
 			var d := Vector3(x0, h[ix][iz + 1], z1)
 			for v in [a, b, c, a, c, d]:
-				# Планарная UV по миру: тайл травы 14 м.
-				st.set_uv(Vector2(v.x, v.z) * 0.07)
+				# Планарная UV по миру: тайл травы 14 м; у космоса тайл
+				# звёздного поля 50 м — повтор звёзд не бросается в глаза.
+				st.set_uv(Vector2(v.x, v.z)
+						* (0.02 if kind == KIND_SPACE else 0.07))
 				# Низкочастотная вариация яркости по вершинам ломает
 				# видимую повторяемость тайла (пятна «одинаково
 				# расположенные» бросались в глаза).
@@ -552,6 +587,12 @@ func _build_ground() -> void:
 		mat.albedo_texture = load(
 				"res://assets/models/track_env/cartoon/textures/gravel.png")
 		mat.albedo_color = Color(0.30, 0.33, 0.44)
+	elif kind == KIND_SPACE:
+		# Космос: земля — сама «пустота», чёрно-синее поле со звёздами и
+		# пятнами туманностей (текстура печётся кодом). UNSHADED — звёзды
+		# видны независимо от тусклого космического освещения.
+		mat.albedo_texture = _space_ground_texture()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	else:
 		# Зелёные поля — трава из Cartoon Tracks Pack (пятна текстуры
 		# смягчены при конвертации, см. ПРОГРЕСС.md).
@@ -568,6 +609,53 @@ func _build_ground() -> void:
 	ground.add_child(col)
 
 	add_child(ground)
+
+
+## Звёздное поле для земли космической трассы: чёрно-синяя пустота, пятна
+## туманностей и россыпь звёзд. Тайлится (края без швов — звёзды не ставим
+## вплотную к кромке, туманности гаснут к краям блоба). Зерно фиксировано —
+## трасса всегда одинаковая.
+static func _space_ground_texture() -> ImageTexture:
+	const S := 512
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20260831
+	var img := Image.create(S, S, false, Image.FORMAT_RGB8)
+	img.fill(Color(0.012, 0.012, 0.035))
+	# Туманности: мягкие радиальные пятна, складываются с фоном.
+	for _n in 5:
+		var cx := rng.randf_range(60, S - 60)
+		var cy := rng.randf_range(60, S - 60)
+		var r := rng.randf_range(45.0, 90.0)
+		var tint := Color(0.10, 0.03, 0.16) if rng.randf() < 0.5 \
+				else Color(0.03, 0.07, 0.16)
+		for py in range(maxi(0, int(cy - r)), mini(S, int(cy + r))):
+			for px in range(maxi(0, int(cx - r)), mini(S, int(cx + r))):
+				var d := Vector2(px - cx, py - cy).length() / r
+				if d >= 1.0:
+					continue
+				var k := (1.0 - d) * (1.0 - d)
+				var c := img.get_pixel(px, py)
+				img.set_pixel(px, py, Color(
+						c.r + tint.r * k, c.g + tint.g * k, c.b + tint.b * k))
+	# Звёзды: белые, голубые и тёплые, часть — «крупные» крестики 3 px.
+	for _i in 420:
+		var x := rng.randi_range(2, S - 3)
+		var y := rng.randi_range(2, S - 3)
+		var b := rng.randf_range(0.35, 1.0)
+		var c := Color(b, b, b)
+		var roll := rng.randf()
+		if roll < 0.2:
+			c = Color(b * 0.7, b * 0.85, b)        # голубоватая
+		elif roll < 0.35:
+			c = Color(b, b * 0.9, b * 0.65)        # тёплая
+		img.set_pixel(x, y, c)
+		if rng.randf() < 0.12:
+			var half := c * 0.55
+			img.set_pixel(x + 1, y, half)
+			img.set_pixel(x - 1, y, half)
+			img.set_pixel(x, y + 1, half)
+			img.set_pixel(x, y - 1, half)
+	return ImageTexture.create_from_image(img)
 
 
 ## Полотно трассы: непрерывная лента по кривой с собственной коллизией —
@@ -604,6 +692,10 @@ func _build_road() -> void:
 			mat.albedo_color = Color(0.64, 0.53, 0.36)
 		KIND_NEON:
 			mat.albedo_color = Color(0.09, 0.09, 0.12)
+		KIND_SPACE:
+			# Космос: сине-фиолетовое «покрытие станции», чуть светлее
+			# пустоты вокруг — полотно читается на фоне звёзд.
+			mat.albedo_color = Color(0.13, 0.13, 0.22)
 		_:
 			mat.albedo_color = Color(0.18, 0.18, 0.2)
 	road.material_override = mat
@@ -666,10 +758,15 @@ func _build_walls() -> void:
 	var mesh := MeshInstance3D.new()
 	mesh.mesh = st.commit()
 	var mat := StandardMaterial3D.new()
-	# Классика — красные борта; ночной город — тёмный бетон (неон поверху
-	# добавляет _build_neon_strips).
-	mat.albedo_color = Color(0.10, 0.10, 0.16) if kind == KIND_NEON \
-			else Color(0.75, 0.2, 0.15)
+	# Классика — красные борта; ночной город и космос — тёмные (светящиеся
+	# полосы поверху добавляет _build_neon_strips).
+	match kind:
+		KIND_NEON:
+			mat.albedo_color = Color(0.10, 0.10, 0.16)
+		KIND_SPACE:
+			mat.albedo_color = Color(0.14, 0.12, 0.24)
+		_:
+			mat.albedo_color = Color(0.75, 0.2, 0.15)
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mesh.material_override = mat
 	body.add_child(mesh)
@@ -692,6 +789,10 @@ func _build_walls() -> void:
 ## зрением, как цветовая подсказка «куда поворачивать».
 func _build_neon_strips() -> void:
 	var colors := {-1.0: Color(0.15, 0.9, 1.0), 1.0: Color(1.0, 0.2, 0.85)}
+	if kind == KIND_SPACE:
+		# Космос: зелёный внутренний борт, фиолетовый внешний — своя пара
+		# цветов, чтобы трасса не путалась с ночным городом.
+		colors = {-1.0: Color(0.3, 1.0, 0.55), 1.0: Color(0.65, 0.4, 1.0)}
 	const STRIP_H := 0.18
 	var half_t := WALL_THICKNESS * 0.5 + 0.06
 	for side: float in [-1.0, 1.0]:
@@ -743,8 +844,8 @@ func _ramp_ratios() -> Array:
 func _build_ramps() -> void:
 	var ramp_mat := StandardMaterial3D.new()
 	ramp_mat.albedo_color = Color(0.9, 0.75, 0.1)
-	if kind == KIND_NEON:
-		# Ночью жёлтый трамплин без подсветки — чёрный кирпич: даём эмиссию.
+	if kind == KIND_NEON or kind == KIND_SPACE:
+		# В темноте жёлтый трамплин без подсветки — чёрный кирпич: эмиссия.
 		ramp_mat.emission_enabled = true
 		ramp_mat.emission = Color(1.0, 0.7, 0.15)
 		ramp_mat.emission_energy_multiplier = 1.1

@@ -83,6 +83,11 @@ var _freeze_time := 0.0         # замедление от ледышки (де
 var _boost_time := 0.0          # ускорение
 var _slip_time := 0.0           # занос от масляного пятна
 var _scramble_time := 0.0       # глушилка: лево и право поменяны местами
+# Лазер бьёт всё время жизни луча (см. _use_laser): остаток времени и
+# отмотка целей, замеренная в момент выстрела.
+const LASER_RANGE := 70.0
+var _laser_left := 0.0
+var _laser_lag := 0.0
 # «Усталость» от магнита: каждый рывок в окне _magnet_worn_time режет силу
 # следующего (жалоба 31.08: «несколько машин применили — выкидывает с
 # трассы с огромной силой»). Окно истекло — счёт с нуля.
@@ -246,9 +251,10 @@ func _ready() -> void:
 	_build_smoke()
 	_build_boost_flame()
 	_build_status_icon()
-	# Фары — только на ночной городской трассе (track ставит Main ДО
-	# add_child, как и для пыли на песке).
-	if track != null and track.kind == TrackBuilder.KIND_NEON:
+	# Фары — только на тёмных трассах: ночной город и космос (track
+	# ставит Main ДО add_child, как и для пыли на песке).
+	if track != null and (track.kind == TrackBuilder.KIND_NEON
+			or track.kind == TrackBuilder.KIND_SPACE):
 		_build_headlights()
 
 
@@ -889,6 +895,19 @@ func _tick_effects(delta: float) -> void:
 	_boost_time = maxf(0.0, _boost_time - delta)
 	_slip_time = maxf(0.0, _slip_time - delta)
 	_scramble_time = maxf(0.0, _scramble_time - delta)
+	# Лазер жжёт, пока виден луч: коридор перепроверяется каждый тик от
+	# ТЕКУЩЕГО носа (луч едет со стрелявшим — LaserFx._process делает то же
+	# с картинкой). Взводится только там, где применяли оружие (сервер или
+	# оффлайн), у марионетки на клиенте _laser_left всегда 0.
+	if _laser_left > 0.0:
+		_laser_left -= delta
+		if alive:
+			var lfwd := -global_transform.basis.z
+			lfwd.y = 0.0
+			if lfwd.length_squared() > 1e-6:
+				_laser_sweep(lfwd.normalized())
+		else:
+			_laser_left = 0.0
 	_magnet_worn_time = maxf(0.0, _magnet_worn_time - delta)
 	if _magnet_worn_time <= 0.0:
 		_magnet_worn = 0.0
@@ -2334,27 +2353,37 @@ func _rival_is_ahead(other: Car) -> bool:
 	return fwd.dot(other.global_position - global_position) > 0.0
 
 
-## Лазер: один луч вперёд, уничтожает ВСЕ машины на пути.
+## Лазер: луч вперёд, уничтожает ВСЕ машины на пути. Урон действует ВСЁ
+## время жизни луча (LaserFx.LIFETIME, ~полсекунды), а не один кадр
+## выстрела: луч едет с носом стрелявшего, и машина, ВЪЕХАВШАЯ в видимый
+## луч, раньше оставалась цела — «проезжают сквозь лазер не уничтожаясь»
+## (жалоба 31.08). Проверка повторяется каждый тик в _tick_effects.
 func _use_laser(fwd: Vector3) -> void:
-	const RANGE := 70.0
-	const HALF_WIDTH := 1.6
 	# Отмотка целей для выстрела ЖИВОГО ИГРОКА (на сервере его машина —
 	# марионетка): стрелявший целился в картину своего экрана, где соперник
 	# отстаёт на буфер воспроизведения (~0.35 c, Car.BUF_DELAY) и полёт
 	# пакета. Сервер меряет попадание по позициям НА ТОТ МОМЕНТ (история
 	# _pos_hist) — «попал в то, что видел». Боты и оффлайн стреляют по
 	# текущему миру: их картина и есть правда.
-	var lag := net_shot_lag()
+	_laser_lag = net_shot_lag()
+	_laser_left = LaserFx.LIFETIME
 	var from := global_position + Vector3.UP * 0.5
-	LaserFx.spawn(get_parent(), from, fwd, RANGE, self)
+	LaserFx.spawn(get_parent(), from, fwd, LASER_RANGE, self)
+	_laser_sweep(fwd)
+
+
+## Один тик урона лазера: все живые машины в коридоре луча гибнут.
+## Жертва после destroy — «призрак», повторные тики её не трогают.
+func _laser_sweep(fwd: Vector3) -> void:
+	const HALF_WIDTH := 1.6
 	for node in get_tree().get_nodes_in_group("cars"):
 		var other := node as Car
 		if other == self or not other.alive or other.is_ghost():
 			continue
-		var to := other.past_position(lag) - global_position
+		var to := other.past_position(_laser_lag) - global_position
 		to.y = 0.0
 		var along := to.dot(fwd)
-		if along < 0.0 or along > RANGE:
+		if along < 0.0 or along > LASER_RANGE:
 			continue
 		var side := (to - fwd * along).length()
 		if side <= HALF_WIDTH:
@@ -2407,6 +2436,9 @@ func destroy() -> void:
 	_slip_time = 0.0
 	_boost_time = 0.0
 	_scramble_time = 0.0
+	# Свой лазер гаснет: машину переставило к месту появления, и добивать
+	# соперников «хвостом» луча с новой точки было бы нечестно.
+	_laser_left = 0.0
 	_start_ghost()
 	var _wd := Time.get_ticks_msec() - _wd0
 	if _wd > 100:

@@ -136,9 +136,11 @@ func _physics_process(_d: float) -> void:
 			attacker.weapon = Weapons.BOOST
 			attacker.use_weapon()
 			_ok["буст"] = attacker._boost_time > 1.0
-			# Фаза МАГНИТ: жертва 1 в 8 м впереди, стоит.
-			_place(v1, _base + _tan * 8.0, _tan)
 		460:
+			# Фаза МАГНИТ: жертва 1 в 8 м впереди, стоит. Ставим её ЗДЕСЬ,
+			# а не на 440: лазер с 31.08 жжёт всё время жизни луча (0.55 c,
+			# до кадра ~453) — на 440 жертва встала бы в ещё живой луч.
+			_place(v1, _base + _tan * 8.0, _tan)
 			attacker.weapon = Weapons.MAGNET
 			attacker.use_weapon()
 		470:
@@ -219,15 +221,18 @@ func _physics_process(_d: float) -> void:
 			if beam2:
 				print("  [луч] сдвинулся на %.1f м вслед за машиной"
 						% (beam2.global_position - _beam_pos).dot(_tan))
-		610:
+		636:
 			# Фаза ГЛУШИЛКА: звуковая волна по жертве в 15 м впереди.
+			# Не раньше: луч с кадра 600 жжёт до ~633 (лазер с 31.08 бьёт
+			# всё время жизни луча) — жертва в его коридоре уехала бы в
+			# призраки, а волна призрака не берёт.
 			_place(attacker, _base, _tan)
 			_place(v2, _base + _tan * 15.0, _tan)
 			attacker.weapon = Weapons.SCRAMBLE
 			attacker.use_weapon()
-		640:
+		668:
 			_ok["авиаудар отработал"] = _find_node(Airstrike) == null
-			# Волна летит 15 м на 38 м/с — к этому кадру уже долетела.
+			# Волна летит 15 м на 50 м/с — к этому кадру уже долетела.
 			_ok["глушилка сбила управление"] = v2.scramble_left() > 4.0
 			# Фаза БОКС: пустые руки + бокс на пути.
 			attacker.weapon = -1

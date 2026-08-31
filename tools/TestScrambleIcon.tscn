@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testscricon"]
+
+[ext_resource type="Script" path="res://tools/test_scramble_icon.gd" id="1_scricon"]
+
+[node name="TestScrambleIcon" type="Node3D"]
+script = ExtResource("1_scricon")

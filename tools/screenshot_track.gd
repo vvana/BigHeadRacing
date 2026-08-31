@@ -1,6 +1,7 @@
 extends Node3D
 ## Служебный снимок трассы: грузит Main, снимает несколько ракурсов в PNG.
-## Запуск: godot --path . res://tools/ScreenshotTrack.tscn -- <папка_вывода>
+## Запуск: godot --path . res://tools/ScreenshotTrack.tscn -- <папка> [вид]
+## (вид — из TrackBuilder.KINDS: grass/sand/neon/space; без него — классика).
 
 var _main: Node3D
 var _cam: Camera3D
@@ -12,6 +13,8 @@ func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
 	if args.size() > 0:
 		_out = args[0]
+	if args.size() > 1 and TrackBuilder.KINDS.has(args[1]):
+		GameState.track_kind = args[1]
 	DirAccess.make_dir_recursive_absolute(_out)
 	_main = (load("res://scenes/Main.tscn") as PackedScene).instantiate()
 	add_child(_main)
@@ -88,4 +91,26 @@ func _run() -> void:
 	var cam := IsoCamera.new()
 	var p := start + fwd * 6.0
 	await _shot(p + Vector3(30, 38, 30), p, "gameplay.png", 30.0)
+	# Космос: дождаться комету (прилетают с 1.5 с) и снять её крупно.
+	if GameState.track_kind == TrackBuilder.KIND_SPACE:
+		var decor: Node3D = track.get_node("Decor")
+		var comet: Node3D = null
+		for _i in 600:
+			var found := decor.find_children("Comet*", "", false, false)
+			if not found.is_empty():
+				comet = found[0]
+				break
+			await get_tree().process_frame
+		if comet:
+			# Комета теперь ДАЛЁКИЙ росчерк: снимаем С ТРАССЫ в её сторону —
+			# как видит игрок. Целимся чуть мимо: по центру экрана висит
+			# отсчёт 3-2-1 и закрывал бы её.
+			await _shot(start + Vector3(0, 8, 0),
+					comet.global_position + Vector3(0, 25, 0), "comet.png")
+			# И крупно — проверить форму «белой полосы» (голова + росчерк).
+			var cpos := comet.global_position
+			var side_c := (cpos - start).normalized() \
+					.cross(Vector3.UP) * 55.0
+			await _shot(cpos + side_c + Vector3(0, 6, 0), cpos,
+					"comet_close.png")
 	get_tree().quit(0)

@@ -60,6 +60,9 @@ func setup(track: TrackBuilder, cars_ref: Array[Car]) -> void:
 	elif track.kind == TrackBuilder.KIND_NEON:
 		# Ночной город: кромки на карте в цвет неоновых трубок.
 		edge_color = Color(0.25, 0.95, 1.0, 0.85)
+	elif track.kind == TrackBuilder.KIND_SPACE:
+		# Космос: кромки в цвет фиолетовой полосы ограждения.
+		edge_color = Color(0.65, 0.45, 1.0, 0.85)
 	var s: Dictionary = track.plan_samples()
 	var pts: PackedVector2Array = s["points"]
 	var half: PackedFloat32Array = s["half"]

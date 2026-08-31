@@ -6,7 +6,10 @@ extends Node3D
 ## 3) боты играют: за 10 c мяч обязан уехать от центра (макс. смещение);
 ## 4) бонус, упавший на игрока, выдаёт ему оружие и исчезает (одноразовый),
 ##    а штатный дождь бонусов успевает запустить хотя бы один;
-## 5) таймер на нуле → матч окончен, управление выключено.
+## 5) мяч, перелетевший борт (лёг за ограждением в паре метров — раньше
+##    это была «мёртвая зона» и игра шла без мяча, жалоба 31.08),
+##    через ~2 c вбрасывается в центр;
+## 6) таймер на нуле → матч окончен, управление выключено.
 
 var _soccer: Node3D
 var _frame := 0
@@ -15,6 +18,7 @@ var _ok_build := false
 var _ok_goal := false
 var _ok_kickoff := false
 var _ok_drop := false
+var _ok_out := false
 
 
 func _ready() -> void:
@@ -70,6 +74,20 @@ func _physics_process(_delta: float) -> void:
 			_ok_drop = _ok_drop and gone
 			print("[soccer] бонус: оружие %d, куб исчез %s"
 					% [_soccer._car.weapon, str(gone)])
+		700:
+			# Мяч «перелетел борт»: лёг на газон в 3 м ЗА боковым ограждением.
+			# На старом коде он лежал там до конца матча (возврат срабатывал
+			# только за 6 м ЗА ареной).
+			ball.global_position = Vector3(0.0, SoccerBall.RADIUS + 0.1,
+					SoccerArena.HALF_WID + 3.0)
+			ball.linear_velocity = Vector3.ZERO
+		870:
+			# 2 c вне игры (120 кадров) прошли — мяч обязан вернуться в поле.
+			var bp := ball.global_position
+			_ok_out = absf(bp.z) <= SoccerArena.HALF_WID \
+					and absf(bp.x) <= SoccerArena.HALF_LEN
+			print("[soccer] вылет за борт: мяч в поле %s (%.1f, %.1f)"
+					% [str(_ok_out), bp.x, bp.z])
 		1020:
 			# Боты играли ~10 c — мяч не должен был стоять. Дальше — конец
 			# матча по таймеру.
@@ -83,13 +101,14 @@ func _physics_process(_delta: float) -> void:
 			var ai_ok := _max_disp > 5.0
 			var rain_ok: bool = _soccer._drops_spawned >= 1
 			var ok := _ok_build and _ok_goal and _ok_kickoff and ai_ok \
-					and _ok_drop and rain_ok and over and stopped
+					and _ok_drop and rain_ok and _ok_out and over and stopped
 			print("SOCCER TEST: %s (сцена=%s, гол=%s, кикофф=%s, "
 					% ["PASS" if ok else "FAIL", str(_ok_build),
 						str(_ok_goal), str(_ok_kickoff)]
 					+ "боты сдвинули мяч на %.1f м, бонус=%s, дождь=%d, "
 					% [_max_disp, str(_ok_drop), _soccer._drops_spawned]
-					+ "финал=%s, стоп=%s)" % [str(over), str(stopped)])
+					+ "вылет=%s, финал=%s, стоп=%s)"
+					% [str(_ok_out), str(over), str(stopped)])
 			get_tree().quit(0 if ok else 1)
 
 	# Макс. уход мяча от центра в окне игры ботов (фаза 3). Окно после

@@ -951,45 +951,56 @@ func _setup_environment() -> void:
 	# Ночной город (неон) — своё окружение: луна вместо солнца, тёмное
 	# небо с городским заревом у горизонта и glow, от которого светятся
 	# все эмиссивные материалы (трубки на стенах, окна зданий, вывески).
+	# Космос — звёздная панорама вместо градиентного неба, тот же glow.
 	var neon := _track_kind == TrackBuilder.KIND_NEON
+	var space := _track_kind == TrackBuilder.KIND_SPACE
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-55, -30, 0)
 	sun.shadow_enabled = true
 	if neon:
 		sun.light_energy = 0.25
 		sun.light_color = Color(0.65, 0.75, 1.0)   # холодный лунный свет
+	elif space:
+		sun.light_energy = 0.4
+		sun.light_color = Color(0.8, 0.85, 1.0)    # жёсткий свет далёкой звезды
 	else:
 		sun.light_energy = 1.2
 	add_child(sun)
 
 	var env := WorldEnvironment.new()
 	var e := Environment.new()
-	# Голубое градиентное небо (мультяшный день — под стать декору трассы);
-	# ночью — почти чёрный верх и багровое зарево города у горизонта.
-	var sky_mat := ProceduralSkyMaterial.new()
-	if neon:
-		sky_mat.sky_top_color = Color(0.01, 0.02, 0.06)
-		sky_mat.sky_horizon_color = Color(0.17, 0.07, 0.22)
-		sky_mat.ground_horizon_color = Color(0.17, 0.07, 0.22)
-		sky_mat.ground_bottom_color = Color(0.02, 0.02, 0.04)
-	else:
-		sky_mat.sky_top_color = Color(0.3, 0.55, 0.87)
-		sky_mat.sky_horizon_color = Color(0.74, 0.85, 0.95)
-		sky_mat.ground_horizon_color = Color(0.74, 0.85, 0.95)
-		# Низ скайбокса — в тон земли: трава или песок пустыни.
-		sky_mat.ground_bottom_color = Color(0.52, 0.44, 0.28) \
-				if _track_kind == TrackBuilder.KIND_SAND \
-				else Color(0.28, 0.4, 0.24)
-	sky_mat.sun_angle_max = 15.0
 	var sky := Sky.new()
-	sky.sky_material = sky_mat
+	if space:
+		# Космос: панорама звёздного неба, печётся кодом (см. _space_sky).
+		sky.sky_material = _space_sky()
+	else:
+		# Голубое градиентное небо (мультяшный день — под стать декору
+		# трассы); ночью — чёрный верх и багровое зарево у горизонта.
+		var sky_mat := ProceduralSkyMaterial.new()
+		if neon:
+			sky_mat.sky_top_color = Color(0.01, 0.02, 0.06)
+			sky_mat.sky_horizon_color = Color(0.17, 0.07, 0.22)
+			sky_mat.ground_horizon_color = Color(0.17, 0.07, 0.22)
+			sky_mat.ground_bottom_color = Color(0.02, 0.02, 0.04)
+		else:
+			sky_mat.sky_top_color = Color(0.3, 0.55, 0.87)
+			sky_mat.sky_horizon_color = Color(0.74, 0.85, 0.95)
+			sky_mat.ground_horizon_color = Color(0.74, 0.85, 0.95)
+			# Низ скайбокса — в тон земли: трава или песок пустыни.
+			sky_mat.ground_bottom_color = Color(0.52, 0.44, 0.28) \
+					if _track_kind == TrackBuilder.KIND_SAND \
+					else Color(0.28, 0.4, 0.24)
+		sky_mat.sun_angle_max = 15.0
+		sky.sky_material = sky_mat
 	e.background_mode = Environment.BG_SKY
 	e.sky = sky
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	if neon:
-		# Приподнятый синий ambient: ночь читается, но машины не тонут в
-		# черноте (аркада важнее реализма).
-		e.ambient_light_color = Color(0.38, 0.42, 0.62)
+	if neon or space:
+		# Приподнятый ambient: темнота читается, но машины не тонут в
+		# черноте (аркада важнее реализма). Glow зажигает всё эмиссивное:
+		# трубки на стенах, вывески, планеты, звёзды.
+		e.ambient_light_color = Color(0.38, 0.42, 0.62) if neon \
+				else Color(0.42, 0.44, 0.6)
 		e.ambient_light_energy = 0.55
 		e.glow_enabled = true
 		e.glow_intensity = 0.7
@@ -1000,6 +1011,71 @@ func _setup_environment() -> void:
 		e.ambient_light_energy = 0.8
 	env.environment = e
 	add_child(env)
+
+
+## Звёздная панорама космической трассы: тёмный сине-фиолетовый градиент,
+## полоса «млечного пути» по диагонали, туманности и ~900 звёзд. Печётся
+## один раз при старте заезда, зерно фиксировано.
+func _space_sky() -> PanoramaSkyMaterial:
+	const W := 1024
+	const H := 512
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20260901
+	var img := Image.create(W, H, false, Image.FORMAT_RGB8)
+	for py in H:
+		# Вертикальный градиент: у зенита чернее, к «низу» чуть синее.
+		var t := float(py) / H
+		var base := Color(0.008 + 0.02 * t, 0.008 + 0.02 * t, 0.03 + 0.05 * t)
+		for px in W:
+			img.set_pixel(px, py, base)
+	# Млечный путь: широкая полоса звёздной пыли волной через всю панораму.
+	for px in W:
+		var mid := H * 0.5 + sin(float(px) / W * TAU + 1.3) * H * 0.14
+		var half_w := H * 0.09
+		for py in range(maxi(0, int(mid - half_w)), mini(H, int(mid + half_w))):
+			var k := 1.0 - absf(py - mid) / half_w
+			k = k * k * 0.10
+			var c := img.get_pixel(px, py)
+			img.set_pixel(px, py,
+					Color(c.r + k * 0.9, c.g + k * 0.85, c.b + k))
+	# Туманности: несколько мягких цветных пятен.
+	for _n in 6:
+		var cx := rng.randf_range(0, W)
+		var cy := rng.randf_range(H * 0.2, H * 0.8)
+		var r := rng.randf_range(30.0, 70.0)
+		var tint := Color(0.12, 0.04, 0.18) if rng.randf() < 0.5 \
+				else Color(0.04, 0.09, 0.18)
+		for py in range(maxi(0, int(cy - r)), mini(H, int(cy + r))):
+			for px in range(int(cx - r), int(cx + r)):
+				var d := Vector2(px - cx, py - cy).length() / r
+				if d >= 1.0:
+					continue
+				var k := (1.0 - d) * (1.0 - d)
+				var wrapped := posmod(px, W)
+				var c := img.get_pixel(wrapped, py)
+				img.set_pixel(wrapped, py, Color(
+						c.r + tint.r * k, c.g + tint.g * k, c.b + tint.b * k))
+	# Звёзды.
+	for _i in 900:
+		var x := rng.randi_range(1, W - 2)
+		var y := rng.randi_range(1, H - 2)
+		var b := rng.randf_range(0.4, 1.0)
+		var c := Color(b, b, b)
+		var roll := rng.randf()
+		if roll < 0.2:
+			c = Color(b * 0.7, b * 0.85, b)
+		elif roll < 0.35:
+			c = Color(b, b * 0.9, b * 0.65)
+		img.set_pixel(x, y, c)
+		if rng.randf() < 0.1:
+			var half := c * 0.5
+			img.set_pixel(x + 1, y, half)
+			img.set_pixel(x - 1, y, half)
+			img.set_pixel(x, y + 1, half)
+			img.set_pixel(x, y - 1, half)
+	var mat := PanoramaSkyMaterial.new()
+	mat.panorama = ImageTexture.create_from_image(img)
+	return mat
 
 
 ## Запасной визуал: корпус + кабина из BoxMesh.

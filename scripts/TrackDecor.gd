@@ -41,6 +41,16 @@ func build(track: TrackBuilder) -> void:
 	_track = track
 	name = "Decor"
 	track.add_child(self)
+	set_process(false)   # _process нужен только кометам космоса
+	# КОСМОС: никаких земных строений (просьба 31.08) — ни стартовой зоны
+	# с аркой и башней, ни трибун, ни обочинных пропсов, ни щитов у
+	# поворотов. Остаются разметка на полотне (решётка, стрелки, осевая)
+	# и космический фон: планеты, астероиды и пролетающие кометы. Старт
+	# и так виден по шахматной ленте (TrackBuilder._build_start_line).
+	if track.kind == TrackBuilder.KIND_SPACE:
+		_build_road_marks()
+		_build_space()
+		return
 	_build_start_area()
 	_build_tribunes()
 	# Ночью воздушных шаров не бывает — в городе вместо них здания.
@@ -259,8 +269,9 @@ func _build_road_marks() -> void:
 	dash_mesh.size = Vector3(0.2, 0.02, 2.4)
 	var dash_mat := StandardMaterial3D.new()
 	dash_mat.albedo_color = Color(0.9, 0.9, 0.88)
-	if _track.kind == TrackBuilder.KIND_NEON:
-		# Ночью осевая светится холодным белым — как светоотражающая краска.
+	if _track.kind == TrackBuilder.KIND_NEON \
+			or _track.kind == TrackBuilder.KIND_SPACE:
+		# В темноте осевая светится холодным белым — светоотражающая краска.
 		dash_mat.emission_enabled = true
 		dash_mat.emission = Color(0.75, 0.85, 1.0)
 		dash_mat.emission_energy_multiplier = 0.9
@@ -440,6 +451,210 @@ func _add_neon_sign(
 	sign_node.position = center + to_track * off \
 			+ Vector3(0, rng.randf_range(-hgt * 0.25, hgt * 0.3), 0)
 	sign_node.rotation.y = atan2(-to_track.x, -to_track.z)
+
+
+## Палитра планет космической трассы.
+const PLANET_COLORS: Array[Color] = [
+	Color(0.85, 0.45, 0.25),   # рыжий гигант
+	Color(0.35, 0.55, 0.95),   # голубая
+	Color(0.8, 0.7, 0.5),      # песочная
+	Color(0.55, 0.85, 0.7),    # бирюзовая
+	Color(0.75, 0.4, 0.75),    # лиловая
+]
+
+
+## Космос: планеты и астероиды вокруг трассы. ВСЕ планеты — в дальнем
+## фоне, кольцом вокруг контура (жалоба 31.08: «планеты должны быть на
+## заднем фоне, а не перед трассой» — прежние ближние «спутники» в
+## 30-44 м от полотна висели прямо перед камерой). Только визуал, без
+## коллизий.
+func _build_space() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20260902
+	# Дальние планеты — по кругу вокруг трассы, высоко.
+	for k in 5:
+		var ang := TAU * k / 5.0 + rng.randf_range(-0.25, 0.25)
+		var dist := rng.randf_range(150.0, 195.0)
+		var pos := Vector3(cos(ang) * dist, rng.randf_range(35.0, 90.0),
+				sin(ang) * dist)
+		_spawn_planet(pos, rng.randf_range(12.0, 26.0), PLANET_COLORS[k],
+				k == 1, rng)   # одной из планет — кольца
+	# «Сатурн» — тоже в дальнем фоне, но КРУПНЫЙ и с двойным кольцом
+	# (просьба 31.08: планета с кольцом должна быть на виду). Размер
+	# вместо близости: читается с любой точки трассы, полотно не заслоняет.
+	_spawn_planet(Vector3(cos(0.9) * 165.0, 62.0, sin(0.9) * 165.0),
+			20.0, Color(0.88, 0.74, 0.48), true, rng)
+	# Кометы прилетают периодически (см. _process).
+	_comet_rng.seed = 20260903
+	set_process(true)
+	# Астероиды: серые глыбы, парят невысоко над «пустотой».
+	var rock_mat := StandardMaterial3D.new()
+	rock_mat.albedo_color = Color(0.42, 0.4, 0.48)
+	rock_mat.roughness = 1.0
+	var half := TrackBuilder.GROUND_SIZE * 0.47
+	var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
+	var placed := 0
+	var attempts := 0
+	while placed < 16 and attempts < 300:
+		attempts += 1
+		var x := rng.randf_range(-half, half)
+		var z := rng.randf_range(-half, half)
+		if _track.distance_from_axis(Vector3(x, 0, z)) < edge + 10.0:
+			continue
+		var rock := MeshInstance3D.new()
+		var s := SphereMesh.new()
+		s.radius = 1.0
+		s.height = 2.0
+		s.radial_segments = 7   # гранёная «глыба», а не гладкий шар
+		s.rings = 4
+		rock.mesh = s
+		rock.material_override = rock_mat
+		rock.scale = Vector3(rng.randf_range(1.2, 3.4),
+				rng.randf_range(1.0, 2.6), rng.randf_range(1.2, 3.4))
+		rock.rotation_degrees = Vector3(rng.randf_range(0, 360),
+				rng.randf_range(0, 360), rng.randf_range(0, 360))
+		add_child(rock)
+		rock.position = Vector3(x, rng.randf_range(3.0, 12.0), z)
+		placed += 1
+
+
+## ---- Кометы (только космос): далёкий белый росчерк, периодически
+## проносящийся по небу СБОКУ от мира (жалоба 31.08: «кометы должны быть
+## вдалеке в виде пролетающей белой полосы» — раньше летели прямо над
+## трассой крупным болидом).
+const COMET_MAX := 3          # больше одновременно не держим
+const COMET_FIRST := 1.5      # первая — почти сразу после старта, с
+const COMET_DIST := 260.0     # хорда пролёта: ближе к центру мира не заходит
+const COMET_RUN := 220.0      # плечо пролёта в каждую сторону от хорды, м
+var _comets: Array[Dictionary] = []
+var _comet_timer := COMET_FIRST
+var _comet_rng := RandomNumberGenerator.new()
+
+
+func _process(delta: float) -> void:
+	_comet_timer -= delta
+	if _comet_timer <= 0.0:
+		_comet_timer = _comet_rng.randf_range(5.0, 11.0)
+		if _comets.size() < COMET_MAX:
+			_spawn_comet()
+	var i := _comets.size() - 1
+	while i >= 0:
+		var c: Dictionary = _comets[i]
+		var node: Node3D = c["node"]
+		node.position += c["vel"] * delta
+		c["life"] -= delta
+		if c["life"] <= 0.0:
+			node.queue_free()
+			_comets.remove_at(i)
+		i -= 1
+
+
+## Комета проносится ВДАЛИ: по прямой, чья ближайшая к центру мира точка —
+## на COMET_DIST (за планетным кольцом, к трассе не приближается). Курс —
+## касательная к этому кругу, чуть со снижением: «падающая звезда».
+func _spawn_comet() -> void:
+	var ang := _comet_rng.randf_range(0.0, TAU)
+	var base := Vector3(cos(ang) * COMET_DIST,
+			_comet_rng.randf_range(70.0, 130.0), sin(ang) * COMET_DIST)
+	# Касательное направление (по или против часовой — случайно).
+	var dir := Vector3(-sin(ang), 0.0, cos(ang))
+	if _comet_rng.randf() < 0.5:
+		dir = -dir
+	dir.y = _comet_rng.randf_range(-0.25, -0.05)   # лёгкое снижение
+	dir = dir.normalized()
+	var start := base - dir * COMET_RUN
+	var vel := dir * _comet_rng.randf_range(70.0, 110.0)
+	var node := _make_comet()
+	node.name = "Comet"
+	add_child(node)
+	node.position = start
+	node.look_at(start + vel)   # -Z по ходу, хвост построен в +Z
+	# Жизни хватает пролететь плечо в обе стороны и «растаять» там.
+	_comets.append({
+		"node": node, "vel": vel,
+		"life": COMET_RUN * 2.0 / vel.length(),
+	})
+
+
+## Комета: БЕЛАЯ ПОЛОСА — маленькая яркая голова и длинный тонкий
+## хвост-росчерк назад (+Z), сужающийся в точку. С дистанции ~260 м
+## читается именно как пролетающая белая чёрточка. UNSHADED — светится
+## в темноте.
+func _make_comet() -> Node3D:
+	var root := Node3D.new()
+	var head := MeshInstance3D.new()
+	var s := SphereMesh.new()
+	s.radius = 1.6
+	s.height = 3.2
+	head.mesh = s
+	var hm := StandardMaterial3D.new()
+	hm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	hm.albedo_color = Color(1.0, 1.0, 1.0)
+	hm.emission_enabled = true
+	hm.emission = Color(1.0, 1.0, 1.0)
+	hm.emission_energy_multiplier = 2.6
+	head.material_override = hm
+	root.add_child(head)
+
+	var tail := MeshInstance3D.new()
+	var cone := CylinderMesh.new()
+	cone.top_radius = 1.3    # тонкий у головы (с 260+ м — нитка)...
+	cone.bottom_radius = 0.0 # ...в точку позади — росчерк движения
+	cone.height = 60.0       # длинный: полоса, а не болид
+	tail.mesh = cone
+	var tm := StandardMaterial3D.new()
+	tm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	tm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	tm.albedo_color = Color(1.0, 1.0, 1.0, 0.5)
+	tm.emission_enabled = true
+	tm.emission = Color(0.95, 0.97, 1.0)
+	tail.material_override = tm
+	# Поворот -90° вокруг X кладёт ось цилиндра (+Y) на -Z: широкий конец
+	# к голове, остриё назад по +Z.
+	tail.rotation_degrees.x = -90.0
+	tail.position.z = 30.0
+	root.add_child(tail)
+	return root
+
+
+## Планета: светящийся изнутри шар (иначе в темноте не видна), по желанию —
+## плоские кольца в тон.
+func _spawn_planet(pos: Vector3, radius: float, col: Color, ringed: bool,
+		rng: RandomNumberGenerator) -> void:
+	var planet := MeshInstance3D.new()
+	var sphere := SphereMesh.new()
+	sphere.radius = radius
+	sphere.height = radius * 2.0
+	planet.mesh = sphere
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = col
+	mat.emission_enabled = true
+	mat.emission = col * 0.45
+	mat.roughness = 1.0
+	planet.material_override = mat
+	add_child(planet)
+	planet.position = pos
+	planet.rotation_degrees = Vector3(rng.randf_range(-15, 15),
+			rng.randf_range(0, 360), rng.randf_range(-10, 10))
+	if ringed:
+		# Двойное кольцо «как у Сатурна»: широкая яркая полоса + узкая
+		# потемнее с просветом (одиночный тор читался как обруч, а не диск).
+		for cfg: Array in [[1.25, 1.85, 0.45], [1.95, 2.3, 0.15]]:
+			var ring := MeshInstance3D.new()
+			var torus := TorusMesh.new()
+			torus.inner_radius = radius * float(cfg[0])
+			torus.outer_radius = radius * float(cfg[1])
+			ring.mesh = torus
+			ring.scale.y = 0.03   # плоский диск
+			var rcol := col.lightened(float(cfg[2]))
+			var rmat := StandardMaterial3D.new()
+			rmat.albedo_color = rcol
+			rmat.emission_enabled = true
+			rmat.emission = rcol * 0.45
+			ring.material_override = rmat
+			ring.name = "PlanetRing"
+			planet.add_child(ring)
+			ring.rotation_degrees = Vector3(20, 0, 10)
 
 
 ## ---------- утилиты ----------

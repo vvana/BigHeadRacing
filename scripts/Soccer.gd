@@ -28,6 +28,22 @@ var _last_minute_said := false
 var _flip_time: Array[float] = []
 var _roster := PackedStringArray()
 
+## Мяч вне игры (перелетел борт, застрял на крыше ворот): столько секунд
+## вне игрового объёма — и вбрасывание в центре. Пара секунд, чтобы не
+## дёргать мяч, честно скачущий по верхней кромке борта.
+const BALL_OUT_TIME := 2.0
+var _ball_out_time := 0.0
+
+## Застревание ботов у стен/ворот (жалоба 31.08: «упираются и больше
+## ничего не делают»): бот, который ХОЧЕТ ехать (_want_move из ai_drive),
+## но стоит на месте дольше STUCK_TIME, на ESCAPE сдаёт назад, доворачивая
+## нос на мяч, — и дальше едет как обычно.
+const STUCK_TIME := 1.1       # сколько секунд стоим «в упоре», с
+const STUCK_SPEED := 1.2      # ниже этой скорости считаем, что стоим, м/с
+var _stuck_time: Array[float] = []
+var _escape_time: Array[float] = []
+var _want_move: Array[bool] = []
+
 var _focus: Focus           # точка между игроком и мячом — цель камеры
 var _ball_marker: Node3D
 var _player_marker: Node3D
@@ -138,6 +154,9 @@ func _spawn_cars() -> void:
 		_cars.append(car)
 		_flip_time.append(0.0)
 		_fire_cd.append(randf_range(1.5, 3.0))
+		_stuck_time.append(0.0)
+		_escape_time.append(0.0)
+		_want_move.append(false)
 	_roster = ids
 	_car = _cars[0]
 	if not Net.is_server():
@@ -268,6 +287,7 @@ func _physics_process(delta: float) -> void:
 				_on_goal(scored)
 				return
 			_check_recovery(delta)
+			_tick_stuck(delta)
 			_tick_drops(delta)
 			_tick_bot_weapons(delta)
 		State.GOAL_PAUSE:
@@ -331,6 +351,8 @@ func _respawn_car(i: int) -> void:
 	car.reset_speed_memory()
 	car.net_visual_reset()
 	_flip_time[i] = 0.0
+	_stuck_time[i] = 0.0
+	_escape_time[i] = 0.0
 
 
 ## Страховка: перевёрнутую машину (2.5 с кверху колёсами), упавшую под
@@ -351,12 +373,31 @@ func _check_recovery(delta: float) -> void:
 				_respawn_car(i)
 		else:
 			_flip_time[i] = 0.0
-	# Мяч, чудом выбитый за арену (щель между бортами), возвращаем в центр.
+	# Мяч вне игры: перелетел борт (лёг на газон ЗА ограждением, куда
+	# машинам не доехать), застрял на крыше короба ворот или провалился
+	# под пол. Раньше возврат срабатывал только за 6 м ЗА ареной — мяч в
+	# паре метров за бортом попадал в «мёртвую зону» (земля тянется шире
+	# арены) и лежал там до конца матча (жалоба 31.08). Правило теперь
+	# прямое: НЕ в игровом объёме (поле в бортах или короб ворот) дольше
+	# BALL_OUT_TIME — вбрасывание в центр. Провалился под пол — сразу.
 	var bp := _ball.global_position
-	if bp.y < -2.0 \
-			or absf(bp.x) > SoccerArena.HALF_LEN + SoccerArena.GOAL_DEPTH + 6.0 \
-			or absf(bp.z) > SoccerArena.HALF_WID + 6.0:
-		_ball.reset_to(_arena.ball_spawn())
+	var fell := bp.y < -1.0
+	var in_field: bool = not fell \
+			and absf(bp.x) <= SoccerArena.HALF_LEN \
+			and absf(bp.z) <= SoccerArena.HALF_WID
+	var in_goal: bool = not fell \
+			and absf(bp.x) <= SoccerArena.HALF_LEN + SoccerArena.GOAL_DEPTH \
+			and absf(bp.z) <= SoccerArena.GOAL_HALF_W \
+			and bp.y <= SoccerArena.GOAL_H
+	if in_field or in_goal:
+		_ball_out_time = 0.0
+	else:
+		_ball_out_time += BALL_OUT_TIME if fell else delta
+		if _ball_out_time >= BALL_OUT_TIME:
+			_ball_out_time = 0.0
+			_ball.reset_to(_arena.ball_spawn())
+			if _announcer:
+				_announcer.small("Мяч вылетел — вбрасывание в центре")
 
 
 func _finish_match() -> void:
@@ -388,6 +429,26 @@ func _finish_match() -> void:
 		_announcer.big(title, "опыт +%d" % xp, kind)
 	if _end_label:
 		_end_label.visible = true
+
+
+## Детектор упора: бот хочет ехать (см. _want_move), а скорости нет —
+## значит, упёрся в борт, штангу или сетку ворот. Через STUCK_TIME даём
+## ему ESCAPE: ai_drive на это время сдаёт назад. Вратарь, штатно
+## стоящий на позиции, сюда не попадает — он ехать не хочет.
+func _tick_stuck(delta: float) -> void:
+	for i in range(1, _cars.size()):
+		if _escape_time[i] > 0.0:
+			_escape_time[i] -= delta
+			continue
+		var car := _cars[i]
+		if _want_move[i] and car.controls_enabled and car.alive \
+				and car.linear_velocity.length() < STUCK_SPEED:
+			_stuck_time[i] += delta
+			if _stuck_time[i] > STUCK_TIME:
+				_stuck_time[i] = 0.0
+				_escape_time[i] = randf_range(0.8, 1.3)
+		else:
+			_stuck_time[i] = 0.0
 
 
 ## ---- Бонусы с оружием ----
@@ -534,6 +595,16 @@ func ai_drive(car: Car) -> Vector2:
 	var own_goal := _arena.goal_center(team)
 	var enemy_goal := _arena.goal_center(1 - team)
 
+	# Выезд из упора: сдаём назад, доворачивая нос на мяч (руль на заднем
+	# ходу зеркалится в _drive сам). Дальше бот едет как обычно.
+	if _escape_time[i] > 0.0:
+		var to_ball := bpos - car.global_position
+		to_ball.y = 0.0
+		var fwd_e := -car.global_transform.basis.z
+		fwd_e.y = 0.0
+		var ang_e := fwd_e.signed_angle_to(to_ball, Vector3.UP)
+		return Vector2(-1.0, -signf(ang_e))
+
 	var target := bpos
 	var attack := false
 	match role:
@@ -573,6 +644,13 @@ func ai_drive(car: Car) -> Vector2:
 				side_of = 1.0
 			target = bpos - dir * 6.0 + perp * side_of * 5.5
 
+	# Цель — только ВНУТРИ поля: точка «позади мяча» у борта или в створе
+	# ворот иначе оказывается ЗА стеной, и бот таранит её до бесконечности.
+	target.x = clampf(target.x,
+			-SoccerArena.HALF_LEN + 3.0, SoccerArena.HALF_LEN - 3.0)
+	target.z = clampf(target.z,
+			-SoccerArena.HALF_WID + 3.0, SoccerArena.HALF_WID - 3.0)
+
 	var to := target - car.global_position
 	to.y = 0.0
 	var dist := to.length()
@@ -582,6 +660,7 @@ func ai_drive(car: Car) -> Vector2:
 	# Цель за спиной вплотную, скорости нет — быстрее развернуться задним
 	# ходом (руль на заднем ходу зеркалится в _drive сам).
 	if absf(angle) > 2.2 and dist < 9.0 and car.linear_velocity.length() < 4.0:
+		_want_move[i] = true
 		return Vector2(-1.0, -signf(angle))
 	var steer := clampf(angle * 2.0, -1.0, 1.0)
 	var throttle := 1.0
@@ -589,6 +668,7 @@ func ai_drive(car: Car) -> Vector2:
 		throttle = 0.35
 	if not attack and dist < 3.5:
 		throttle = clampf(dist / 3.5 - 0.25, -0.2, 1.0)
+	_want_move[i] = absf(throttle) > 0.3
 	return Vector2(throttle, steer)
 
 
