@@ -81,6 +81,12 @@ var _ghost_age := 0.0
 var _freeze_time := 0.0         # замедление от ледышки (дебаф заразен)
 var _boost_time := 0.0          # ускорение
 var _slip_time := 0.0           # занос от масляного пятна
+var _scramble_time := 0.0       # глушилка: лево и право поменяны местами
+# «Усталость» от магнита: каждый рывок в окне _magnet_worn_time режет силу
+# следующего (жалоба 31.08: «несколько машин применили — выкидывает с
+# трассы с огромной силой»). Окно истекло — счёт с нуля.
+var _magnet_worn := 0.0
+var _magnet_worn_time := 0.0
 ## Кто ведёт эту машину. LOCAL — как в одиночной игре (игрок за клавиатурой
 ## или бот). PUPPET — здесь её физику НЕ считают, а тянут к присланным
 ## снимкам: на клиенте это все чужие машины, на сервере — машины живых
@@ -95,7 +101,7 @@ var net_role := NetRole.LOCAL
 var net_fire := false           # сервер: клиент просил выстрел (гасится сразу)
 ## Эффекты оружия, пересылаемые сервером владельцу машины (Main._rx_fx):
 ## физику эффекта (толчок, разворот, телепорт) применяет клиент-владелец.
-enum NetFx { DESTROY, BLAST, FREEZE, OIL, BOOST, SLOW, SHOVE }
+enum NetFx { DESTROY, BLAST, FREEZE, OIL, BOOST, SLOW, SHOVE, SCRAMBLE }
 var has_marker := false         # над машиной висит стрелка-указатель
 ## Отметка машины на оси трассы, м. Считается с оглядкой на предыдущую
 ## (TrackBuilder.closest_offset_near): улетевшая за ограждение машина
@@ -881,6 +887,10 @@ func _tick_effects(delta: float) -> void:
 	_status_time = maxf(0.0, _status_time - delta)
 	_boost_time = maxf(0.0, _boost_time - delta)
 	_slip_time = maxf(0.0, _slip_time - delta)
+	_scramble_time = maxf(0.0, _scramble_time - delta)
+	_magnet_worn_time = maxf(0.0, _magnet_worn_time - delta)
+	if _magnet_worn_time <= 0.0:
+		_magnet_worn = 0.0
 	if _ice_shell:
 		_ice_shell.visible = _freeze_time > 0.0
 	# Огонь ускорения. У марионетки по сети свой _boost_time не тикает —
@@ -1638,7 +1648,7 @@ func _ai_control(delta: float, on_ground: bool) -> void:
 	if _ai_fire_cd <= 0.0 and weapon >= 0:
 		_ai_fire_cd = randf_range(1.6, 3.2)
 		match weapon:
-			Weapons.ROCKET, Weapons.LASER, Weapons.FREEZE:
+			Weapons.ROCKET, Weapons.LASER, Weapons.FREEZE, Weapons.SCRAMBLE:
 				if _enemy_ahead():
 					use_weapon()
 			Weapons.MINE, Weapons.OIL:
@@ -1703,6 +1713,10 @@ func _drive(
 	delta: float, on_ground: bool,
 	throttle: float, steer: float, handbraking: bool, jumping: bool
 ) -> void:
+	# Глушилка: лево и право поменяны местами. Именно здесь, а не на чтении
+	# ввода — инверсия достаётся и игроку, и боту одной строкой.
+	if _scramble_time > 0.0:
+		steer = -steer
 	_steer_visual = lerpf(_steer_visual, steer * 0.45, 9.0 * delta)
 	_yaw_cmd_sign = 0.0
 
@@ -2123,6 +2137,17 @@ func use_weapon() -> void:
 			_use_magnet()
 		Weapons.LASER:
 			_use_laser(fwd)
+		Weapons.SCRAMBLE:
+			var w := ScrambleWave.new()
+			w.shooter = self
+			w.direction = fwd
+			# Отмотка целей — как у снарядов: стрелявший целился по своему
+			# экрану (протокол 13).
+			w.lag = net_shot_lag()
+			get_parent().add_child(w)
+			w.global_position = global_position + fwd * 2.3 + Vector3.UP * 0.55
+			FxKit.muzzle_flash(get_parent(), w.global_position,
+					Color(0.4, 0.95, 1.0))
 		Weapons.AIRSTRIKE:
 			_use_airstrike()
 		Weapons.BOOST:
@@ -2137,18 +2162,22 @@ func use_weapon() -> void:
 		print("[slow] use_weapon(%d) занял %d мс" % [kind, _wd])
 
 
-## Магнит: все машины разово получают сильный импульс К этой машине —
-## соперников «откидывает назад», к использовавшему. Рывок ЖЕСТОЧАЙШИЙ:
-## вблизи он почти в max_speed, машину сдёргивает с траектории и
-## разворачивает; далёких тянет слабее (спад с расстоянием, но не до
-## нуля — магнит достаёт всю трассу). Подброса почти нет: магнит волочит
-## по земле, а не подкидывает. Тем, кто ВПЕРЕДИ по гонке, магнит вдобавок
-## режет скорость вдвое (осаживает); задних — только притягивает.
+## Магнит: ВСЕ машины заезда разово получают импульс к этой машине —
+## магнит достаёт всю трассу (так и задумано игроком). Вблизи рывок сильный
+## (сносит с траектории и разворачивает), с расстоянием слабеет до
+## MAGNET_FAR и дальше уже не спадает.
+## ДАЛЬНИХ ТЯНЕТ ВДОЛЬ ТРАССЫ, а не по прямой (см. _magnet_pull_dir): рывок
+## по хорде к сопернику за поворотом уводил жертву в поле — жалоба 31.08
+## «магнитит куда-то за пределы трассы, где никого нет». Подброса почти
+## нет: магнит волочит по земле. Тем, кто ВПЕРЕДИ по гонке, магнит вдобавок
+## режет скорость (осаживает); задних — только притягивает.
+## Повторные рывки СЛАБЕЮТ (см. Car.magnet_wear): пара соперников, применив
+## магнит подряд, выкидывала жертву с трассы суммой импульсов.
 func _use_magnet() -> void:
-	const MAGNET_PULL := 32.0     # импульс вблизи, м/с (почти max_speed)
-	const MAGNET_FAR := 18.0      # к чему сходит на дальней дистанции
-	const MAGNET_RANGE := 45.0    # дистанция, на которой спад завершён
-	const MAGNET_SPIN := 3.6      # закрутка от рывка, рад/с
+	const MAGNET_PULL := 22.0     # импульс вблизи, м/с
+	const MAGNET_FAR := 8.0       # к чему сходит на дальней дистанции
+	const MAGNET_RANGE := 55.0    # дистанция, на которой спад завершён
+	const MAGNET_SPIN := 2.6      # закрутка от рывка, рад/с
 	const MAGNET_ICON_TIME := 1.5 # сколько над жертвой висит значок магнита
 	FlashFx.spawn(get_parent(), global_position + Vector3.UP * 0.5, 3.2,
 			Color(0.8, 0.3, 1.0))
@@ -2159,28 +2188,129 @@ func _use_magnet() -> void:
 		var other := node as Car
 		if other == self or not other.alive or other.is_ghost():
 			continue
-		# Магнит тоже целится по картине стрелявшего: он видит соперников с
-		# отставанием своего буфера (протокол 13), и рывок должен считаться от
-		# того, что он видел, а не от «сейчас».
-		var dir := global_position - other.past_position(net_shot_lag())
+		# ДАЛЬНОСТЬ мерим по картине стрелявшего (он видит соперников с
+		# отставанием своего буфера, протокол 13), а НАПРАВЛЕНИЕ рывка — по
+		# нынешним положениям: тянуть надо туда, где магнит есть сейчас.
+		# Раньше вектор шёл из ОТМОТАННОЙ точки жертвы, и после её телепорта
+		# (взрыв, респавн) история давала точку в другом конце трассы —
+		# машину рвало в сторону от всех.
+		var dist := global_position.distance_to(other.past_position(net_shot_lag()))
+		var dir := global_position - other.global_position
 		dir.y = 0.0
-		var dist := dir.length()
-		if dist < 0.1:
+		var len_now := dir.length()
+		if len_now < 0.1:
+			continue
+		dir /= len_now
+		# Дальних тянем ПО ТРАССЕ, а не сквозь неё.
+		dir = _magnet_pull_dir(other, dir, dist)
+		# И с полотна не сдёргиваем: у края рывок разворачивается вдоль
+		# трассы, а если и вдоль некуда — магнит эту машину не трогает.
+		var pull_dir := _magnet_guard(other, dir)
+		if pull_dir.length_squared() < 1e-4:
 			continue
 		var t: float = clampf(dist / MAGNET_RANGE, 0.0, 1.0)
-		var power: float = lerpf(MAGNET_PULL, MAGNET_FAR, t)
-		var spin := MAGNET_SPIN * (1.0 - t) * (1.0 if randf() < 0.5 else -1.0)
+		var wear := other.magnet_wear()
+		var power: float = lerpf(MAGNET_PULL, MAGNET_FAR, t) * wear
+		var spin := MAGNET_SPIN * (1.0 - t) * wear \
+				* (1.0 if randf() < 0.5 else -1.0)
 		# Впередиедущих осаживаем ДО рывка: срежь скорость после — порезался
 		# бы и сам импульс притяжения.
 		if _rival_is_ahead(other):
-			other.apply_speed_cut(0.5)
-		other.push_from_blast(dir / dist, power, spin, 0.12)
+			other.apply_speed_cut(lerpf(0.65, 1.0, 1.0 - wear))
+		other.push_from_blast(pull_dir, power, spin, 0.12)
 		other.show_effect_icon(Weapons.MAGNET, MAGNET_ICON_TIME)
 		other.notify_hit_by(self, Weapons.MAGNET)
 		# Разряд над жертвой — видно, кого дёрнуло.
 		FxKit.lightning_burst(get_parent(),
 				other.global_position + Vector3.UP * 0.9,
 				Color(0.85, 0.4, 1.0), 4, 0.9)
+
+
+## Куда магнит тянет жертву. Вблизи (до MAGNET_NEAR) — прямо к магниту, как
+## и должно тянуть магнит. Дальше прямая перестаёт быть путём: соперник за
+## поворотом стоит «через поле», и рывок по хорде уносил жертву с трассы —
+## жалоба 31.08 «магнитит куда-то за пределы трассы, где никого нет».
+## Поэтому с расстоянием направление плавно переходит в КАСАТЕЛЬНУЮ К
+## ТРАССЕ, повёрнутую в сторону магнита по КРАТЧАЙШЕМУ пути по кольцу:
+## дальнего волочёт по полотну — вперёд или назад по трассе.
+func _magnet_pull_dir(victim: Car, straight: Vector3, dist: float) -> Vector3:
+	const MAGNET_NEAR := 18.0   # ближе — тянем строго по прямой
+	const MAGNET_ALONG := 45.0  # дальше — строго вдоль трассы
+	if track == null or dist <= MAGNET_NEAR:
+		return straight
+	var curve: Curve3D = track._curve
+	var length := curve.get_baked_length()
+	var along := _axis_dir(curve, length, victim.track_offset)
+	along.y = 0.0
+	if along.length_squared() < 1e-6:
+		return straight
+	along = along.normalized()
+	# Кратчайший ход по кольцу: положительный — магнит впереди по разметке.
+	var delta := wrapf(track_offset - victim.track_offset,
+			-length * 0.5, length * 0.5)
+	if absf(delta) < 0.5:
+		return straight
+	along *= signf(delta)
+	var t: float = clampf((dist - MAGNET_NEAR) / (MAGNET_ALONG - MAGNET_NEAR),
+			0.0, 1.0)
+	var mixed := straight.lerp(along, t)
+	# Прямая и трасса могут смотреть строго навстречу (шпилька): смесь
+	# схлопывается в ноль — тогда правда за трассой.
+	return mixed.normalized() if mixed.length_squared() > 1e-4 else along
+
+
+## Множитель силы для СЛЕДУЮЩЕГО рывка магнита по этой машине и отметка
+## самого рывка. Пока рывки идут в окне MAGNET_WEAR_TIME, каждый следующий
+## слабее: 1.0, 0.55, 0.38, 0.29… Жалоба 31.08: «несколько машин применили
+## магнит — и тебя выкидывает с трассы с огромной силой»; сумма трёх полных
+## импульсов и правда выносила за ограждение.
+func magnet_wear() -> float:
+	const MAGNET_WEAR_TIME := 3.0
+	var mult := 1.0 / (1.0 + 0.8 * _magnet_worn)
+	_magnet_worn += 1.0
+	_magnet_worn_time = MAGNET_WEAR_TIME
+	return mult
+
+
+## Не выдёргивать жертву С ПОЛОТНА: составляющую рывка НАРУЖУ от оси трассы
+## гасим по мере приближения к краю. Магнит соперника за поворотом тянет по
+## хорде — «мимо трассы», и на песчаной трассе (ограждений нет вовсе) это
+## заканчивалось полётом в пески. У края рывок остаётся, но идёт ВДОЛЬ
+## трассы, а не в сторону от неё; если и вдоль некуда (магнит ровно сбоку
+## за ограждением) — возвращаем ноль, и рывка не будет вовсе.
+func _magnet_guard(victim: Car, dir: Vector3) -> Vector3:
+	const EDGE_MARGIN := 2.0   # ближе этого к грани борта наружу не тянем
+	const EDGE_FADE := 5.0     # на каком запасе гашение начинается
+	if victim.track == null:
+		return dir
+	var curve: Curve3D = victim.track._curve
+	var length := curve.get_baked_length()
+	var off := fposmod(victim.track_offset, length)
+	var axis_pos := curve.sample_baked(off)
+	var n := victim.global_position - axis_pos
+	n.y = 0.0
+	var from_axis := n.length()
+	if from_axis < 0.01:
+		return dir
+	n /= from_axis
+	var outward := dir.dot(n)
+	if outward <= 0.0:
+		return dir  # тянет К оси трассы — пусть тянет
+	var room: float = victim.track.half_width_at_offset(off) \
+			- EDGE_MARGIN - from_axis
+	var keep: float = clampf(room / EDGE_FADE, 0.0, 1.0)
+	var fixed := dir - n * outward * (1.0 - keep)
+	if fixed.length_squared() > 1e-4:
+		return fixed.normalized()
+	# Рывок был СТРОГО наружу — разворачиваем его вдоль трассы, в ту
+	# сторону, куда он и «смотрел».
+	var tangent := curve.sample_baked(fposmod(off + 1.0, length)) - axis_pos
+	tangent.y = 0.0
+	if tangent.length_squared() < 1e-6:
+		return Vector3.ZERO
+	tangent = tangent.normalized()
+	var along := dir.dot(tangent)
+	return tangent * signf(along) if absf(along) > 0.05 else Vector3.ZERO
 
 
 ## «Соперник впереди?» для магнита — по прогрессу ГОНКИ (накопленный путь
@@ -2206,7 +2336,7 @@ func _use_laser(fwd: Vector3) -> void:
 	# текущему миру: их картина и есть правда.
 	var lag := net_shot_lag()
 	var from := global_position + Vector3.UP * 0.5
-	LaserFx.spawn(get_parent(), from, fwd, RANGE)
+	LaserFx.spawn(get_parent(), from, fwd, RANGE, self)
 	for node in get_tree().get_nodes_in_group("cars"):
 		var other := node as Car
 		if other == self or not other.alive or other.is_ghost():
@@ -2266,6 +2396,7 @@ func destroy() -> void:
 	_freeze_time = 0.0
 	_slip_time = 0.0
 	_boost_time = 0.0
+	_scramble_time = 0.0
 	_start_ghost()
 	var _wd := Time.get_ticks_msec() - _wd0
 	if _wd > 100:
@@ -2424,6 +2555,25 @@ func apply_freeze(duration: float) -> void:
 	_forward_fx(NetFx.FREEZE, [duration])
 	_freeze_time = maxf(_freeze_time, duration)
 	FxKit.snow_burst(get_parent(), global_position + Vector3.UP * 0.6)
+
+
+## Глушилка (звуковая волна): на duration секунд лево и право меняются
+## местами — руль инвертируется в _drive. Машина едет как ехала, но каждый
+## поворот выходит в другую сторону.
+## По сети машина живого игрока клиент-авторитетна: рулит её ВЛАДЕЛЕЦ, и
+## без пересылки (NetFx.SCRAMBLE) эффекта он бы не почувствовал вовсе.
+func apply_scramble(duration: float) -> void:
+	if not alive:
+		return
+	_forward_fx(NetFx.SCRAMBLE, [duration])
+	_scramble_time = maxf(_scramble_time, duration)
+	show_effect_icon(Weapons.SCRAMBLE, duration)
+	FxKit.ring(get_parent(), global_position, 3.0, Color(0.4, 0.95, 1.0))
+
+
+## Сколько глушилки осталось (стенды и HUD).
+func scramble_left() -> float:
+	return _scramble_time
 
 
 ## Сколько заморозки осталось. Наружу — для сети: этим числом сервер

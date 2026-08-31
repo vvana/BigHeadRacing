@@ -12,8 +12,10 @@ enum {
 	FREEZE,     # ледышка: попавший синеет и едет медленно, дебаф заразен
 	AIRSTRIKE,  # авиаудар по лидеру: тени → через секунду ракеты сверху
 	BOOST,      # ускорение самому себе на время
+	SCRAMBLE,   # глушилка: звуковая волна вперёд — у попавшего на время
+	            # МЕНЯЮТСЯ МЕСТАМИ лево и право (руль инвертирован)
 }
-const COUNT := 8
+const COUNT := 9
 
 const NAMES := {
 	MINE: "Мина",
@@ -24,6 +26,7 @@ const NAMES := {
 	FREEZE: "Заморозка",
 	AIRSTRIKE: "Авиаудар",
 	BOOST: "Ускорение",
+	SCRAMBLE: "Глушилка",
 }
 
 # Восьмиугольные значки «гаражного» стиля (нарезаны из референса
@@ -37,6 +40,8 @@ const ICONS := {
 	FREEZE: "res://assets/ui/garage/wg_freeze.png",
 	AIRSTRIKE: "res://assets/ui/garage/wg_airstrike.png",
 	BOOST: "res://assets/ui/garage/wg_boost.png",
+	# Запечён tools/gen_scramble_icon.py (в листе-референсе волны не было).
+	SCRAMBLE: "res://assets/ui/garage/wg_scramble.png",
 }
 
 

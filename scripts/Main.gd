@@ -1567,7 +1567,7 @@ func _client_tick(_delta: float) -> void:
 			if fwd.length_squared() > 1e-6:
 				LaserFx.spawn(self,
 						_car.global_position + Vector3.UP * 0.5,
-						fwd.normalized(), 70.0)
+						fwd.normalized(), 70.0, _car)
 				_laser_predicted = Time.get_ticks_msec() / 1000.0
 
 
@@ -2353,6 +2353,9 @@ func _rx_fx(kind: int, args: Array) -> void:
 		Car.NetFx.FREEZE:
 			if args.size() >= 1:
 				_car.apply_freeze(args[0])
+		Car.NetFx.SCRAMBLE:
+			if args.size() >= 1:
+				_car.apply_scramble(args[0])
 		Car.NetFx.OIL:
 			_car.apply_oil_slip()
 		Car.NetFx.BOOST:
@@ -2539,7 +2542,7 @@ func _rx_weapon_fx(idx: int, kind: int, pos: Vector3, dir: Vector3) -> void:
 	if kind == Weapons.LASER and idx == _my_index() \
 			and Time.get_ticks_msec() / 1000.0 - _laser_predicted < 1.0:
 		return
-	_spawn_weapon_visual(kind, pos, dir)
+	_spawn_weapon_visual(kind, pos, dir, _cars[idx])
 
 
 ## Сервер зовёт это из Car.use_weapon — чтобы клиенты УВИДЕЛИ выстрел.
@@ -2560,7 +2563,10 @@ func net_broadcast_weapon(car: Car, kind: int) -> void:
 ## здесь ИНЕРТНЫ: попадания и толчки считает сервер, а его результат и так
 ## приезжает в снимках. Если бы копии работали по-настоящему, машину било
 ## бы дважды — и по-разному на каждом экране.
-func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3) -> void:
+## shooter — машина стрелявшего: луч лазера и волна глушилки ЕДУТ С НЕЙ
+## (см. LaserFx), а не висят там, где нажали.
+func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3,
+		shooter: Car = null) -> void:
 	match kind:
 		Weapons.MINE:
 			var m := Mine.new()
@@ -2586,7 +2592,13 @@ func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3) -> void:
 			FxKit.lightning_burst(self, pos + Vector3.UP * 0.8,
 					Color(0.85, 0.4, 1.0), 7, 1.4)
 		Weapons.LASER:
-			LaserFx.spawn(self, pos + Vector3.UP * 0.5, dir, 70.0)
+			LaserFx.spawn(self, pos + Vector3.UP * 0.5, dir, 70.0, shooter)
+		Weapons.SCRAMBLE:
+			var wave := ScrambleWave.new()
+			wave.inert = true
+			wave.direction = dir
+			add_child(wave)
+			wave.global_position = pos + dir * 2.3 + Vector3.UP * 0.55
 		Weapons.AIRSTRIKE:
 			var strike := Airstrike.new()
 			strike.inert = true
@@ -2655,6 +2667,10 @@ func _show_weapon_event(ai: int, vi: int, kind: int) -> void:
 		return
 	if kind in LETHAL_KINDS:
 		_register_kill(ai, vi)
+	# Глушилку одним значком над крышей не объяснить: игрок должен понять,
+	# ПОЧЕМУ машина едет не туда, а не решить, что игра сломалась.
+	if kind == Weapons.SCRAMBLE and vi == _my_index() and _announcer != null:
+		_announcer.small("Управление сбито: лево и право поменялись!", "red")
 	_feed_pending.append([ai, vi, kind])
 	if _feed_pending.size() > FEED_MAX:
 		_feed_pending.pop_front()

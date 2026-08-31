@@ -9,6 +9,7 @@ var _tan := Vector3.FORWARD
 var _right := Vector3.RIGHT
 var _ok := {}
 var _wall_n := Vector3.RIGHT
+var _beam_pos := Vector3.ZERO   # где был луч лазера до сдвига машины
 
 
 func _ready() -> void:
@@ -63,6 +64,12 @@ func _physics_process(_d: float) -> void:
 			for c: Car in _main._cars:
 				c.controls_enabled = false
 				c.weapon = -1
+			# Заезд теперь бывает и на 8 машин (размер выбирается в гараже и
+			# лежит в профиле). Стенд работает с четырьмя — ЛИШНИЕ убираем за
+			# карту, иначе они болтаются на трассе, ловят чужие снаряды и
+			# толкают жертв: «мина толкает дальних» падала именно из-за них.
+			for i in range(4, _main._cars.size()):
+				_park(_main._cars[i])
 			# Фаза РАКЕТА: жертва в 15 м строго впереди.
 			_place(attacker, _base, _tan)
 			_place(v1, _base + _tan * 15.0, _tan)
@@ -191,8 +198,37 @@ func _physics_process(_d: float) -> void:
 			attacker.weapon = Weapons.AIRSTRIKE
 			attacker.use_weapon()
 			_ok["авиаудар создан"] = _find_node(Airstrike) != null
+		600:
+			# Фаза ЛУЧ ЕДЕТ С МАШИНОЙ: стержень лазера привязан к носу
+			# стрелявшего (31.08: «лазер остаётся на том месте, где
+			# применили»). Прошлый луч (фаза 420) к этому кадру уже погас —
+			# LIFETIME 0.55 c, иначе _find_node вернул бы его.
+			_place(attacker, _base, _tan)
+			attacker.weapon = Weapons.LASER
+			attacker.use_weapon()
+		601:
+			var beam := _find_node(LaserFx) as Node3D
+			_ok["луч нарисован"] = beam != null
+			if beam:
+				_beam_pos = beam.global_position
+				attacker.global_position += _tan * 10.0
+		602:
+			var beam2 := _find_node(LaserFx) as Node3D
+			_ok["луч едет с машиной"] = beam2 != null \
+					and (beam2.global_position - _beam_pos).dot(_tan) > 8.0
+			if beam2:
+				print("  [луч] сдвинулся на %.1f м вслед за машиной"
+						% (beam2.global_position - _beam_pos).dot(_tan))
+		610:
+			# Фаза ГЛУШИЛКА: звуковая волна по жертве в 15 м впереди.
+			_place(attacker, _base, _tan)
+			_place(v2, _base + _tan * 15.0, _tan)
+			attacker.weapon = Weapons.SCRAMBLE
+			attacker.use_weapon()
 		640:
 			_ok["авиаудар отработал"] = _find_node(Airstrike) == null
+			# Волна летит 15 м на 38 м/с — к этому кадру уже долетела.
+			_ok["глушилка сбила управление"] = v2.scramble_left() > 4.0
 			# Фаза БОКС: пустые руки + бокс на пути.
 			attacker.weapon = -1
 			var box := WeaponBox.new()
