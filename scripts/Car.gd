@@ -64,6 +64,7 @@ var controls_enabled := false   # включает менеджер гонки �
 var race_over := false          # финиш: газа нет, машина плавно тормозит
 var track: TrackBuilder = null  # ставит Main: маршрут ИИ и точки респавна
 var race: Node = null           # ставит Main: доступ к лидеру (авиаудар)
+var soccer_brain: Node = null   # футбол (Soccer.gd): ведёт ботов вместо трассы
 var ai_rubber := 1.0            # «резинка»: множитель тяги/скорости ИИ
 # «Класс» ИИ: постоянный множитель темпа бота (< 1 — едет слабее игрока).
 # Вкладывается в ai_rubber менеджером гонки (Main), сам по себе не читается.
@@ -1619,6 +1620,12 @@ func _forward_fx(kind: int, args: Array = []) -> void:
 ## ИИ: едет к точке на оси трассы впереди себя, стреляет по машине в прицеле,
 ## кидает мину под соперника сзади.
 func _ai_control(delta: float, on_ground: bool) -> void:
+	# Футбол: цели ботам считает менеджер матча (роль, мяч, ворота) —
+	# трасса не нужна, оружие в футболе не применяется.
+	if soccer_brain != null:
+		var cmd: Vector2 = soccer_brain.ai_drive(self)
+		_drive(delta, on_ground, cmd.x, cmd.y, false, false)
+		return
 	if track == null:
 		return
 	var curve: Curve3D = track._curve

@@ -199,6 +199,14 @@ func _on_body_entered(body: Node3D) -> void:
 			return
 		if car.alive and not car.is_ghost():
 			_hit_car(car)
+	# Футбольный мяч (он на слое машин): взрыв ощутимо пинает его по ходу
+	# полёта снаряда — ракетой можно бить по воротам.
+	var ball := body as SoccerBall
+	if ball != null:
+		var kick := direction * 22.0
+		kick.y = 3.0
+		ball.apply_central_impulse(kick * ball.mass)
+		ball.last_touch = shooter
 	_boom()
 
 

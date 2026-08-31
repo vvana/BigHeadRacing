@@ -38,6 +38,9 @@ var _buttons: Array[Button] = []
 var _host_edit: LineEdit          # адрес сетевого сервера
 var _net_status: Label
 var _size_label: Label            # число участников заезда (4..8)
+var _size_panel: Control          # панель «УЧАСТНИКОВ» (в футболе всегда 8)
+var _size_buttons: Array[Button] = []
+var _mode_button: Button          # переключатель ГОНКА/ФУТБОЛ
 var _scroll: ScrollContainer
 var _style_normal: StyleBoxFlat
 var _style_selected: StyleBoxFlat
@@ -74,9 +77,69 @@ func _process(delta: float) -> void:
 func _start_race() -> void:
 	Net.leave()   # вдруг остались хвосты прошлого сетевого заезда
 	GameState.selected_car_id = CarModelLibrary.CAR_IDS[_index]
+	if GameState.game_mode == GameState.MODE_SOCCER:
+		# Футбол: своя арена, трасса не нужна.
+		get_tree().change_scene_to_file("res://scenes/Soccer.tscn")
+		return
 	# Трасса на заезд — случайная из доступных.
 	GameState.track_kind = TrackBuilder.pick_random_kind()
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
+
+
+## Переключатель режима игры (ГОНКА / ФУТБОЛ) — над панелью «УЧАСТНИКОВ».
+## Футбол: всегда 8 машин 4 на 4, поэтому выбор числа участников гаснет.
+func _build_mode_ui(canvas: Node) -> void:
+	var panel := UiKit.plate(canvas, "steel", Vector2.ZERO, Vector2(150, 70))
+	panel.anchor_left = 0.0
+	panel.anchor_right = 0.0
+	panel.anchor_top = 1.0
+	panel.anchor_bottom = 1.0
+	panel.offset_left = 20
+	panel.offset_right = 170
+	panel.offset_top = -200
+	panel.offset_bottom = -130
+
+	var title := Label.new()
+	title.text = "РЕЖИМ"
+	if _ui_font:
+		title.add_theme_font_override("font", _ui_font)
+	title.add_theme_font_size_override("font_size", 14)
+	title.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))
+	title.position = Vector2(0, 6)
+	title.size = Vector2(150, 20)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	panel.add_child(title)
+
+	# Кнопка того же плоского стиля, что −/+ (UiKit.style_button мелкой
+	# кнопке навязывает рост и заклёпки — см. _mini_button).
+	_mode_button = _mini_button("ГОНКА")
+	_mode_button.add_theme_font_size_override("font_size", 18)
+	_mode_button.position = Vector2(12, 24)
+	_mode_button.size = Vector2(126, 38)
+	_mode_button.pressed.connect(_toggle_mode)
+	panel.add_child(_mode_button)
+
+
+func _toggle_mode() -> void:
+	GameState.set_game_mode(
+			GameState.MODE_SOCCER
+			if GameState.game_mode == GameState.MODE_RACE
+			else GameState.MODE_RACE)
+	_apply_mode_ui()
+
+
+## Обновить подписи под текущий режим: текст кнопки и доступность выбора
+## числа участников (в футболе состав фиксированный — 4 на 4).
+func _apply_mode_ui() -> void:
+	var soccer := GameState.game_mode == GameState.MODE_SOCCER
+	if _mode_button:
+		_mode_button.text = "ФУТБОЛ" if soccer else "ГОНКА"
+	if _size_panel:
+		_size_panel.modulate = Color(1, 1, 1, 0.45) if soccer else Color.WHITE
+	for b in _size_buttons:
+		b.disabled = soccer
+	if _size_label:
+		_size_label.text = "8" if soccer else str(GameState.race_size)
 
 
 ## Выбор числа участников заезда (4..8) — стальная табличка в левом нижнем
@@ -93,6 +156,7 @@ func _build_race_size_ui(canvas: Node) -> void:
 	panel.offset_right = 170
 	panel.offset_top = -122
 	panel.offset_bottom = -52
+	_size_panel = panel
 
 	var title := Label.new()
 	title.text = "УЧАСТНИКОВ"
@@ -134,6 +198,7 @@ func _build_race_size_ui(canvas: Node) -> void:
 	plus.size = Vector2(38, 38)
 	plus.pressed.connect(func() -> void: _change_race_size(1))
 	panel.add_child(plus)
+	_size_buttons = [minus, plus]
 
 
 ## Маленькая плоская кнопка −/+. НЕ UiKit.style_button, и это выстрадано:
@@ -171,6 +236,8 @@ func _mini_button(txt: String) -> Button:
 
 
 func _change_race_size(dir: int) -> void:
+	if GameState.game_mode == GameState.MODE_SOCCER:
+		return   # в футболе состав фиксированный: 4 на 4
 	GameState.set_race_size(GameState.race_size + dir)
 	if _size_label:
 		_size_label.text = str(GameState.race_size)
@@ -254,6 +321,10 @@ func _build_net_ui(canvas: Node) -> void:
 
 
 func _join_pressed() -> void:
+	# Сетевой футбол потребует нового протокола сервера — пока только боты.
+	if GameState.game_mode == GameState.MODE_SOCCER:
+		_net_status.text = "Футбол по сети пока недоступен"
+		return
 	var text := _host_edit.text.strip_edges()
 	var addr := text
 	var port := Net.PORT
@@ -585,7 +656,9 @@ func _setup_hud() -> void:
 	start_btn.pressed.connect(_start_race)
 	canvas.add_child(start_btn)
 	_build_race_size_ui(canvas)
+	_build_mode_ui(canvas)
 	_build_net_ui(canvas)
+	_apply_mode_ui()
 
 	var help := Label.new()
 	help.text = "←→↑↓ / AD — выбор  |  клик — выбрать, ещё раз — старт  |  Enter — в гонку"

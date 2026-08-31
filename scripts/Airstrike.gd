@@ -27,7 +27,7 @@ var _timer := SHADOW_DELAY
 
 
 func _ready() -> void:
-	if track == null or target == null:
+	if target == null:
 		queue_free()
 		return
 	# Ракеты прилетают наклонно «из-за верхнего края экрана»: старт смещён
@@ -42,6 +42,26 @@ func _ready() -> void:
 		if f.length_squared() > 1e-4:
 			screen_top = f.normalized()
 	_fall_offset = Vector3.UP * FALL_HEIGHT + screen_top * FALL_SIDE
+	# Без трассы (футбольная арена): тени ложатся по ХОДУ ДВИЖЕНИЯ цели —
+	# от неё самой и вперёд, с разбросом вбок. Стоячую цель накрывает
+	# ближняя тень (радиус поражения 3.2 м > первого отступа).
+	if track == null:
+		var dir := -target.global_transform.basis.z
+		var v := target.linear_velocity
+		v.y = 0.0
+		if v.length() > 3.0:
+			dir = v.normalized()
+		dir.y = 0.0
+		dir = dir.normalized() if dir.length_squared() > 1e-6 else Vector3.FORWARD
+		var side := dir.cross(Vector3.UP)
+		for ahead: float in [2.0, 8.0, 14.0, 20.0]:
+			var pos := target.global_position + dir * ahead \
+					+ side * randf_range(-3.0, 3.0)
+			pos.y = target.global_position.y
+			_spots.append(pos)
+			_shadows.append(_make_shadow(pos))
+			_rockets.append(_make_rocket(pos))
+		return
 	var curve: Curve3D = track._curve
 	var length := curve.get_baked_length()
 	# Отметка ЖЕРТВЫ (ведётся по непрерывности): у лидера, сошедшего с

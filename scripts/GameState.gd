@@ -25,6 +25,15 @@ var race_size := 4:
 	set(v):
 		race_size = clampi(v, RACE_SIZE_MIN, RACE_SIZE_MAX)
 
+## Режим игры, выбирается в гараже: гонка или футбол (4 на 4, мяч в ворота).
+## Футбол пока ТОЛЬКО оффлайн (игрок + 7 ботов) — сетевой потребует нового
+## протокола. Хранится в профиле.
+const MODE_RACE := "race"
+const MODE_SOCCER := "soccer"
+var game_mode := MODE_RACE:
+	set(v):
+		game_mode = v if v in [MODE_RACE, MODE_SOCCER] else MODE_RACE
+
 # ---- Профиль игрока: опыт (переживает перезапуск игры) ----
 # Опыт даётся на финише заезда: за место + за уничтоженных соперников
 # (Main._show_finish). За уровни дальше будем открывать «разные штуки»:
@@ -41,6 +50,7 @@ func _ready() -> void:
 	if cf.load(PROFILE_PATH) == OK:
 		xp = int(cf.get_value("profile", "xp", 0))
 		race_size = int(cf.get_value("profile", "race_size", 4))
+		game_mode = str(cf.get_value("profile", "game_mode", MODE_RACE))
 
 
 ## Запомнить выбранное число участников (переживает перезапуск игры).
@@ -49,6 +59,15 @@ func set_race_size(n: int) -> void:
 	var cf := ConfigFile.new()
 	cf.load(PROFILE_PATH)   # не затирать другие поля профиля
 	cf.set_value("profile", "race_size", race_size)
+	cf.save(PROFILE_PATH)
+
+
+## Запомнить выбранный режим игры (гонка/футбол).
+func set_game_mode(m: String) -> void:
+	game_mode = m
+	var cf := ConfigFile.new()
+	cf.load(PROFILE_PATH)   # не затирать другие поля профиля
+	cf.set_value("profile", "game_mode", game_mode)
 	cf.save(PROFILE_PATH)
 
 
