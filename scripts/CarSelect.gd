@@ -113,32 +113,61 @@ func _build_race_size_ui(canvas: Node) -> void:
 	_size_label.add_theme_color_override("font_color", UiKit.YELLOW)
 	_size_label.add_theme_constant_override("outline_size", 5)
 	_size_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	# Ровно полоса МЕЖДУ кнопками (50..100), не «на глазок»: цифра со
-	# смещённым боксом висла не по центру таблички (замечено на скриншоте).
-	# Высота 50 — под ФАКТИЧЕСКИЙ рост кнопок: их минимальный размер задаёт
-	# табличка-стайлбокс (поля 20+20 плюс текст), и заявленные 36 px кнопка
-	# перерастает — цифра, отцентрованная по 36, висела выше кнопок.
-	_size_label.position = Vector2(50, 26)
-	_size_label.size = Vector2(50, 50)
+	# Ровно полоса МЕЖДУ кнопками (50..100) и ОДНА линия с ними (y и
+	# высота совпадают с кнопками): дважды подгонялось «на глазок» и
+	# дважды оказывалось криво — теперь кнопки держат заданный размер
+	# (см. _flatten_button), и все три бокса просто одинаковые.
+	_size_label.position = Vector2(50, 24)
+	_size_label.size = Vector2(50, 38)
 	_size_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_size_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	panel.add_child(_size_label)
 
-	var minus := Button.new()
-	minus.text = "–"
-	UiKit.style_button(minus, "teal", 22)
-	minus.position = Vector2(12, 26)
-	minus.size = Vector2(38, 36)
+	var minus := _mini_button("–")
+	minus.position = Vector2(12, 24)
+	minus.size = Vector2(38, 38)
 	minus.pressed.connect(func() -> void: _change_race_size(-1))
 	panel.add_child(minus)
 
-	var plus := Button.new()
-	plus.text = "+"
-	UiKit.style_button(plus, "teal", 22)
-	plus.position = Vector2(100, 26)
-	plus.size = Vector2(38, 36)
+	var plus := _mini_button("+")
+	plus.position = Vector2(100, 24)
+	plus.size = Vector2(38, 38)
 	plus.pressed.connect(func() -> void: _change_race_size(1))
 	panel.add_child(plus)
+
+
+## Маленькая плоская кнопка −/+. НЕ UiKit.style_button, и это выстрадано:
+## 1) стайлбокс-табличка несёт поля 20 px с каждой стороны, и минимальный
+##    размер кнопки выходит «поля + метрики шрифта» — она перерастает
+##    заданный size, причём НАСКОЛЬКО — зависит от машины (масштаб окна
+##    меняет метрики через оверсэмплинг шрифта): у меня на скриншоте цифра
+##    рядом стояла ровно, у игрока — дважды криво;
+## 2) на 38 px табличка с четырьмя заклёпками превращается в кашу, знака
+##    не разглядеть. Плоская заливка с малыми полями решает и то и другое.
+func _mini_button(txt: String) -> Button:
+	var b := Button.new()
+	b.text = txt
+	if _ui_font:
+		b.add_theme_font_override("font", _ui_font)
+	b.add_theme_font_size_override("font_size", 22)
+	for state in ["normal", "hover", "pressed"]:
+		var k := 1.0
+		if state == "hover":
+			k = 1.15
+		elif state == "pressed":
+			k = 0.78
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Color(UiKit.TEAL.r * k, UiKit.TEAL.g * k,
+				UiKit.TEAL.b * k)
+		sb.set_corner_radius_all(9)
+		sb.set_content_margin_all(2)
+		sb.set_border_width_all(2)
+		sb.border_color = Color(0, 0, 0, 0.35)
+		b.add_theme_stylebox_override(state, sb)
+	for state in ["font_color", "font_hover_color", "font_pressed_color"]:
+		b.add_theme_color_override(state, UiKit.INK)
+	b.focus_mode = Control.FOCUS_NONE
+	return b
 
 
 func _change_race_size(dir: int) -> void:
