@@ -113,8 +113,13 @@ func _build_race_size_ui(canvas: Node) -> void:
 	_size_label.add_theme_color_override("font_color", UiKit.YELLOW)
 	_size_label.add_theme_constant_override("outline_size", 5)
 	_size_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	_size_label.position = Vector2(55, 24)
-	_size_label.size = Vector2(40, 40)
+	# Ровно полоса МЕЖДУ кнопками (50..100), не «на глазок»: цифра со
+	# смещённым боксом висла не по центру таблички (замечено на скриншоте).
+	# Высота 50 — под ФАКТИЧЕСКИЙ рост кнопок: их минимальный размер задаёт
+	# табличка-стайлбокс (поля 20+20 плюс текст), и заявленные 36 px кнопка
+	# перерастает — цифра, отцентрованная по 36, висела выше кнопок.
+	_size_label.position = Vector2(50, 26)
+	_size_label.size = Vector2(50, 50)
 	_size_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_size_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	panel.add_child(_size_label)
