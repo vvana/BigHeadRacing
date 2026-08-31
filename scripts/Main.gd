@@ -97,6 +97,8 @@ var _shove_sent := {}
 var _srv_stamp_prev := -1.0
 var _gap_frames_prev := 0
 # Замер потерь по меткам (включают стенды): длина пропажи -> сколько раз.
+# Клиент: места, присланные сервером (протокол 13). 0 — ещё не приходило.
+var _net_place := [0, 0, 0, 0]
 var _loss_probe := false
 var _loss_prev := -1.0
 var _loss_hist := {}
@@ -676,6 +678,12 @@ func _my_index() -> int:
 ## показывал «МЕСТО 2», когда первое место уже было занято, — а потом
 ## баннер выдавал честное «МЕСТО 3 ИЗ 4». Ровно на это игрок и жаловался.
 func _place_of(idx: int) -> int:
+	# КЛИЕНТ берёт место у сервера (протокол 13). Свой счёт по прогрессу он
+	# вести не может честно: своя машина у него «сейчас», чужие — с
+	# отставанием буфера, и в плотной борьбе оба игрока видели себя первыми.
+	if Net.is_client() and idx >= 0 and idx < _net_place.size() \
+			and _net_place[idx] > 0:
+		return _net_place[idx]
 	var done := _finish_order.find(idx)
 	if done >= 0:
 		return done + 1
@@ -1515,9 +1523,15 @@ func _client_tick(_delta: float) -> void:
 	# при касании, и подхватываем мы его ЗДЕСЬ, у себя (машина
 	# клиент-авторитетна). Не доложишь — сервер о нашей «синеве» не узнает,
 	# и дальше по цепочке она не пойдёт.
+	# 13-е — НАШЕ ОТСТАВАНИЕ КАРТИНКИ (протокол 13): по нему сервер
+	# отматывает цели, когда мы стреляем, — мы целились в то, что видели.
+	# Раньше лазер отматывал на глазок 0.4 c, а снаряды не отматывались
+	# вовсе и «пролетали сквозь». Буфер теперь адаптивный (60-350 мс), так
+	# что догадка не годится — шлём измеренное.
 	_rx_pstate.rpc_id(1, PackedFloat32Array([
 			p.x, p.y, p.z, q.x, q.y, q.z, q.w, v.x, v.y, v.z,
-			float(Engine.get_physics_frames()), _car.freeze_left()]))
+			float(Engine.get_physics_frames()), _car.freeze_left(),
+			Car.net_buf_delay]))
 	if not _car.controls_enabled:
 		return
 	if Input.is_action_just_pressed("fire") \
@@ -1546,7 +1560,8 @@ func _client_tick(_delta: float) -> void:
 func _pack_state() -> Array:
 	var xf := PackedFloat32Array()
 	var flags := PackedByteArray()
-	for c in _cars:
+	for ci in _cars.size():
+		var c: Car = _cars[ci]
 		var q := c.global_transform.basis.get_rotation_quaternion()
 		var p := c.global_position
 		var v := c.linear_velocity
@@ -1579,6 +1594,12 @@ func _pack_state() -> Array:
 		# «друг подъехал вплотную к замороженному и не заморозился».
 		# Десятые секунды, потолок 25.5 c — дебаф живёт 3 c.
 		flags.append(clampi(roundi(c.freeze_left() * 10.0), 0, 255))
+		# МЕСТО В ГОНКЕ (протокол 13). Клиент считать его сам НЕ МОЖЕТ без
+		# вранья: свою машину он видит «сейчас», а чужие — с отставанием
+		# буфера, и на равной борьбе КАЖДЫЙ видит себя впереди (жалоба
+		# 28.08: «я еду первым, а на его экране — вторым»). У сервера все
+		# положения одного времени, поэтому места раздаёт он.
+		flags.append(clampi(_place_of(ci), 0, 255))
 	return [xf, flags]
 
 
@@ -1691,6 +1712,11 @@ func _rx_pstate(xf: PackedFloat32Array) -> void:
 	# заморожен», и на голой замене шуба у всех остальных мигала бы.
 	if xf.size() >= 12 and is_finite(xf[11]):
 		car.net_set_freeze(maxf(car.freeze_left(), clampf(xf[11], 0.0, 10.0)))
+	# Отставание картинки владельца (протокол 13) — по нему отматываем цели
+	# при его выстрелах. Потолок 0.5 c: больше — это уже не компенсация, а
+	# подарок стреляющему (и лазейка для нечестного клиента).
+	if xf.size() >= 13 and is_finite(xf[12]):
+		car.net_client_lag = clampf(xf[12], 0.0, 0.5)
 
 
 ## Клиент доложил: он протаранил машину другого ЖИВОГО игрока (протокол 11).
@@ -2089,9 +2115,12 @@ func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray) -> void:
 	_last_state_time = now
 	for i in _cars.size():
 		var o := i * 11
-		var f := i * 4
-		if o + 10 >= xf.size() or f + 3 >= flags.size():
+		var f := i * 5
+		if o + 10 >= xf.size() or f + 4 >= flags.size():
 			break
+		# Место — с сервера: у него все машины одного времени (см. _pack_state).
+		if i < _net_place.size():
+			_net_place[i] = int(flags[f + 4])
 		var c := _cars[i]
 		var pos := Vector3(xf[o], xf[o + 1], xf[o + 2])
 		var rot := Quaternion(

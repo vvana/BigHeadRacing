@@ -13,6 +13,19 @@ var inert := false
 var shooter: Car = null
 var direction := Vector3.FORWARD
 var freeze := false
+## На сколько секунд ОТМАТЫВАТЬ цели при проверке попадания. Ставится
+## сервером для снаряда ЖИВОГО ИГРОКА: тот целился по своему экрану, где
+## соперники нарисованы с отставанием буфера (Car.net_buf_delay) плюс
+## полёт пакета. Сервер же видит их «сейчас», и на скорости 30 м/с
+## расхождение — метры: игрок вёл ракету точно в машину, а она пролетала
+## насквозь (жалоба 28.08 «оружие пролетает сквозь даже ботов»). Лазер
+## получил такую отмотку раньше (Car._use_laser), снаряды — нет.
+## 0 — цели берутся «как есть» (боты, оффлайн, инертные копии).
+var lag := 0.0
+
+## Полукорпус для проверки по отмотанным положениям: машина ~3.2 x 1.7 м,
+## снаряд радиусом 0.5. Та же величина, что у коридора лазера.
+const HIT_R := 1.6
 
 var _speed := 55.0
 var _life := 2.2
@@ -107,23 +120,61 @@ func _build_trail() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	var prev := global_position
 	global_position += direction * _speed * delta
+	# Попадание по ОТМОТАННЫМ положениям — для снаряда живого игрока.
+	# Проверяем не точку, а отрезок за кадр: на 55 м/с снаряд проходит
+	# 0.92 м, и проверка «где он сейчас» пропускала бы задетые вскользь.
+	if lag > 0.0 and not inert:
+		for node in get_tree().get_nodes_in_group("cars"):
+			var car := node as Car
+			if car == null or car == shooter \
+					or not car.alive or car.is_ghost():
+				continue
+			if _segment_gap(prev, global_position,
+					car.past_position(lag)) < HIT_R:
+				_hit_car(car)
+				_boom()
+				return
 	_life -= delta
 	if _life <= 0.0:
 		queue_free()
+
+
+## Расстояние от точки p до отрезка a-b.
+func _segment_gap(a: Vector3, b: Vector3, p: Vector3) -> float:
+	var ab := b - a
+	var len2 := ab.length_squared()
+	if len2 < 1e-6:
+		return a.distance_to(p)
+	var t := clampf((p - a).dot(ab) / len2, 0.0, 1.0)
+	return (a + ab * t).distance_to(p)
 
 
 func _on_body_entered(body: Node3D) -> void:
 	if body == shooter:
 		return
 	var car := body as Car
-	if car != null and car.alive and not car.is_ghost():
-		car.notify_hit_by(shooter,
-				Weapons.FREEZE if freeze else Weapons.ROCKET)
-		if freeze:
-			car.apply_freeze(3.0)
-		else:
-			car.destroy()
+	# Машины с отмоткой считаются вручную выше — иначе снаряд живого игрока
+	# сработал бы ДВАЖДЫ: по отмотанному положению и по нынешнему.
+	# О мир и ограждения (они не Car) снаряд гаснет как прежде.
+	if car != null:
+		if lag > 0.0:
+			return
+		if car.alive and not car.is_ghost():
+			_hit_car(car)
+	_boom()
+
+
+func _hit_car(car: Car) -> void:
+	car.notify_hit_by(shooter, Weapons.FREEZE if freeze else Weapons.ROCKET)
+	if freeze:
+		car.apply_freeze(3.0)
+	else:
+		car.destroy()
+
+
+func _boom() -> void:
 	var color := Color(0.5, 0.8, 1.0) if freeze else Color(1.0, 0.7, 0.2)
 	FlashFx.spawn(get_parent(), global_position, 0.9, color)
 	if freeze:

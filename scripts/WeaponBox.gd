@@ -51,6 +51,42 @@ func _ready() -> void:
 		set_deferred("monitoring", false)
 	else:
 		body_entered.connect(_on_body)
+		set_physics_process(true)
+
+
+## СЕРВЕР: подбор машиной ЖИВОГО ИГРОКА проверяем сами, по сырым данным
+## владельца (Car.true_position), а не по телу марионетки. Тело сервер
+## ведёт СГЛАЖЕННО (_follow_snapshot — подтяжка с упреждением), и на
+## поворотах оно идёт в стороне от настоящего пути; куб всего 1.3 м, и
+## игрок «задевал куб, а бонус не давался» (жалоба 28.08). Area3D для
+## ботов и оффлайна оставлена как была — там тело и есть правда.
+## Меряем зазор от куба до ОТРЕЗКА кузова (как _bounce_off_cars): машина
+## 3.2 x 1.7 м, поэтому полудлина 0.9 плюс полуширина куба и кузова.
+func _physics_process(_delta: float) -> void:
+	if Net.is_client() or not Net.is_online():
+		return
+	for node in get_tree().get_nodes_in_group("cars"):
+		var car := node as Car
+		if car == null or car.net_role != Car.NetRole.PUPPET:
+			continue
+		if not car.alive or car.is_ghost():
+			continue
+		var p := car.true_position()
+		if absf(p.y - global_position.y) > 1.6:
+			continue
+		var f := car.true_forward() * 0.9
+		var a := p - f
+		var b := p + f
+		var ab := b - a
+		var len2 := ab.length_squared()
+		var t := 0.0
+		if len2 > 1e-6:
+			t = clampf((global_position - a).dot(ab) / len2, 0.0, 1.0)
+		var near := a + ab * t
+		var gap := Vector2(near.x - global_position.x,
+				near.z - global_position.z).length()
+		if gap < 1.5:
+			_give(car)
 
 
 func _process(delta: float) -> void:
@@ -64,6 +100,16 @@ func _on_body(body: Node3D) -> void:
 	var car := body as Car
 	if car == null or not car.alive or car.is_ghost():
 		return
+	# Машины живых игроков считает _physics_process по сырым данным — иначе
+	# один проезд засчитался бы дважды (откат ниже это и так ловит, но
+	# честнее не проверять одно и то же двумя способами).
+	if car.net_role == Car.NetRole.PUPPET and Net.is_server():
+		return
+	_give(car)
+
+
+## Выдать бонус, если этой машине уже можно (личный откат).
+func _give(car: Car) -> void:
 	var id := car.get_instance_id()
 	var now := Time.get_ticks_msec() / 1000.0
 	if _next_pickup.get(id, 0.0) > now:

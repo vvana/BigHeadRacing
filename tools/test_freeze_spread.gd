@@ -98,7 +98,10 @@ func _physics_process(_d: float) -> void:
 func _check_protocol() -> void:
 	_victim.apply_freeze(FREEZE)
 	var packed: Array = _main._pack_state()
-	_ok["в снимке 4 байта на машину"] = 			(packed[1] as PackedByteArray).size() == _main._cars.size() * 4
+	# С протокола 13 байтов на машину ПЯТЬ: пятый — место в гонке (клиент
+	# не может считать его сам без вранья, см. Main._pack_state). Стенду
+	# важно, что байт заморозки едет и стоит четвёртым, — это ниже.
+	_ok["в снимке 5 байт на машину"] = 			(packed[1] as PackedByteArray).size() == _main._cars.size() * 5
 	_victim.net_set_freeze(0.0)
 	_main._rx_state(packed[0], packed[1])
 	var got := _victim.freeze_left()

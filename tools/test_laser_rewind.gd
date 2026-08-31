@@ -38,6 +38,10 @@ func _physics_process(_d: float) -> void:
 				c.global_position = Vector3(150, 2, 150 + i * 8)
 		# Машина живого игрока на сервере — марионетка.
 		_shooter.net_make_puppet()
+		# С протокола 13 сервер отматывает не «на глазок 0.4», а на
+		# ОТСТАВАНИЕ, доложенное владельцем (Car.net_client_lag). Стенд
+		# задаёт его явно — сценарий ниже построен ровно на этой величине.
+		_shooter.net_client_lag = 0.4
 		var fwd: Vector3 = -_shooter.global_transform.basis.z
 		fwd.y = 0.0
 		fwd = fwd.normalized()

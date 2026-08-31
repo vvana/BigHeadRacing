@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testrocketrew"]
+
+[ext_resource type="Script" path="res://tools/test_rocket_rewind.gd" id="1_testrr"]
+
+[node name="TestRocketRewind" type="Node3D"]
+script = ExtResource("1_testrr")

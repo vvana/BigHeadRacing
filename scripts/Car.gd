@@ -117,6 +117,12 @@ var _touch_mute := {}
 # буфер воспроизведения (~0.35 c) и полёт пакета, и без отмотки «попал на
 # экране — сервер промахнулся». Заполняется только на сервере.
 var _pos_hist: Array[Vector3] = []
+## Сервер: на сколько ОТСТАЁТ картинка у владельца этой машины (его
+## Car.net_buf_delay + полёт пакета). Присылается в состоянии владельца
+## (протокол 13). По этой величине сервер отматывает цели, когда владелец
+## стреляет: он целился в то, что видел. Раньше стояла догадка 0.4 c для
+## лазера, а снаряды не отматывались вовсе.
+var net_client_lag := 0.0
 # Буфер снимков КЛИЕНТСКОЙ марионетки (см. _follow_buffered): каждый снимок
 # получает время на СИНТЕТИЧЕСКОЙ шкале (+1/60 к прошлому) — пачка,
 # слипшаяся в канале, раскладывается обратно в ритм отправки сервера.
@@ -1082,6 +1088,19 @@ func _bounce_off_cars() -> void:
 			# Без окна руление в _drive съело бы закрутку за пару кадров.
 			_bump_spin_time = 0.6
 	_touch_cars = now
+
+
+## На сколько отматывать цели при выстреле ЭТОЙ машины. Не ноль только на
+## сервере и только для машины живого игрока: он целился по своему экрану,
+## где соперники отстают на его буфер (net_client_lag приходит в состоянии
+## владельца, протокол 13). Боты и оффлайн стреляют по текущему миру — их
+## картина и есть правда.
+func net_shot_lag() -> float:
+	if not (Net.is_server() and net_role == NetRole.PUPPET):
+		return 0.0
+	# Пока владелец не доложил своё отставание — скромная догадка вместо
+	# прежних 0.4: перекомпенсация бьёт по тем, в кого стреляют.
+	return net_client_lag if net_client_lag > 0.0 else 0.12
 
 
 ## Где машина была age секунд назад (по серверной истории _pos_hist).
@@ -2079,6 +2098,9 @@ func use_weapon() -> void:
 			var p := Projectile.new()
 			p.shooter = self
 			p.direction = fwd
+			# Снаряд живого игрока проверяет попадание по ОТМОТАННЫМ целям —
+			# как лазер: он целился в то, что видел на своём экране.
+			p.lag = net_shot_lag()
 			p.freeze = kind == Weapons.FREEZE
 			get_parent().add_child(p)
 			p.global_position = global_position + fwd * 2.3 + Vector3.UP * 0.55
@@ -2130,7 +2152,10 @@ func _use_magnet() -> void:
 		var other := node as Car
 		if other == self or not other.alive or other.is_ghost():
 			continue
-		var dir := global_position - other.global_position
+		# Магнит тоже целится по картине стрелявшего: он видит соперников с
+		# отставанием своего буфера (протокол 13), и рывок должен считаться от
+		# того, что он видел, а не от «сейчас».
+		var dir := global_position - other.past_position(net_shot_lag())
 		dir.y = 0.0
 		var dist := dir.length()
 		if dist < 0.1:
@@ -2172,7 +2197,7 @@ func _use_laser(fwd: Vector3) -> void:
 	# пакета. Сервер меряет попадание по позициям НА ТОТ МОМЕНТ (история
 	# _pos_hist) — «попал в то, что видел». Боты и оффлайн стреляют по
 	# текущему миру: их картина и есть правда.
-	var lag := 0.4 if Net.is_server() and net_role == NetRole.PUPPET else 0.0
+	var lag := net_shot_lag()
 	var from := global_position + Vector3.UP * 0.5
 	LaserFx.spawn(get_parent(), from, fwd, RANGE)
 	for node in get_tree().get_nodes_in_group("cars"):
@@ -2588,3 +2613,24 @@ func is_near_ground(max_dist := 1.4) -> bool:
 ## Текущая скорость в км/ч — для HUD.
 func speed_kmh() -> float:
 	return linear_velocity.length() * 3.6
+
+
+## Где эта машина находится ПО СЫРЫМ ДАННЫМ её хозяина — для проверок,
+## которым важна точность, а не гладкость картинки (подбор боксов).
+## У марионетки сервер ведёт СГЛАЖЕННОЕ тело (_follow_snapshot: подтяжка
+## с постоянной времени и упреждением), и на поворотах оно уходит вбок от
+## настоящего пути на десятки сантиметров. Куб бонуса всего 1.3 м, поэтому
+## игрок «задевал куб, а он не подбирался» (жалоба 28.08). Сырое состояние
+## владельца такого сдвига не имеет.
+func true_position() -> Vector3:
+	return _snap_pos if net_role == NetRole.PUPPET and _snap_seen \
+			else global_position
+
+
+## Курс по тем же сырым данным (для «капсулы» кузова при подборе бокса).
+func true_forward() -> Vector3:
+	var b := Basis(_snap_rot) if net_role == NetRole.PUPPET and _snap_seen \
+			else global_transform.basis
+	var f := -b.z
+	f.y = 0.0
+	return f.normalized() if f.length_squared() > 1e-6 else Vector3.FORWARD
