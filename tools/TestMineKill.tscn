@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testminekill"]
+
+[ext_resource type="Script" path="res://tools/test_mine_kill.gd" id="1_testminekill"]
+
+[node name="TestMineKill" type="Node3D"]
+script = ExtResource("1_testminekill")

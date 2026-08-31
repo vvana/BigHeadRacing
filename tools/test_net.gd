@@ -132,7 +132,7 @@ func _physics_process(delta: float) -> void:
 	# Метки соперников СОЗДАНЫ (по одной на каждый чужой слот игрока), но
 	# пока никто не подключился — СКРЫТЫ: слоты ведут боты, а оранжевая
 	# стрелка означает живого игрока. Тест одиночный, ждём именно скрытые.
-	_ok["метки соперников есть"] = 			_main._rival_markers.size() == Net.PLAYER_SLOTS - 1
+	_ok["метки соперников есть"] = 			_main._rival_markers.size() == Net.race_size - 1
 	var any_visible := false
 	for m: Node3D in _main._rival_markers.values():
 		if m.visible:

@@ -15,6 +15,16 @@ var track_kind := ""
 ## Генерируются один раз за запуск игры.
 var car_thumbs := {}
 
+## Сколько машин в заезде хочет игрок (выбор в гараже, 4..8). Оффлайн —
+## это игрок + (race_size−1) ботов; по сети желание уезжает в hello, и
+## размер заезда решает сервер (Net.race_size): его задаёт ПЕРВЫЙ игрок
+## пустого лобби, остальные приезжают в заезд такого размера.
+const RACE_SIZE_MIN := 4
+const RACE_SIZE_MAX := 8
+var race_size := 4:
+	set(v):
+		race_size = clampi(v, RACE_SIZE_MIN, RACE_SIZE_MAX)
+
 # ---- Профиль игрока: опыт (переживает перезапуск игры) ----
 # Опыт даётся на финише заезда: за место + за уничтоженных соперников
 # (Main._show_finish). За уровни дальше будем открывать «разные штуки»:
@@ -30,6 +40,16 @@ func _ready() -> void:
 	var cf := ConfigFile.new()
 	if cf.load(PROFILE_PATH) == OK:
 		xp = int(cf.get_value("profile", "xp", 0))
+		race_size = int(cf.get_value("profile", "race_size", 4))
+
+
+## Запомнить выбранное число участников (переживает перезапуск игры).
+func set_race_size(n: int) -> void:
+	race_size = n
+	var cf := ConfigFile.new()
+	cf.load(PROFILE_PATH)   # не затирать другие поля профиля
+	cf.set_value("profile", "race_size", race_size)
+	cf.save(PROFILE_PATH)
 
 
 ## Начислить опыт и сразу сохранить профиль на диск.

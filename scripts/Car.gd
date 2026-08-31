@@ -71,6 +71,13 @@ var ai_skill := 1.0
 
 # Эффекты оружия (таймеры, с).
 var _ghost_time := 0.0          # после уничтожения: не трогает машины, мигает
+# Сколько «призрак» уже длится. Отдельно от _ghost_time, потому что фазу
+# мигания по остатку считать НЕЛЬЗЯ: марионетке остаток подливают по 0.3 c
+# каждым снимком (Main._rx_state), и «прошло = ghost_time − остаток» давало
+# вечное 1.7 из 2.0 — последнюю фазу, то есть «всегда видна». Из-за этого
+# уничтоженный соперник не мигал вовсе и выглядел как ни в чём не бывало
+# едущий (жалоба 31.08).
+var _ghost_age := 0.0
 var _freeze_time := 0.0         # замедление от ледышки (дебаф заразен)
 var _boost_time := 0.0          # ускорение
 var _slip_time := 0.0           # занос от масляного пятна
@@ -887,12 +894,10 @@ func _tick_effects(delta: float) -> void:
 		_boost_flame.emitting = alive and (_boost_time > 0.0
 				or (_status_time > 0.0 and _status_kind == Weapons.BOOST))
 	if _ghost_time > 0.0:
+		_ghost_age += delta
 		_ghost_time -= delta
 		if _ghost_time <= 0.0:
-			# «Призрак» кончился: контакты с машинами снова включены.
-			collision_layer = 0b100
-			collision_mask = 0b111
-			visible = true
+			_end_ghost()
 
 
 ## Анимация колёс — в _process, а не _physics_process: кадр рисуется ПОСЛЕ
@@ -927,8 +932,10 @@ func _process(delta: float) -> void:
 	if _ghost_time > 0.0:
 		# Три моргания за время призрака: полпериода погашен — полпериода
 		# виден (последний отрезок всегда «виден» — не застрять невидимым).
-		var elapsed := ghost_time - _ghost_time
-		var phase := int(elapsed / (ghost_time / 6.0))
+		# Считаем по ПРОЖИТОМУ времени (_ghost_age), а не по остатку: у
+		# марионетки остаток подливается снимками и «прожитое» из него не
+		# выводится (см. _ghost_age).
+		var phase := int(_ghost_age / (ghost_time / 6.0))
 		visible = phase % 2 == 1 or phase >= 5
 
 
@@ -2241,12 +2248,13 @@ func destroy() -> void:
 		return
 	var _wd0 := Time.get_ticks_msec()
 	_forward_fx(NetFx.DESTROY)
-	FlashFx.spawn(get_parent(), global_position, 2.4, Color(1.0, 0.45, 0.1))
-	FxKit.ring(get_parent(), global_position, 3.4, Color(1.0, 0.55, 0.15))
-	FxKit.smoke_burst(get_parent(), global_position + Vector3.UP * 0.4, 12, 1.2)
-	SparksFx.spawn(get_parent(), global_position + Vector3.UP * 0.5, 10.0)
-	FxKit.fire_burst(get_parent(), global_position + Vector3.UP * 0.3)
-	FxKit.scorch(get_parent(), global_position)
+	# И ВСЕМ ОСТАЛЬНЫМ — чтобы взрыв увидел не только владелец машины.
+	# Раньше третьи игроки не видели ни вспышки, ни мигания: у них машина
+	# просто «переставлялась» снимками и как будто ехала дальше.
+	if Net.is_server() and race != null \
+			and race.has_method("net_broadcast_destroy"):
+		race.net_broadcast_destroy(self)
+	_boom_fx(global_position)
 	if track:
 		# Отметка СВОЯ (по непрерывности): уничтоженную у ограждения машину
 		# глобальный поиск мог вернуть на чужой виток кольца.
@@ -2258,14 +2266,61 @@ func destroy() -> void:
 	_freeze_time = 0.0
 	_slip_time = 0.0
 	_boost_time = 0.0
-	_ghost_time = ghost_time
-	# Призрак не сталкивается с машинами (слой 4 убран с обеих сторон);
-	# дорога (1) и стены (2) остаются.
-	collision_layer = 0
-	collision_mask = 0b011
+	_start_ghost()
 	var _wd := Time.get_ticks_msec() - _wd0
 	if _wd > 100:
 		print("[slow] destroy() занял %d мс" % _wd)
+
+
+## Взрыв машины — одной строкой (зовут destroy и сетевая копия события).
+func _boom_fx(at: Vector3) -> void:
+	FlashFx.spawn(get_parent(), at, 2.4, Color(1.0, 0.45, 0.1))
+	FxKit.ring(get_parent(), at, 3.4, Color(1.0, 0.55, 0.15))
+	FxKit.smoke_burst(get_parent(), at + Vector3.UP * 0.4, 12, 1.2)
+	SparksFx.spawn(get_parent(), at + Vector3.UP * 0.5, 10.0)
+	FxKit.fire_burst(get_parent(), at + Vector3.UP * 0.3)
+	FxKit.scorch(get_parent(), at)
+
+
+## Начало «призрака»: мигание с нуля и никаких контактов с машинами
+## (слой 4 убран с обеих сторон); дорога (1) и стены (2) остаются.
+func _start_ghost() -> void:
+	_ghost_time = ghost_time
+	_ghost_age = 0.0
+	collision_layer = 0
+	collision_mask = 0b011
+
+
+## Конец «призрака»: контакты и видимость возвращаются.
+func _end_ghost() -> void:
+	_ghost_time = 0.0
+	_ghost_age = 0.0
+	collision_layer = 0b100
+	collision_mask = 0b111
+	visible = true
+
+
+## КЛИЕНТ: соперника уничтожили (Main._rx_destroy_fx). Физику и переезд к
+## месту появления привезут снимки — здесь только то, что игрок должен
+## УВИДЕТЬ: взрыв там, где машина видна ЕМУ (картинка марионетки отстаёт
+## на буфер, и взрыв по «серверному сейчас» вспыхнул бы в стороне), и
+## мигание неуязвимости.
+func net_show_destroy() -> void:
+	_boom_fx(visual_origin())
+	net_set_ghost(true)
+
+
+## Признак «призрака» из снимка (Main._rx_state): пока сервер его шлёт,
+## таймер подливается, а кончился флаг — призрак сразу снимается.
+## Через эту дверь, а не прямой записью в _ghost_time: начало призрака
+## обнуляет фазу мигания и снимает контакты, конец — возвращает их.
+func net_set_ghost(active: bool) -> void:
+	if active:
+		if _ghost_time <= 0.0:
+			_start_ghost()
+		_ghost_time = maxf(_ghost_time, 0.3)
+	elif _ghost_time > 0.0:
+		_end_ghost()
 
 
 ## Значок эффекта над машиной: что показывать и как он живёт.

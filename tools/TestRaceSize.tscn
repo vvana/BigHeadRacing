@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testracesize"]
+
+[ext_resource type="Script" path="res://tools/test_race_size.gd" id="1_testracesize"]
+
+[node name="TestRaceSize" type="Node3D"]
+script = ExtResource("1_testracesize")

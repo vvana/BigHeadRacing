@@ -37,6 +37,7 @@ var _count_label: Label
 var _buttons: Array[Button] = []
 var _host_edit: LineEdit          # адрес сетевого сервера
 var _net_status: Label
+var _size_label: Label            # число участников заезда (4..8)
 var _scroll: ScrollContainer
 var _style_normal: StyleBoxFlat
 var _style_selected: StyleBoxFlat
@@ -76,6 +77,69 @@ func _start_race() -> void:
 	# Трасса на заезд — случайная из доступных.
 	GameState.track_kind = TrackBuilder.pick_random_kind()
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
+
+
+## Выбор числа участников заезда (4..8) — стальная табличка в левом нижнем
+## углу, рядом со «СТАРТ». Действует и оффлайн (игрок + N−1 ботов), и по
+## сети: размер лобби задаёт ПЕРВЫЙ подключившийся игрок (Main._rx_hello),
+## остальные приезжают в заезд его размера. Выбор хранится в профиле.
+func _build_race_size_ui(canvas: Node) -> void:
+	var panel := UiKit.plate(canvas, "steel", Vector2.ZERO, Vector2(150, 70))
+	panel.anchor_left = 0.0
+	panel.anchor_right = 0.0
+	panel.anchor_top = 1.0
+	panel.anchor_bottom = 1.0
+	panel.offset_left = 20
+	panel.offset_right = 170
+	panel.offset_top = -122
+	panel.offset_bottom = -52
+
+	var title := Label.new()
+	title.text = "УЧАСТНИКОВ"
+	if _ui_font:
+		title.add_theme_font_override("font", _ui_font)
+	title.add_theme_font_size_override("font_size", 14)
+	title.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))
+	title.position = Vector2(0, 6)
+	title.size = Vector2(150, 20)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	panel.add_child(title)
+
+	_size_label = Label.new()
+	_size_label.text = str(GameState.race_size)
+	if _ui_font:
+		_size_label.add_theme_font_override("font", _ui_font)
+	_size_label.add_theme_font_size_override("font_size", 28)
+	_size_label.add_theme_color_override("font_color", UiKit.YELLOW)
+	_size_label.add_theme_constant_override("outline_size", 5)
+	_size_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	_size_label.position = Vector2(55, 24)
+	_size_label.size = Vector2(40, 40)
+	_size_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_size_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	panel.add_child(_size_label)
+
+	var minus := Button.new()
+	minus.text = "–"
+	UiKit.style_button(minus, "teal", 22)
+	minus.position = Vector2(12, 26)
+	minus.size = Vector2(38, 36)
+	minus.pressed.connect(func() -> void: _change_race_size(-1))
+	panel.add_child(minus)
+
+	var plus := Button.new()
+	plus.text = "+"
+	UiKit.style_button(plus, "teal", 22)
+	plus.position = Vector2(100, 26)
+	plus.size = Vector2(38, 36)
+	plus.pressed.connect(func() -> void: _change_race_size(1))
+	panel.add_child(plus)
+
+
+func _change_race_size(dir: int) -> void:
+	GameState.set_race_size(GameState.race_size + dir)
+	if _size_label:
+		_size_label.text = str(GameState.race_size)
 
 
 ## Панель сетевой игры: адрес сервера и кнопка подключения. Сама гонка
@@ -171,6 +235,10 @@ func _join_pressed() -> void:
 		_net_status.text = "Укажите адрес сервера"
 		return
 	GameState.selected_car_id = CarModelLibrary.CAR_IDS[_index]
+	# Свою сцену строим сразу под желаемый размер: если мы окажемся первым
+	# игроком лобби, сервер примет его и перестройка не понадобится; если
+	# заезд уже другого размера — сервер продиктует свой (_rx_track).
+	Net.race_size = GameState.race_size
 	_net_status.text = "Подключение к %s:%d…" % [addr, port]
 	if Net.join_server(addr, port):
 		_watch_connect_timeout()
@@ -482,6 +550,7 @@ func _setup_hud() -> void:
 	start_btn.offset_bottom = -52
 	start_btn.pressed.connect(_start_race)
 	canvas.add_child(start_btn)
+	_build_race_size_ui(canvas)
 	_build_net_ui(canvas)
 
 	var help := Label.new()

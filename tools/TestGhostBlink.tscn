@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testghostblink"]
+
+[ext_resource type="Script" path="res://tools/test_ghost_blink.gd" id="1_testghostblink"]
+
+[node name="TestGhostBlink" type="Node3D"]
+script = ExtResource("1_testghostblink")

@@ -9,11 +9,17 @@ extends Control
 ## Человеческие названия машин — из экрана выбора (у CarSelect нет
 ## class_name, поэтому preload скрипта).
 const CAR_NAMES: Dictionary = preload("res://scripts/CarSelect.gd").DISPLAY_NAMES
-const SLOTS := 4          # столько же, сколько Net.PLAYER_SLOTS
-# 4 панели в ряд: 4×288 + 3×14 = 1194 — умещается в окно 1280.
+# Подиумов — по числу машин заезда (Net.race_size, 4..8). До 4 — один ряд
+# полноразмерных панелей (4×288 + 3×14 = 1194, умещается в окно 1280);
+# 5..8 — ДВА ряда панелей поменьше, иначе ряд не влезает по ширине,
+# а полноразмерные два ряда — по высоте (2×330+14 = 674 при окне 720).
 const SLOT_W := 288.0
 const SLOT_H := 330.0
+const SLOT_W2 := 250.0    # панель в двухрядной раскладке
+const SLOT_H2 := 250.0
 const SLOT_GAP := 14.0
+
+var _slots := 4           # сколько подиумов построено (_ready)
 
 var _font: FontFile
 var _status: Label
@@ -23,7 +29,7 @@ var _wait_labels: Array[Label] = []
 var _views: Array[SubViewportContainer] = []
 var _viewports: Array[SubViewport] = []
 var _turntables: Array[Node3D] = []
-var _slot_ids := PackedStringArray(["", "", "", ""])
+var _slot_ids := PackedStringArray()   # размер задаёт _ready
 
 
 func _ready() -> void:
@@ -64,7 +70,9 @@ func _ready() -> void:
 	_status.offset_bottom = 196
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
-	for s in SLOTS:
+	_slots = Net.race_size
+	_slot_ids.resize(_slots)
+	for s in _slots:
 		_build_slot(s)
 
 	var hint := _label(self,
@@ -77,6 +85,15 @@ func _ready() -> void:
 	hint.offset_top = -48
 	hint.offset_bottom = -16
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	# Двухрядная раскладка (5..8 подиумов) съедает место статуса под
+	# баннером — статус переезжает ВНИЗ, а подсказка ужимается под него.
+	if _slots > 4:
+		_status.offset_top = 656
+		_status.offset_bottom = 700
+		_status.add_theme_font_size_override("font_size", 17)
+		hint.offset_top = -18
+		hint.offset_bottom = -2
+		hint.add_theme_font_size_override("font_size", 12)
 
 
 func _process(delta: float) -> void:
@@ -110,7 +127,7 @@ func hide_screen() -> void:
 ## видел, с кем поедет, когда людей на все слоты не нашлось.
 func set_slot(slot: int, taken: bool, car_id: String, is_me: bool,
 		is_bot := false) -> void:
-	if slot < 0 or slot >= SLOTS:
+	if slot < 0 or slot >= _slots:
 		return
 	var name_l := _name_labels[slot]
 	name_l.text = "Player %d" % (slot + 1) + (" — ты" if is_me else "")
@@ -150,30 +167,43 @@ func set_slot(slot: int, taken: bool, car_id: String, is_me: bool,
 ## Панель одного слота: имя игрока, вьюпорт с подиумом и вращающейся
 ## машиной (свой мир, как миниатюры на экране выбора), название машины.
 func _build_slot(s: int) -> void:
-	var panel := UiKit.plate(self, "steel", Vector2.ZERO,
-			Vector2(SLOT_W, SLOT_H))
+	# Раскладка: один ряд до 4 подиумов, дальше два ряда (верхний полнее
+	# при нечётном числе). Панели двухрядной раскладки меньше — см. консты.
+	var two_rows := _slots > 4
+	var w := SLOT_W2 if two_rows else SLOT_W
+	var h := SLOT_H2 if two_rows else SLOT_H
+	var per_row := ceili(_slots / 2.0) if two_rows else _slots
+	var row := floori(s / float(per_row))
+	var col := s % per_row
+	var in_row := per_row if row == 0 else _slots - per_row
+	var panel := UiKit.plate(self, "steel", Vector2.ZERO, Vector2(w, h))
 	panel.anchor_left = 0.5
 	panel.anchor_right = 0.5
 	panel.anchor_top = 0.5
 	panel.anchor_bottom = 0.5
-	# Ряд из SLOTS панелей, центрированный по горизонтали.
-	var total := SLOT_W * SLOTS + SLOT_GAP * (SLOTS - 1)
-	var x0 := -total * 0.5 + s * (SLOT_W + SLOT_GAP)
+	# Каждый ряд центрирован по горизонтали независимо.
+	var total := w * in_row + SLOT_GAP * (in_row - 1)
+	var x0 := -total * 0.5 + col * (w + SLOT_GAP)
 	panel.offset_left = x0
-	panel.offset_right = x0 + SLOT_W
-	panel.offset_top = -SLOT_H * 0.5 + 40.0
-	panel.offset_bottom = SLOT_H * 0.5 + 40.0
+	panel.offset_right = x0 + w
+	var y0 := -h * 0.5 + 40.0
+	if two_rows:
+		# Центр сдвинут чуть выше (36), чтобы внизу осталась полоса под
+		# статус и подсказку (см. _ready).
+		y0 = 36.0 - h - SLOT_GAP * 0.5 if row == 0 else 36.0 + SLOT_GAP * 0.5
+	panel.offset_top = y0
+	panel.offset_bottom = y0 + h
 
 	var name_l := _label(panel, "Player %d" % (s + 1), 24, Color(1, 1, 1, 0.5), 6)
 	name_l.position = Vector2(0, 10)
-	name_l.size = Vector2(SLOT_W, 34)
+	name_l.size = Vector2(w, 34)
 	name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_name_labels.append(name_l)
 
 	var view := SubViewportContainer.new()
 	view.stretch = true
 	view.position = Vector2(10, 52)
-	view.size = Vector2(SLOT_W - 20, SLOT_H - 106)
+	view.size = Vector2(w - 20, h - 106)
 	view.visible = false
 	panel.add_child(view)
 	_views.append(view)
@@ -225,14 +255,14 @@ func _build_slot(s: int) -> void:
 	_turntables.append(table)
 
 	var car_l := _label(panel, "", 18, Color(1, 0.9, 0.45), 5)
-	car_l.position = Vector2(0, SLOT_H - 44)
-	car_l.size = Vector2(SLOT_W, 30)
+	car_l.position = Vector2(0, h - 44)
+	car_l.size = Vector2(w, 30)
 	car_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_car_labels.append(car_l)
 
 	var wait_l := _label(panel, "Ждём игрока…", 20, Color(1, 1, 1, 0.45), 5)
-	wait_l.position = Vector2(0, SLOT_H * 0.5 - 16)
-	wait_l.size = Vector2(SLOT_W, 32)
+	wait_l.position = Vector2(0, h * 0.5 - 16)
+	wait_l.size = Vector2(w, 32)
 	wait_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_wait_labels.append(wait_l)
 
