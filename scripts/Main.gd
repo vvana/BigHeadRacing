@@ -61,6 +61,9 @@ var _track: TrackBuilder
 var _track_kind := TrackBuilder.KIND_GRASS  # вид трассы этого заезда
 var _progress: Array[float] = []    # накопленный путь вдоль оси, м
 var _last_offset: Array[float] = []
+# Клетка стартовой решётки каждой машины: welcome возвращает на неё свою
+# машину (пока ждали слот, её могла увезти марионетка со старым снимком).
+var _grid_xf: Array[Transform3D] = []
 var _laps_done: Array[int] = []
 var _offtrack_time: Array[float] = []
 var _flip_time: Array[float] = []
@@ -325,6 +328,7 @@ func _spawn_cars() -> void:
 		_set_car_model(car, ids[i])
 
 		_cars.append(car)
+		_grid_xf.append(car.transform)
 		_progress.append(0.0)
 		_laps_done.append(0)
 		_offtrack_time.append(0.0)
@@ -1783,6 +1787,14 @@ func _rx_pstate(xf: PackedFloat32Array) -> void:
 	var car := _cars[slot]
 	if car.net_role != Car.NetRole.PUPPET:
 		return
+	# Пакет из ПРОШЛОЙ сцены клиента. После _rx_reset сервер строит новую
+	# решётку, а состояние старой машины владельца ещё летит по сети — один
+	# такой пакет телепортировал машину со старта туда, где игрок закончил
+	# прошлый заезд, снимки разносили это всем, и оба игрока начинали новый
+	# заезд «не у старта, а дальше» (жалоба 31.08). Пока клиент не
+	# поздоровался В ЭТОЙ сцене, его состояние устарело — выбрасываем.
+	if not _hello_done.has(slot):
+		return
 	var pos := Vector3(xf[0], xf[1], xf[2])
 	var vel := Vector3(xf[7], xf[8], xf[9])
 	# Санитария клиент-авторитетных данных — сервер обязан не доверять
@@ -1965,6 +1977,23 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	car.freeze = false
 	car.net_role = Car.NetRole.OWNED
 	car.is_player = true
+	# И ВСТАЁТ НА СВОЮ КЛЕТКУ РЕШЁТКИ. Пока мы ждали слот, она была
+	# марионеткой, и устаревший снимок (сервер мог поймать хвост _rx_pstate
+	# из сцены ПРОШЛОГО заезда — см. защиту в _rx_pstate) успевал увезти её
+	# со старта: оба игрока начинали новый заезд там, где закончили прошлый
+	# (жалоба 31.08). Подсевшему в идущую гонку место тут же перепишет
+	# _rx_race_running — надёжные RPC приходят по порядку.
+	if slot < _grid_xf.size():
+		car.global_transform = _grid_xf[slot]
+		car.linear_velocity = Vector3.ZERO
+		car.angular_velocity = Vector3.ZERO
+		car.reset_speed_memory()
+		car.reset_track_offset()
+		_last_offset[slot] = car.track_offset
+		var glen: float = _track._curve.get_baked_length()
+		_progress[slot] = car.track_offset - glen \
+				if car.track_offset > glen * 0.5 else car.track_offset
+		_laps_done[slot] = 0
 	# Интерполяция гасится на кадр (пересадка в свою машину — телепорт).
 	# Исключения решателя с марионетками ОСТАЮТСЯ (см. net_make_puppet:
 	# «твёрдая» версия вешала GodotPhysics на 300+ мс) — непроницаемость

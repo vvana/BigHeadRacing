@@ -1,6 +1,7 @@
 class_name WeaponBox
 extends Area3D
-## Бокс с оружием на трассе: вращающийся золотой куб. Подбор даёт машине
+## Бокс с оружием на трассе: золотой куб (неподвижный — просьба 31.08:
+## «бонусы пусть не вращаются»; лежит «алмазом», углом вверх). Подбор даёт машине
 ## один СЛУЧАЙНЫЙ вид оружия (заменяя текущее — в руках только одно).
 ## Бокс НЕ ИСЧЕЗАЕТ: он общий для всех, и каждый проехавший через него
 ## забирает СВОЙ случайный бонус — первый не обделяет остальных.
@@ -28,7 +29,7 @@ func _ready() -> void:
 	col.shape = box
 	add_child(col)
 
-	# Крутящийся куб — косметика. Серверу он не нужен и вреден: headless-
+	# Куб — косметика. Серверу он не нужен и вреден: headless-
 	# рендер сыпет по мешам «Parameter m is null» в stderr, journald от
 	# такого потока включает rate limit и глотает наши [net]-сообщения.
 	if not Net.is_server():
@@ -36,6 +37,14 @@ func _ready() -> void:
 		var cube := BoxMesh.new()
 		cube.size = Vector3(1.1, 1.1, 1.1)
 		_mesh.mesh = cube
+		# Статичная поза «алмазом» (главная диагональ вертикально) вместо
+		# прежнего вращения: куб читается как бонус, но не крутится.
+		# ГРАБЛИ: поворот «X 35° + Y 45°» НЕ ГОДИТСЯ — он взаимно
+		# сокращается с ракурсом изокамеры (yaw 45°, pitch −32°), и с экрана
+		# куб выглядел ровно стоящим (поймано скриншотом). Крен по Z камера
+		# не компенсирует ничем.
+		_mesh.transform.basis = Basis(Vector3.RIGHT, 0.6155) \
+				* Basis(Vector3.BACK, PI / 4.0)
 		var mat := StandardMaterial3D.new()
 		mat.albedo_color = Color(1.0, 0.82, 0.15, 0.85)
 		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -87,13 +96,6 @@ func _physics_process(_delta: float) -> void:
 				near.z - global_position.z).length()
 		if gap < 1.5:
 			_give(car)
-
-
-func _process(delta: float) -> void:
-	if _mesh == null:
-		return   # сервер: куба нет, крутить нечего
-	_mesh.rotate_y(1.6 * delta)
-	_mesh.rotation.x = 0.35 * sin(Time.get_ticks_msec() / 400.0)
 
 
 func _on_body(body: Node3D) -> void:
