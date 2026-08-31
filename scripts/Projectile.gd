@@ -29,6 +29,7 @@ const HIT_R := 1.6
 
 var _speed := 55.0
 var _life := 2.2
+var _first_check := true   # первый кадр: отрезок тянется от носа стрелявшего
 
 
 func _ready() -> void:
@@ -121,7 +122,15 @@ func _build_trail() -> void:
 
 func _physics_process(delta: float) -> void:
 	var prev := global_position
+	# Первый кадр: отрезок проверки дотягивается назад до НОСА стрелявшего —
+	# снаряд рождается в 2.3 м перед машиной, и цель, которая на экране
+	# стрелявшего стояла вплотную к бамперу (отмотанная точка ЗА местом
+	# спавна), иначе не проверялась бы вовсе: снаряд летит только вперёд.
+	if _first_check:
+		_first_check = false
+		prev -= direction * 2.3
 	global_position += direction * _speed * delta
+	_hug_ground()
 	# Попадание по ОТМОТАННЫМ положениям — для снаряда живого игрока.
 	# Проверяем не точку, а отрезок за кадр: на 55 м/с снаряд проходит
 	# 0.92 м, и проверка «где он сейчас» пропускала бы задетые вскользь.
@@ -131,14 +140,41 @@ func _physics_process(delta: float) -> void:
 			if car == null or car == shooter \
 					or not car.alive or car.is_ghost():
 				continue
-			if _segment_gap(prev, global_position,
-					car.past_position(lag)) < HIT_R:
-				_hit_car(car)
-				_boom()
-				return
+			# Кузов — ОТРЕЗОК, а не точка: машина ~3.2 м длиной, и снаряд,
+			# чиркнувший по носу или корме, проходил от ЦЕНТРА дальше HIT_R —
+			# «оружие пролетело сквозь» (жалоба 31.08). Три пробы (центр и
+			# ±1.1 м по курсу) с радиусом 1.6 покрывают кузов без зазоров.
+			var center := car.past_position(lag)
+			var f := car.true_forward()
+			for k: float in [0.0, 1.1, -1.1]:
+				if _segment_gap(prev, global_position,
+						center + f * k) < HIT_R:
+					_hit_car(car)
+					_boom()
+					return
 	_life -= delta
 	if _life <= 0.0:
 		queue_free()
+
+
+## Прижим к полотну (как у ScrambleWave): луч вниз, цель — земля + HOVER,
+## снижение/подъём ограничены SNAP за кадр (30 м/с по вертикали — любой
+## уклон трассы, но не телепорт вниз при выстреле в полёте). Раньше снаряд
+## летел по прямой С ВЫСОТЫ ВЫСТРЕЛА: на спуске дорога уходила вниз, а он
+## нет — и проходил НАД машиной, в которую целились в упор («стрелял в
+## бота прямо передо мной — пролетело сквозь него»). Земли под снарядом
+## нет (кромка обрыва, песчаные дюны) — летит как летел.
+func _hug_ground() -> void:
+	const HOVER := 0.7
+	const SNAP := 0.5
+	var space := get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(
+			global_position + Vector3.UP * 2.0,
+			global_position + Vector3.DOWN * 4.0, 0b001)
+	var hit := space.intersect_ray(q)
+	if hit:
+		var want: float = hit.position.y + HOVER
+		global_position.y += clampf(want - global_position.y, -SNAP, SNAP)
 
 
 ## Расстояние от точки p до отрезка a-b.

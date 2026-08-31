@@ -4,8 +4,12 @@ extends Area3D
 ## МЕНЯЮТСЯ МЕСТАМИ лево и право (Car.apply_scramble) — уничтожения нет,
 ## есть пять секунд паники за рулём. Создаётся кодом из Car.use_weapon().
 ##
-## Летит медленнее ракеты и живёт дольше: волну должно быть видно, а
-## уклониться от неё — реально.
+## Кольца волны ГОРИЗОНТАЛЬНЫ и расходятся ровно до радиуса поражения
+## (жалоба 31.08: «должна пускать волны по горизонтали, чтобы было видно
+## её радиус действия»). Волна ПРИЖИМАЕТСЯ К ПОЛОТНУ (луч вниз каждый
+## кадр): раньше летела по прямой от точки выстрела, на перепаде высот
+## уходила от дороги и проходила НАД машинами — «выстрелил в бота прямо
+## передо мной, оружие пролетело сквозь него».
 
 const SCRAMBLE_TIME := 5.0
 
@@ -14,30 +18,47 @@ const SCRAMBLE_TIME := 5.0
 ## Projectile, иначе эффект вешался бы дважды.
 var inert := false
 var shooter: Car = null
+## Трасса — для доворота вдоль полотна (_steer_along_track). Ставит
+## создатель; не поставил — берётся у стрелявшего, без обоих волна летит
+## по прямой (стенды в пустом мире).
+var track: TrackBuilder = null
 var direction := Vector3.FORWARD
 ## На сколько отматывать цели при проверке попадания — ровно как у снаряда
 ## (Projectile.lag): стрелявший целился по своему экрану.
 var lag := 0.0
 
-## Волна ШИРЕ снаряда: это конус звука, а не пуля.
+## Радиус поражения — он же радиус, до которого расходятся кольца: игрок
+## видит ровно ту зону, в которой волна снимает управление. Той же
+## причины (31.08) машины ловятся НЕ Area3D, а ручной проверкой по отрезку
+## за кадр: сферу такого радиуса Area3D тёрла бы о полотно, а крохотная
+## прежняя (0.9) промахивалась там, где кольца «прошли сквозь» машину.
 const HIT_R := 2.6
 
-var _speed := 38.0
+## Быстрее прежних 38: волна должна ДОГОНЯТЬ едущих. Машина на бусте идёт
+## под 48 м/с — от неё волна отстанет (и пусть), но обычную (до ~34)
+## достаёт уверенно.
+const SPEED := 50.0
+## Насколько волна висит над полотном (и над точкой спавна).
+const HOVER := 0.55
+
 var _life := 1.8
 var _age := 0.0
+var _first_check := true   # первый кадр: отрезок тянется от носа стрелявшего
 var _rings: Array[MeshInstance3D] = []
 var _ring_mats: Array[StandardMaterial3D] = []
+var _track_off := -1.0   # своя отметка на оси трассы (непрерывность)
 
 
 func _ready() -> void:
-	# Ловит машины (слой 4), гаснет о мир и стены (1|2).
+	# Area3D нужна только чтобы гаснуть об ограждения (слой 2): полотно
+	# волна обходит прижимом, машины считает вручную (см. HIT_R).
 	collision_layer = 0
-	collision_mask = 0b111
+	collision_mask = 0b010
 	monitorable = false
 
 	var col := CollisionShape3D.new()
 	var sphere := SphereShape3D.new()
-	sphere.radius = 0.9
+	sphere.radius = 0.6
 	col.shape = sphere
 	add_child(col)
 
@@ -49,9 +70,9 @@ func _ready() -> void:
 		body_entered.connect(_on_body_entered)
 
 
-## Три бирюзовых кольца поперёк полёта, расходящиеся одно за другим —
-## «звук». Кольцо перпендикулярно движению: TorusMesh лежит в плоскости XZ,
-## поворот на 90° вокруг X ставит его «лицом вперёд».
+## Три бирюзовых кольца, ЛЕЖАЩИХ ГОРИЗОНТАЛЬНО (TorusMesh и так лежит в
+## плоскости XZ) и расходящихся одно за другим до радиуса поражения —
+## видно и «звук», и зону действия.
 func _build_rings() -> void:
 	for i in 3:
 		var ring := MeshInstance3D.new()
@@ -66,21 +87,20 @@ func _build_rings() -> void:
 		mat.emission = Color(0.3, 0.9, 1.0)
 		mat.emission_energy_multiplier = 5.0
 		ring.material_override = mat
-		ring.rotation.x = PI * 0.5
 		add_child(ring)
 		_rings.append(ring)
 		_ring_mats.append(mat)
 	_tick_rings(0.0)
 
 
-## Кольца расходятся по кругу: каждое растёт от 0.4 до RING_MAX и тает,
-## фазы сдвинуты на треть — волна «пульсирует», а не мигает целиком.
+## Кольца расходятся по кругу: каждое растёт от 0.4 до радиуса поражения
+## и тает, фазы сдвинуты на треть — волна «пульсирует», а не мигает целиком.
 func _tick_rings(age: float) -> void:
 	const RING_PERIOD := 0.42
-	const RING_MAX := 3.4
+	var ring_max := HIT_R / 0.75  # внешний радиус тора 0.75 -> ровно HIT_R
 	for i in _rings.size():
 		var phase: float = fposmod(age / RING_PERIOD + float(i) / 3.0, 1.0)
-		var s: float = lerpf(0.4, RING_MAX, phase)
+		var s: float = lerpf(0.4, ring_max, phase)
 		_rings[i].scale = Vector3(s, 1.0, s)
 		_ring_mats[i].albedo_color.a = (1.0 - phase) * 0.85
 
@@ -88,24 +108,77 @@ func _tick_rings(age: float) -> void:
 func _physics_process(delta: float) -> void:
 	_age += delta
 	_tick_rings(_age)
+	_steer_along_track(delta)
 	var prev := global_position
-	global_position += direction * _speed * delta
-	# Попадание по ОТМОТАННЫМ положениям — как у Projectile: проверяем не
-	# точку, а отрезок за кадр, иначе задетых вскользь волна пропускает.
-	if lag > 0.0 and not inert:
+	# Первый кадр: отрезок дотягивается до носа стрелявшего (волна рождается
+	# в 2.3 м перед машиной) — цель вплотную к бамперу иначе не проверялась.
+	if _first_check:
+		_first_check = false
+		prev -= direction * 2.3
+	global_position += direction * SPEED * delta
+	_hug_ground()
+	# Машины считаем ВРУЧНУЮ отрезком за кадр и радиусом колец HIT_R —
+	# и с отмоткой (живой игрок, протокол 13), и без (боты, оффлайн).
+	if not inert:
 		for node in get_tree().get_nodes_in_group("cars"):
 			var car := node as Car
 			if car == null or car == shooter \
 					or not car.alive or car.is_ghost():
 				continue
-			if _segment_gap(prev, global_position,
-					car.past_position(lag)) < HIT_R:
+			var target := car.past_position(lag) if lag > 0.0 \
+					else car.global_position
+			if _segment_gap(prev, global_position, target) < HIT_R:
 				_hit_car(car)
 				_boom()
 				return
 	_life -= delta
 	if _life <= 0.0:
 		queue_free()
+
+
+## Волна КАТИТСЯ ПО ТРАССЕ, а не летит по прямой: курс плавно доворачивает
+## к касательной трассы (в ту сторону, куда стреляли). Дорога изгибается —
+## прямая волна на дуге уходила с полотна вбок и мазала по боту, который
+## «прямо передо мной» просто потому, что он ехал по дуге (стенд, фаза
+## «едущий бот»: промах 3.1 м на 20 метрах дистанции). Начальный прицел
+## уважается: первые метры доворот почти не успевает вмешаться.
+func _steer_along_track(delta: float) -> void:
+	if track == null and shooter != null and is_instance_valid(shooter):
+		track = shooter.track
+	if track == null:
+		return
+	var curve: Curve3D = track._curve
+	var length := curve.get_baked_length()
+	if length <= 0.0:
+		return
+	# Отметка на оси — с непрерывностью, как у машин (см. TrackBuilder);
+	# первая — глобальным поиском: волна рождается на полотне, он не соврёт.
+	if _track_off < 0.0:
+		_track_off = curve.get_closest_offset(global_position)
+	_track_off = track.closest_offset_near(global_position, _track_off)
+	var here := curve.sample_baked(fposmod(_track_off, length))
+	var tangent := curve.sample_baked(fposmod(_track_off + 1.5, length)) - here
+	tangent.y = 0.0
+	if tangent.length_squared() < 1e-6:
+		return
+	tangent = tangent.normalized()
+	if direction.dot(tangent) < 0.0:
+		tangent = -tangent   # стреляли против хода разметки — волне туда же
+	direction = direction.lerp(tangent, minf(4.0 * delta, 1.0)).normalized()
+
+
+## Прижим к полотну: луч вниз, высота = земля + HOVER. Волна взбирается на
+## горки и спускается с них вместе с дорогой — там же, где машины. Земли
+## под волной нет (улетела за кромку песчаной трассы, в пропасть) — летит
+## как летела и умрёт по таймеру жизни.
+func _hug_ground() -> void:
+	var space := get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(
+			global_position + Vector3.UP * 2.0,
+			global_position + Vector3.DOWN * 4.0, 0b001)
+	var hit := space.intersect_ray(q)
+	if hit:
+		global_position.y = hit.position.y + HOVER
 
 
 ## Расстояние от точки p до отрезка a-b.
@@ -118,17 +191,10 @@ func _segment_gap(a: Vector3, b: Vector3, p: Vector3) -> float:
 	return (a + ab * t).distance_to(p)
 
 
+## Только ограждения: машины считает ручная проверка в _physics_process.
 func _on_body_entered(body: Node3D) -> void:
-	if body == shooter:
+	if body is Car or body == shooter:
 		return
-	var car := body as Car
-	# Машины с отмоткой считаются вручную выше — иначе волна живого игрока
-	# сработала бы ДВАЖДЫ. О мир и ограждения гаснет как прежде.
-	if car != null:
-		if lag > 0.0:
-			return
-		if car.alive and not car.is_ghost():
-			_hit_car(car)
 	_boom()
 
 
@@ -139,5 +205,5 @@ func _hit_car(car: Car) -> void:
 
 func _boom() -> void:
 	FlashFx.spawn(get_parent(), global_position, 1.4, Color(0.4, 0.95, 1.0))
-	FxKit.ring(get_parent(), global_position, 3.0, Color(0.4, 0.95, 1.0))
+	FxKit.ring(get_parent(), global_position, HIT_R, Color(0.4, 0.95, 1.0))
 	queue_free()

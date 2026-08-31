@@ -113,6 +113,22 @@ func _physics_process(delta: float) -> void:
 			_ok["руль вернулся"] = signf(_victim.angular_velocity.y) \
 					== signf(_clean.angular_velocity.y) \
 					and absf(_clean.angular_velocity.y) > 0.3
+		580:
+			# Фаза ЕДУЩИЙ БОТ (жалоба 31.08 «стрелял в бота прямо передо
+			# мной — оружие пролетело сквозь него»): жертва в 10 м впереди
+			# УЕЗЖАЕТ на 28 м/с — волна обязана догнать и попасть. На старой
+			# волне (38 м/с, сфера 0.9) стенд честно падал.
+			_park(_clean)
+			_place(_attacker, _base, _tan)
+			_place(_victim, _base + _tan * 10.0, _tan)
+			_victim._scramble_time = 0.0
+			_attacker.weapon = Weapons.SCRAMBLE
+			_attacker.use_weapon()
+		660:
+			_ok["догоняет едущего"] = _victim.scramble_left() > 3.5
+			if _victim.scramble_left() <= 3.5:
+				print("  [едущий] жертва уехала на %.0f м, эффекта нет"
+						% _base.distance_to(_victim.global_position))
 			var all_ok := true
 			for k: String in _ok:
 				if not _ok[k]:
@@ -123,3 +139,15 @@ func _physics_process(delta: float) -> void:
 	# Окна «руления»: сразу после попадания и после истечения эффекта.
 	if (_frame > 200 and _frame < 214) or (_frame > 560 and _frame < 574):
 		_steer_both(delta)
+	# Фаза едущего бота: жертва уезжает вперёд по оси трассы (двигаем
+	# руками, как в TestRocketRewind: физика без газа её бы тормозила).
+	if _frame > 580 and _frame < 660 and _victim.scramble_left() <= 0.0:
+		var t := float(_frame - 580) / 60.0
+		var curve: Curve3D = _main._track._curve
+		var off: float = curve.get_baked_length() * 0.06 + 10.0 + 28.0 * t
+		var vp := curve.sample_baked(off)
+		var vd := curve.sample_baked(off + 1.0) - vp
+		vd.y = 0.0
+		_victim.global_transform = Transform3D(
+				Basis.looking_at(vd.normalized()), vp + Vector3.UP * 0.62)
+		_victim.linear_velocity = vd.normalized() * 28.0

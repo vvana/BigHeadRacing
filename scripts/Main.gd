@@ -2596,9 +2596,12 @@ func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3,
 		Weapons.SCRAMBLE:
 			var wave := ScrambleWave.new()
 			wave.inert = true
+			wave.track = _track
 			wave.direction = dir
 			add_child(wave)
 			wave.global_position = pos + dir * 2.3 + Vector3.UP * 0.55
+			# Волна радиуса действия от стрелявшего — как у него самого.
+			FxKit.ring(self, pos, ScrambleWave.HIT_R, Color(0.4, 0.95, 1.0))
 		Weapons.AIRSTRIKE:
 			var strike := Airstrike.new()
 			strike.inert = true

@@ -2148,6 +2148,10 @@ func use_weapon() -> void:
 			w.global_position = global_position + fwd * 2.3 + Vector3.UP * 0.55
 			FxKit.muzzle_flash(get_parent(), w.global_position,
 					Color(0.4, 0.95, 1.0))
+			# Горизонтальная волна от машины в момент выстрела — сразу видно
+			# радиус действия (просьба 31.08).
+			FxKit.ring(get_parent(), global_position, ScrambleWave.HIT_R,
+					Color(0.4, 0.95, 1.0))
 		Weapons.AIRSTRIKE:
 			_use_airstrike()
 		Weapons.BOOST:
