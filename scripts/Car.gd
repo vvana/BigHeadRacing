@@ -739,6 +739,7 @@ func _physics_process(delta: float) -> void:
 			if dv_solver.length() > 5.0:
 				linear_velocity = _post_vel + dv_solver.limit_length(5.0)
 	_puppet_touch = false   # заново выставит _bounce_off_cars этим кадром
+	_clamp_inside_walls()
 	_apply_suspension(delta)
 	var on_ground := _grounded_wheels >= 2
 	var hh := linear_velocity
@@ -1755,8 +1756,9 @@ func _drive(
 		fx_mult = 1.45
 	# Рыхлый песок за полотном (песчаная трасса): тяга и потолок скорости
 	# заметно ниже — срезать по песку невыгодно, ограждений там нет.
+	# 0.55 -> 0.40 (31.08: «пески нужно сделать более замедляющими»).
 	if _on_sand:
-		fx_mult *= 0.55
+		fx_mult *= 0.40
 	var eff_max := max_speed * ai_rubber * fx_mult
 
 	if on_ground:
@@ -2462,6 +2464,43 @@ func _start_ghost() -> void:
 	_ghost_age = 0.0
 	collision_layer = 0
 	collision_mask = 0b011
+
+
+## Страховка от продавливания СКВОЗЬ ограждение (жалоба 31.08: «много
+## машин может продавить тебя сквозь ограждения»): в куче из 6-8 машин
+## суммарная депенетрация за кадр проносит центр кузова за грань тонкой
+## (0.5 м) стены, и дальше решатель выдавливает машину уже НАРУЖУ.
+## Пока машина ниже верха стены, центр жёстко удерживается не дальше
+## внутренней грани, скорость наружу гасится — обычная депенетрация
+## выталкивает корпус обратно на полотно. Выше кромки (прыжок, подброс
+## взрывом) не трогаем: перелёт через стену ловит автовозврат Main.
+func _clamp_inside_walls() -> void:
+	if track == null or not track.has_walls or not alive:
+		return
+	var length: float = track._curve.get_baked_length()
+	if length <= 0.0:
+		return
+	var limit: float = track.half_width_at_offset(track_offset) \
+			- TrackBuilder.WALL_THICKNESS * 0.5
+	var here: Vector3 = track._curve.sample_baked(fposmod(track_offset, length))
+	if global_position.y > here.y + TrackBuilder.WALL_HEIGHT:
+		return
+	var lat := global_position - here
+	lat.y = 0.0
+	var d := lat.length()
+	if d <= limit or d < 0.01:
+		return
+	# Далеко за стеной — это НЕ продавливание этого кадра (перелетел и
+	# приземлился снаружи): тянуть сквозь стену не надо, вернёт
+	# автовозврат «Вне трассы». Продавливание кламп режет каждый кадр,
+	# глубже пары метров за грань оно зайти не успевает.
+	if d > limit + 2.5:
+		return
+	var out := lat / d
+	global_position = Vector3(here.x, global_position.y, here.z) + out * limit
+	var v_out := linear_velocity.dot(out)
+	if v_out > 0.0:
+		linear_velocity -= out * v_out
 
 
 ## Конец «призрака»: контакты и видимость возвращаются.

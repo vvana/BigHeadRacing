@@ -39,7 +39,9 @@ func _ready() -> void:
 	monitorable = false
 
 	if freeze:
-		_speed = 42.0
+		# Как ракета: прежние 42 м/с не догоняли едущих — «заморозка
+		# должна лететь быстрее» (жалоба 31.08).
+		_speed = 55.0
 		_life = 2.0
 
 	var col := CollisionShape3D.new()

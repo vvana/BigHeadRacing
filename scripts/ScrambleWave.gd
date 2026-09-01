@@ -33,6 +33,9 @@ var lag := 0.0
 ## за кадр: сферу такого радиуса Area3D тёрла бы о полотно, а крохотная
 ## прежняя (0.9) промахивалась там, где кольца «прошли сквозь» машину.
 const HIT_R := 2.6
+## Полуширина кузова для проб попадания: кольцо, коснувшееся борта,
+## должно оглушать — центр машины при этом дальше HIT_R.
+const BODY_R := 0.9
 
 ## Быстрее прежних 38: волна должна ДОГОНЯТЬ едущих. Машина на бусте идёт
 ## под 48 м/с — от неё волна отстанет (и пусть), но обычную (до ~34)
@@ -119,6 +122,10 @@ func _physics_process(delta: float) -> void:
 	_hug_ground()
 	# Машины считаем ВРУЧНУЮ отрезком за кадр и радиусом колец HIT_R —
 	# и с отмоткой (живой игрок, протокол 13), и без (боты, оффлайн).
+	# Кузов — ТРИ пробы (центр и ±1.1 м по курсу) с полушириной корпуса:
+	# раньше мерялся только ЦЕНТР машины, и кольцо, чиркнувшее по бамперу
+	# или борту, не считалось попаданием — «цепляешь краем — не всегда
+	# оглушает» (жалоба 31.08). Как у снаряда (Projectile.HIT_R).
 	if not inert:
 		for node in get_tree().get_nodes_in_group("cars"):
 			var car := node as Car
@@ -127,10 +134,13 @@ func _physics_process(delta: float) -> void:
 				continue
 			var target := car.past_position(lag) if lag > 0.0 \
 					else car.global_position
-			if _segment_gap(prev, global_position, target) < HIT_R:
-				_hit_car(car)
-				_boom()
-				return
+			var f := car.true_forward()
+			for k: float in [0.0, 1.1, -1.1]:
+				if _segment_gap(prev, global_position, target + f * k) \
+						< HIT_R + BODY_R:
+					_hit_car(car)
+					_boom()
+					return
 	_life -= delta
 	if _life <= 0.0:
 		queue_free()
