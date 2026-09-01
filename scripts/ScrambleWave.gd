@@ -33,9 +33,16 @@ var lag := 0.0
 ## за кадр: сферу такого радиуса Area3D тёрла бы о полотно, а крохотная
 ## прежняя (0.9) промахивалась там, где кольца «прошли сквозь» машину.
 const HIT_R := 2.6
-## Полуширина кузова для проб попадания: кольцо, коснувшееся борта,
-## должно оглушать — центр машины при этом дальше HIT_R.
-const BODY_R := 0.9
+## Полугабариты кузова для проверки попадания: кольцо, коснувшееся ЛЮБОЙ
+## точки корпуса, должно оглушать. Прежние три пробы вдоль оси (±1.1 м,
+## радиус 0.9) оставляли борт между пробами и углы бампера непокрытыми
+## на 0.05-0.3 м — «круги коснулись моей машины, но не оглушили»
+## (жалоба 01.09). Теперь меряется расстояние до прямоугольника кузова.
+const BODY_HALF_L := 1.7
+const BODY_HALF_W := 1.0
+## Запас к HIT_R: шаг проб вдоль пути волны (0.25 м) плюс сглаживание
+## визуального кузова — «коснулось на экране» обязано означать попадание.
+const HIT_GRACE := 0.2
 
 ## Быстрее прежних 38: волна должна ДОГОНЯТЬ едущих. Машина на бусте идёт
 ## под 48 м/с — от неё волна отстанет (и пусть), но обычную (до ~34)
@@ -122,11 +129,14 @@ func _physics_process(delta: float) -> void:
 	_hug_ground()
 	# Машины считаем ВРУЧНУЮ отрезком за кадр и радиусом колец HIT_R —
 	# и с отмоткой (живой игрок, протокол 13), и без (боты, оффлайн).
-	# Кузов — ТРИ пробы (центр и ±1.1 м по курсу) с полушириной корпуса:
-	# раньше мерялся только ЦЕНТР машины, и кольцо, чиркнувшее по бамперу
-	# или борту, не считалось попаданием — «цепляешь краем — не всегда
-	# оглушает» (жалоба 31.08). Как у снаряда (Projectile.HIT_R).
+	# Кузов — ПРЯМОУГОЛЬНИК (BODY_HALF_L × BODY_HALF_W в осях машины):
+	# прежние три пробы вдоль оси не покрывали борт между пробами и углы —
+	# кольцо, коснувшееся их, «проходило сквозь» (жалоба 01.09). И глушатся
+	# ВСЕ машины, задетые кольцами в этот кадр, а не первая по списку:
+	# раньше волна в куче машин гасла об соседа, а второго — визуально
+	# накрытого теми же кольцами — не трогала.
 	if not inert:
+		var hit_any := false
 		for node in get_tree().get_nodes_in_group("cars"):
 			var car := node as Car
 			if car == null or car == shooter \
@@ -134,13 +144,12 @@ func _physics_process(delta: float) -> void:
 				continue
 			var target := car.past_position(lag) if lag > 0.0 \
 					else car.global_position
-			var f := car.true_forward()
-			for k: float in [0.0, 1.1, -1.1]:
-				if _segment_gap(prev, global_position, target + f * k) \
-						< HIT_R + BODY_R:
-					_hit_car(car)
-					_boom()
-					return
+			if _touches_body(prev, global_position, target, car.true_forward()):
+				_hit_car(car)
+				hit_any = true
+		if hit_any:
+			_boom()
+			return
 	_life -= delta
 	if _life <= 0.0:
 		queue_free()
@@ -191,14 +200,22 @@ func _hug_ground() -> void:
 		global_position.y = hit.position.y + HOVER
 
 
-## Расстояние от точки p до отрезка a-b.
-func _segment_gap(a: Vector3, b: Vector3, p: Vector3) -> float:
-	var ab := b - a
-	var len2 := ab.length_squared()
-	if len2 < 1e-6:
-		return a.distance_to(p)
-	var t := clampf((p - a).dot(ab) / len2, 0.0, 1.0)
-	return (a + ab * t).distance_to(p)
+## Коснулись ли кольца кузова за этот кадр: путь волны (отрезок a-b)
+## пробуется с шагом 0.25 м, каждая проба переводится в оси кузова и
+## меряется до ближайшей точки прямоугольника BODY_HALF_L × BODY_HALF_W.
+## Попадание — дистанция меньше радиуса колец (с запасом HIT_GRACE).
+func _touches_body(a: Vector3, b: Vector3, center: Vector3,
+		fwd: Vector3) -> bool:
+	var right := Vector3(-fwd.z, 0.0, fwd.x)
+	var steps := maxi(1, int(ceilf(a.distance_to(b) / 0.25)))
+	for s in steps + 1:
+		var p := a.lerp(b, float(s) / float(steps))
+		var rel := p - center
+		var w := clampf(rel.dot(right), -BODY_HALF_W, BODY_HALF_W)
+		var l := clampf(rel.dot(fwd), -BODY_HALF_L, BODY_HALF_L)
+		if p.distance_to(center + right * w + fwd * l) < HIT_R + HIT_GRACE:
+			return true
+	return false
 
 
 ## Только ограждения: машины считает ручная проверка в _physics_process.

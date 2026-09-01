@@ -174,6 +174,10 @@ var _loading_told := false          # статус «ждём загрузки»
 # спустя столько секунд перестаём ждать такого и стартуем без него.
 const HELLO_GRACE := 25.0
 var _roster := PackedStringArray()  # id моделей машин по слотам
+# Имена по слотам: живые игроки — как представились в hello, боты — ники
+# из PlayerNames (бот не должен отличаться от игрока — просьба 01.09).
+# Сервер рассылает при каждом изменении (_rx_names), как ростер.
+var _names := PackedStringArray()
 var _lobby: Lobby                   # полноэкранное лобби на клиенте
 # Клиент: какие слоты заняты живыми игроками (для экрана лобби).
 # Размер задаёт _spawn_cars — слотов столько, сколько машин в заезде.
@@ -339,6 +343,16 @@ func _spawn_cars() -> void:
 		_net_place.append(0)
 
 	_roster = ids
+	# Имена. Клиент ждёт их с сервера (_rx_names) — до тех пор пустые;
+	# сервер и оффлайн раздают ботам ники сразу (имена живых игроков сервер
+	# перепишет из hello). Оффлайн нулевой слот — сам игрок.
+	_names.resize(_cars.size())
+	if not Net.is_client():
+		var nicks := PlayerNames.pick(_cars.size())
+		for i in _cars.size():
+			_names[i] = nicks[i]
+		if not Net.is_online():
+			_names[0] = GameState.display_name()
 	_car = _cars[0]
 	if Net.is_client():
 		# Пока сервер не выдал слот, СВОЕЙ машины нет — все марионетки.
@@ -386,8 +400,9 @@ func _set_car_model(car: Car, id: String) -> void:
 		_build_placeholder_visual(car)
 
 
-## Стрелка-указатель над машиной: своя — зелёная, живой соперник — оранжевая
-## (боты без маркера). Именно так «реальный игрок» отличается от ботов.
+## Стрелка-указатель над машиной: своя — зелёная, соперник — оранжевая.
+## По сети стрелки у ВСЕХ соперников, включая ботов: бот не должен
+## отличаться от живого игрока (просьба 01.09).
 func _attach_marker(index: int, rival := false) -> void:
 	if index < 0 or index >= _cars.size():
 		return
@@ -1377,6 +1392,13 @@ func _on_peer_left(_id: int, slot: int) -> void:
 	_hello_done.erase(slot)
 	_join_time.erase(slot)
 	_late_slots.erase(slot)
+	# До старта слот снова ждёт человека — боту свежий ник (имя ушедшего не
+	# зомбируем: он может тут же перезайти). ВО ВРЕМЯ заезда имя не трогаем:
+	# бот доигрывает под именем ушедшего, и для остальных этот «игрок»
+	# просто продолжает ехать — боты неотличимы от людей (01.09).
+	if not _net_started and slot < _names.size():
+		_names[slot] = PlayerNames.pick_one(_names)
+		_rx_names.rpc(_names)
 	_rx_lobby.rpc(Net.slot_of_peer.size(), maxi(ceili(_lobby_wait), 0))
 	_rx_slot_taken.rpc(slot, false)
 	# Ушли все — заезд некому доигрывать. Перезапускаем трассу, чтобы
@@ -1454,7 +1476,7 @@ func _say_hello() -> void:
 		if Net.my_slot != -1 or not Net.is_client():
 			return
 		_rx_hello.rpc_id(1, GameState.selected_car_id, Net.PROTOCOL,
-				GameState.race_size)
+				GameState.race_size, GameState.display_name())
 		await get_tree().create_timer(1.0).timeout
 		if not is_inside_tree():
 			return
@@ -1705,7 +1727,8 @@ func _pack_state() -> Array:
 # ── клиент → сервер ──
 
 @rpc("any_peer", "call_remote", "reliable")
-func _rx_hello(car_id: String, proto: int, want_size := 4) -> void:
+func _rx_hello(car_id: String, proto: int, want_size := 4,
+		pname := "") -> void:
 	if not Net.is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
@@ -1751,8 +1774,10 @@ func _rx_hello(car_id: String, proto: int, want_size := 4) -> void:
 	if slot < 0 or slot >= _roster.size():
 		return
 	# Игрок приехал на своей машине — ставим её в его слот и раздаём
-	# ростер всем, иначе соперник видел бы не ту модель.
+	# ростер всем, иначе соперник видел бы не ту модель. Имя игрока — в
+	# слот вместо ботовского ника.
 	_roster[slot] = car_id
+	_set_slot_name(slot, pname)
 	_set_car_model(_cars[slot], car_id)
 	# Вид трассы и размер заезда — ПЕРВЫМИ (надёжные RPC упорядочены): не
 	# совпало — клиент перезагрузит сцену и представится заново, welcome
@@ -1760,6 +1785,7 @@ func _rx_hello(car_id: String, proto: int, want_size := 4) -> void:
 	_rx_track.rpc_id(id, _track_kind, Net.race_size)
 	_rx_welcome.rpc_id(id, slot, _roster, _taken_mask())
 	_rx_roster.rpc(_roster)
+	_rx_names.rpc(_names)
 	if _net_started and _late_slots.has(slot):
 		# ОПОЗДАЛ к старту (см. _on_peer_joined): в идущую гонку не пускаем
 		# вовсе, машину в его слоте продолжает вести бот. Обычно сюда он не
@@ -2088,27 +2114,19 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	var cam := get_node_or_null("IsoCamera") as IsoCamera
 	if cam:
 		cam.target = _car
-	# Маркеры: своя машина зелёная, второй ЖИВОЙ игрок — оранжевый.
-	# Боты без маркера — так «реальный игрок» виден с первого взгляда.
+	# Маркеры: своя машина зелёная, ВСЕ соперники — оранжевые. Раньше
+	# стрелка была только над живыми игроками, но по просьбе 01.09 бот не
+	# должен отличаться от человека — стрелка над каждым и ничего не выдаёт.
 	_attach_marker(slot)
-	# Оранжевая стрелка — признак ЖИВОГО соперника, а не «чужой машины».
-	# Пока слот пустует, его ведёт бот, и метка над ним врала бы: игрок
-	# как раз и просил отличать настоящего человека от ботов. Слотов
-	# игроков — все слоты заезда: стрелка заводится над каждым чужим
-	# слотом и включается по маске занятых.
 	for rival in _cars.size():
-		if rival == slot or rival >= _cars.size():
+		if rival == slot:
 			continue
 		_attach_marker(rival, true)
-		var rival_here := (taken & (1 << rival)) != 0
 		if _rival_markers.has(rival):
-			_rival_markers[rival].visible = rival_here
+			_rival_markers[rival].visible = true
 		if _minimap:
-			if rival_here:
-				_minimap.rivals[rival] = true
-			else:
-				_minimap.rivals.erase(rival)
-	# На карте — те же цвета: своя точка зелёная, живые соперники оранжевые.
+			_minimap.rivals[rival] = true
+	# На карте — те же цвета: своя точка зелёная, соперники оранжевые.
 	if _minimap:
 		_minimap.my_index = slot
 
@@ -2125,6 +2143,29 @@ func _apply_roster(roster: PackedStringArray) -> void:
 		_set_car_model(_cars[i], roster[i])
 	_roster = roster
 	_update_lobby_slots()
+
+
+## Имена всех слотов (см. _names). Сервер шлёт при каждом изменении.
+@rpc("authority", "call_remote", "reliable")
+func _rx_names(names: PackedStringArray) -> void:
+	_names = names
+	_update_lobby_slots()
+
+
+## Сервер: вписать имя игрока в слот. Чистим той же чисткой, что своё
+## (клиенту ничто не мешает прислать мусор), пустое — «Игрок N», дубль
+## чужого имени помечаем номером, чтобы в ленте не путать двоих тёзок.
+func _set_slot_name(slot: int, pname: String) -> void:
+	if slot < 0 or slot >= _names.size():
+		return
+	var n := GameState.sanitize_name(pname)
+	if n == "":
+		n = "Игрок %d" % (slot + 1)
+	for s in _names.size():
+		if s != slot and _names[s] == n:
+			n = "%s (%d)" % [n.left(GameState.NAME_MAX - 4), slot + 1]
+			break
+	_names[slot] = n
 
 
 ## Клиент опоздал к идущему заезду и ждёт следующего (сервер держит его
@@ -2486,9 +2527,10 @@ func _rx_fx(kind: int, args: Array) -> void:
 
 
 ## Живых игроков на все слоты не нашлось — свободные забрали боты. Лобби
-## показывает их машины вместо «ждём игрока…», чтобы игрок видел, с кем
-## поедет, а не гадал, куда делись остальные. mask = 0 — попытка старта
-## отменена (подключился человек), слоты снова ждут людей.
+## показывает их машины и ники КАК ОБЫЧНЫХ ИГРОКОВ: бот не должен
+## отличаться от человека (01.09), поэтому ни слова «бот» на экране.
+## mask = 0 — попытка старта отменена (подключился человек), слоты снова
+## ждут людей.
 @rpc("authority", "call_remote", "reliable")
 func _rx_bots(mask: int) -> void:
 	_bot_mask = mask
@@ -2499,13 +2541,8 @@ func _rx_bots(mask: int) -> void:
 		_lobby.set_status("Игроков: %d/%d\nПодключился игрок — ждём его…"
 				% [_taken_count(), _cars.size()])
 		return
-	var bots := 0
-	for s in _cars.size():
-		if mask & (1 << s):
-			bots += 1
 	_lobby.show_screen()
-	_lobby.set_status("Больше игроков не нашлось.\nПустые слоты заняли боты (%d) — поехали!"
-			% bots)
+	_lobby.set_status("Все в сборе — поехали!")
 
 
 ## Сколько слотов занято живыми игроками (по нашей маске _slot_taken).
@@ -2517,21 +2554,15 @@ func _taken_count() -> int:
 	return n
 
 
-## Слот занял или освободил живой игрок — показываем/прячем оранжевую метку.
+## Слот занял или освободил живой игрок. Стрелку и точку на карте НЕ
+## трогаем: они висят над всеми соперниками (бот неотличим от игрока —
+## 01.09), а маска занятых нужна лобби и сетевой кухне (по слоту без
+## живого игрока _rx_state берёт метку часов сервера).
 @rpc("authority", "call_remote", "reliable")
 func _rx_slot_taken(slot: int, taken: bool) -> void:
 	if slot >= 0 and slot < _slot_taken.size():
 		_slot_taken[slot] = taken
 		_update_lobby_slots()
-	if Net.my_slot < 0 or slot == Net.my_slot:
-		return
-	if _rival_markers.has(slot):
-		_rival_markers[slot].visible = taken
-	if _minimap:
-		if taken:
-			_minimap.rivals[slot] = true
-		else:
-			_minimap.rivals.erase(slot)
 
 
 ## Сервер отказал (несовпадение версий и т.п.) — показываем причину и
@@ -2736,7 +2767,7 @@ func _update_lobby_slots() -> void:
 	for s in _slot_taken.size():
 		var id := _roster[s] if s < _roster.size() else ""
 		_lobby.set_slot(s, _slot_taken[s], id, s == Net.my_slot,
-				(_bot_mask & (1 << s)) != 0)
+				(_bot_mask & (1 << s)) != 0, car_label(s))
 
 
 # ════════════════════ ЛЕНТА СОБЫТИЙ ОРУЖИЯ ════════════════════
@@ -2752,8 +2783,12 @@ const FEED_LIFETIME := 7.0 # сколько запись висит до уга�
 const FEED_MIN_SHOW := 4.0
 
 
-## Имя машины для ленты. Имён игроков пока нет — Player по номеру слота.
+## Имя машины для ленты, лобби и анонсов: живой игрок — как представился,
+## бот — ник из PlayerNames. Запас «Player N» — только пока клиент ещё не
+## получил имена с сервера (_rx_names).
 func car_label(i: int) -> String:
+	if i >= 0 and i < _names.size() and _names[i] != "":
+		return _names[i]
 	return "Player %d" % (i + 1)
 
 

@@ -27,6 +27,9 @@ var _player_goals := 0
 var _last_minute_said := false
 var _flip_time: Array[float] = []
 var _roster := PackedStringArray()
+# Имена по машинам: игрок — из профиля, боты — ники PlayerNames (анонсы
+# голов подписываются ими — бот неотличим от живого игрока, 01.09).
+var _names := PackedStringArray()
 
 ## Мяч вне игры (перелетел борт, застрял на крыше ворот): столько секунд
 ## вне игрового объёма — и вбрасывание в центре. Пара секунд, чтобы не
@@ -158,6 +161,10 @@ func _spawn_cars() -> void:
 		_escape_time.append(0.0)
 		_want_move.append(false)
 	_roster = ids
+	# Имена: игрок (слот 0) — своё из профиля, боты — человеческие ники
+	# (PlayerNames): в анонсах голов бот выглядит как живой игрок.
+	_names = PlayerNames.pick(_cars.size())
+	_names[0] = GameState.display_name()
 	_car = _cars[0]
 	if not Net.is_server():
 		_player_marker = _build_cone_marker(Color(0.15, 0.95, 0.25))
@@ -318,8 +325,11 @@ func _on_goal(team: int) -> void:
 		var si := _cars.find(scorer)
 		if si >= 0:
 			var scorer_team := 0 if si < TEAM_SIZE else 1
+			# Автор гола — по имени (бот подписан ником, как живой игрок).
 			var scorer_name: String = "вы" if si == 0 \
-					else str(CAR_SELECT.DISPLAY_NAMES.get(_roster[si], _roster[si]))
+					else (_names[si] if si < _names.size()
+							else str(CAR_SELECT.DISPLAY_NAMES.get(
+									_roster[si], _roster[si])))
 			if scorer_team != team:
 				sub = "автогол! (%s)" % scorer_name
 			else:
@@ -607,6 +617,7 @@ func ai_drive(car: Car) -> Vector2:
 
 	var target := bpos
 	var attack := false
+	var ram_target: Car = null   # чужой ведущий мяча: его таранить МОЖНО
 	match role:
 		0:
 			attack = true
@@ -632,10 +643,31 @@ func ai_drive(car: Car) -> Vector2:
 		var dir := enemy_goal - bpos
 		dir.y = 0.0
 		dir = dir.normalized()
+		var holder: Car = _ball.carrier
+		var hi := _cars.find(holder) if holder != null else -1
+		if holder == car:
+			# Сам веду мяч — просто везём его в чужие ворота.
+			target = enemy_goal
+		elif hi >= 0 and (0 if hi < TEAM_SIZE else 1) == team:
+			# Мяч ведёт СВОЙ: в корму его не таранить (паровозик заталкивал
+			# впередистоящего вместе с мячом прямо в ворота — жалоба 01.09),
+			# едем эскортом сбоку-впереди по ходу атаки.
+			var eperp := Vector3(-dir.z, 0.0, dir.x)
+			var eside := signf(
+					(car.global_position - holder.global_position).dot(eperp))
+			if eside == 0.0:
+				eside = 1.0 if role % 2 == 0 else -1.0
+			target = holder.global_position + dir * 9.0 + eperp * eside * 7.0
+		elif hi >= 0:
+			# Мяч ведёт ЧУЖОЙ: цель — САМ ведущий (любой удар по нему
+			# отлипляет мяч), а не мяч у его носа: погоня за мячом сзади
+			# ведущего и была тараном в корму с мячом впереди.
+			ram_target = holder
+			target = holder.global_position
 		# Мы «за мячом» (мяч между нами и чужими воротами)? Тогда толкаем
 		# сквозь него. Иначе объезжаем: точка позади мяча со смещением вбок,
 		# чтобы не запихнуть мяч в свои ворота.
-		if (bpos - car.global_position).dot(dir) > 0.0:
+		elif (bpos - car.global_position).dot(dir) > 0.0:
 			target = bpos + dir * 1.5
 		else:
 			var perp := Vector3(-dir.z, 0.0, dir.x)
@@ -650,6 +682,27 @@ func ai_drive(car: Car) -> Vector2:
 			-SoccerArena.HALF_LEN + 3.0, SoccerArena.HALF_LEN - 3.0)
 	target.z = clampf(target.z,
 			-SoccerArena.HALF_WID + 3.0, SoccerArena.HALF_WID - 3.0)
+
+	# Чужой кузов на курсе ближе цели — ОБЪЕЗЖАЕМ сбоку, а не толкаем перед
+	# собой (жалоба 01.09: «двое таранят друг друга и загоняют
+	# впередистоящую машинку вместе с мячом сразу в ворота»). Чужого
+	# ведущего мяч (ram_target) таранить можно — это перехват.
+	var blocker := _car_blocking(car, target, ram_target)
+	if blocker != null:
+		var bto := target - car.global_position
+		bto.y = 0.0
+		if bto.length_squared() > 1e-4:
+			var bdir := bto.normalized()
+			var bperp := Vector3(-bdir.z, 0.0, bdir.x)
+			var bside := signf(
+					(car.global_position - blocker.global_position).dot(bperp))
+			if bside == 0.0:
+				bside = 1.0
+			target = blocker.global_position + bperp * bside * 5.0
+			target.x = clampf(target.x,
+					-SoccerArena.HALF_LEN + 3.0, SoccerArena.HALF_LEN - 3.0)
+			target.z = clampf(target.z,
+					-SoccerArena.HALF_WID + 3.0, SoccerArena.HALF_WID - 3.0)
 
 	var to := target - car.global_position
 	to.y = 0.0
@@ -668,8 +721,39 @@ func ai_drive(car: Car) -> Vector2:
 		throttle = 0.35
 	if not attack and dist < 3.5:
 		throttle = clampf(dist / 3.5 - 0.25, -0.2, 1.0)
+	# Вплотную к объезжаемому кузову газ сброшен: даже если нос ещё не
+	# довернулся в объезд, вагоном паровозика не работаем.
+	if blocker != null and car.global_position.distance_to(
+			blocker.global_position) < 4.5:
+		throttle = minf(throttle, 0.4)
 	_want_move[i] = absf(throttle) > 0.3
 	return Vector2(throttle, steer)
+
+
+## Живой кузов (кроме ignore) в узком коридоре по курсу к цели: ближе неё,
+## не дальше 7 м, боковой промах меньше пары корпусов — кандидат стать
+## «вагоном» паровозика, его надо объезжать, а не толкать.
+func _car_blocking(car: Car, target: Vector3, ignore: Car) -> Car:
+	var to := target - car.global_position
+	to.y = 0.0
+	var dist := to.length()
+	if dist < 1.0:
+		return null
+	var dir := to / dist
+	var best: Car = null
+	var best_d := minf(dist - 0.5, 7.0)
+	for c in _cars:
+		if c == car or c == ignore or not c.alive or c.is_ghost():
+			continue
+		var toc := c.global_position - car.global_position
+		toc.y = 0.0
+		var along := toc.dot(dir)
+		if along <= 0.5 or along >= best_d:
+			continue
+		if (toc - dir * along).length() < 2.4:
+			best = c
+			best_d = along
+	return best
 
 
 ## ---- HUD и ввод ----

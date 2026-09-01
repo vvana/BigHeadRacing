@@ -20,17 +20,18 @@ func _ready() -> void:
 	_lobby = Lobby.new()
 	add_child(_lobby)
 	_lobby.show_screen()
-	# Ровно то, что видит игрок, когда людей на все слоты не нашлось:
-	# два человека, свободные слоты забрали боты (см. Main._rx_bots).
-	_lobby.set_status("Больше игроков не нашлось.\nПустые слоты заняли боты (2) — поехали!")
-	_lobby.set_slot(0, true, "sharky", true)
-	_lobby.set_slot(1, true, "twinmill", false)
-	_lobby.set_slot(2, false, "invader", false, true)
-	_lobby.set_slot(3, false, "dakar", false, true)
+	# Ровно то, что видит игрок, когда людей на все слоты не нашлось: два
+	# человека, свободные слоты забрали боты — с 01.09 бот на экране
+	# неотличим от живого игрока (ник, машина, оранжевый цвет).
+	_lobby.set_status("Все в сборе — поехали!")
+	_lobby.set_slot(0, true, "sharky", true, false, "Андрей")
+	_lobby.set_slot(1, true, "twinmill", false, false, "Жека_777")
+	_lobby.set_slot(2, false, "invader", false, true, "Шумахер")
+	_lobby.set_slot(3, false, "dakar", false, true, "Настя")
 	if Net.race_size > 4:
-		_lobby.set_slot(4, true, "ballistik", false)
-		_lobby.set_slot(5, false, "powerpipes", false, true)
-		_lobby.set_slot(6, false, "roadster", false, true)
+		_lobby.set_slot(4, true, "ballistik", false, false, "Nagibator2000")
+		_lobby.set_slot(5, false, "powerpipes", false, true, "Пельмень")
+		_lobby.set_slot(6, false, "roadster", false, true, "Молния74")
 
 
 func _physics_process(_d: float) -> void:

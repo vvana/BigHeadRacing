@@ -9,7 +9,11 @@ extends Node3D
 ## 5) мяч, перелетевший борт (лёг за ограждением в паре метров — раньше
 ##    это была «мёртвая зона» и игра шла без мяча, жалоба 31.08),
 ##    через ~2 c вбрасывается в центр;
-## 6) таймер на нуле → матч окончен, управление выключено.
+## 6) анти-паровозик (01.09: «двое таранят друг друга и загоняют
+##    впередистоящую машинку вместе с мячом сразу в ворота»): чужой кузов
+##    на курсе бота к мячу → ai_drive объезжает (руль вбок) и сбрасывает
+##    газ, а не давит газ в пол сквозь машину;
+## 7) таймер на нуле → матч окончен, управление выключено.
 
 var _soccer: Node3D
 var _frame := 0
@@ -19,6 +23,7 @@ var _ok_goal := false
 var _ok_kickoff := false
 var _ok_drop := false
 var _ok_out := false
+var _ok_train := false
 
 
 func _ready() -> void:
@@ -74,6 +79,27 @@ func _physics_process(_delta: float) -> void:
 			_ok_drop = _ok_drop and gone
 			print("[soccer] бонус: оружие %d, куб исчез %s"
 					% [_soccer._car.weapon, str(gone)])
+		510:
+			# Анти-паровозик: нападающему КРАСНЫХ (4) на курс к мячу ставим
+			# чужую машину. Старый код давил газ в пол прямо сквозь неё
+			# (throttle 1.0, steer 0) — так «двое сцепившихся» и завозили
+			# впередистоящего вместе с мячом в ворота.
+			var bot: Car = _soccer._cars[4]
+			var block: Car = _soccer._cars[1]
+			_soccer._escape_time[4] = 0.0
+			ball.carrier = null
+			ball.global_position = Vector3(4.0, SoccerBall.RADIUS, 0.0)
+			ball.linear_velocity = Vector3.ZERO
+			bot.global_transform = Transform3D(
+					Basis.looking_at(Vector3(-1, 0, 0)), Vector3(10.0, 0.6, 0.0))
+			bot.linear_velocity = Vector3.ZERO
+			block.global_transform = Transform3D(
+					Basis.looking_at(Vector3(-1, 0, 0)), Vector3(6.5, 0.6, 0.0))
+			block.linear_velocity = Vector3.ZERO
+			var cmd: Vector2 = _soccer.ai_drive(bot)
+			_ok_train = cmd.x <= 0.5 and absf(cmd.y) > 0.3
+			print("[soccer] анти-паровозик: газ %.2f, руль %.2f (%s)"
+					% [cmd.x, cmd.y, "ok" if _ok_train else "FAIL"])
 		700:
 			# Мяч «перелетел борт»: лёг на газон в 3 м ЗА боковым ограждением.
 			# На старом коде он лежал там до конца матча (возврат срабатывал
@@ -101,14 +127,15 @@ func _physics_process(_delta: float) -> void:
 			var ai_ok := _max_disp > 5.0
 			var rain_ok: bool = _soccer._drops_spawned >= 1
 			var ok := _ok_build and _ok_goal and _ok_kickoff and ai_ok \
-					and _ok_drop and rain_ok and _ok_out and over and stopped
+					and _ok_drop and rain_ok and _ok_out and _ok_train \
+					and over and stopped
 			print("SOCCER TEST: %s (сцена=%s, гол=%s, кикофф=%s, "
 					% ["PASS" if ok else "FAIL", str(_ok_build),
 						str(_ok_goal), str(_ok_kickoff)]
 					+ "боты сдвинули мяч на %.1f м, бонус=%s, дождь=%d, "
 					% [_max_disp, str(_ok_drop), _soccer._drops_spawned]
-					+ "вылет=%s, финал=%s, стоп=%s)"
-					% [str(_ok_out), str(over), str(stopped)])
+					+ "вылет=%s, паровозик=%s, финал=%s, стоп=%s)"
+					% [str(_ok_out), str(_ok_train), str(over), str(stopped)])
 			get_tree().quit(0 if ok else 1)
 
 	# Макс. уход мяча от центра в окне игры ботов (фаза 3). Окно после

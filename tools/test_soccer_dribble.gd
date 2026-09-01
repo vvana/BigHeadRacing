@@ -8,7 +8,10 @@ extends Node3D
 ##    носа при движении;
 ## 2) вторая машина таранит ведущего — мяч ОТЛИПАЕТ;
 ## 3) в окне запрета экс-ведущий тычет мяч передом — НЕ липнет (_no_grab);
-## 4) после окна — удар передом снова примагничивает.
+## 4) после окна — удар передом снова примагничивает;
+## 5) таран В КОРМУ ведущего срывает мяч ВБОК с линии тарана (жалоба
+##    01.09 «паровозик»: пинок вдоль сцепки оставлял мяч катиться в
+##    ворота перед толкаемой машиной).
 
 var _soccer: Node3D
 var _ball: SoccerBall
@@ -22,6 +25,7 @@ var _ok_grab := false
 var _ok_steal := false
 var _ok_nograb := true
 var _ok_regrab := false
+var _ok_rear := false
 
 
 func _ready() -> void:
@@ -160,15 +164,36 @@ func _physics_process(_d: float) -> void:
 			if _ball.carrier == _car:
 				_ok_regrab = true
 				print("фаза 5 (повторный захват): ok (кадр %d)" % _phase_frame)
-				_finish()
+				_phase = 7
+				_phase_frame = 0
 			elif _phase_frame > 180:
 				_fail("повторный удар передом не примагнитил мяч")
+		7:
+			# Таран В КОРМУ ведущего: мяч обязан сорваться ВБОК с линии
+			# тарана. Старый код пинал «от бьющего» — ровно вдоль сцепки,
+			# и паровозик довозил мяч до ворот (|vz| ≈ 0 → честный FAIL).
+			if _phase_frame == 1:
+				_car.linear_velocity = Vector3.ZERO
+				var fwd := -_car.global_transform.basis.z
+				fwd.y = 0.0
+				fwd = fwd.normalized()
+				_aim(_hitter, _car.global_position - fwd * 8.0,
+						_car.global_position, 16.0)
+			if _ball.carrier == null:
+				var lat := absf(_ball.linear_velocity.z)
+				_ok_rear = lat > 3.0
+				print("фаза 6 (таран в корму — мяч вбок): %s (|vz|=%.1f)"
+						% ["ok" if _ok_rear else "FAIL", lat])
+				_finish()
+			elif _phase_frame > 120:
+				_fail("таран в корму не отлепил мяч за 2 c")
 
 
 func _finish() -> void:
-	var ok := _ok_grab and _ok_steal and _ok_nograb and _ok_regrab
+	var ok := _ok_grab and _ok_steal and _ok_nograb and _ok_regrab \
+			and _ok_rear
 	print("SOCCER DRIBBLE TEST: %s (захват=%s, перехват=%s, запрет=%s, "
 			% ["PASS" if ok else "FAIL", str(_ok_grab), str(_ok_steal),
 				str(_ok_nograb)]
-			+ "повтор=%s)" % str(_ok_regrab))
+			+ "повтор=%s, корма=%s)" % [str(_ok_regrab), str(_ok_rear)])
 	get_tree().quit(0 if ok else 1)

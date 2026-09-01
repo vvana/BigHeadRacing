@@ -76,7 +76,7 @@ func _ready() -> void:
 		_build_slot(s)
 
 	var hint := _label(self,
-			"Пробел — старт, не дожидаясь остальных (пустые слоты возьмут боты)  |  Esc — в гараж",
+			"Пробел — старт, не дожидаясь остальных  |  Esc — в гараж",
 			16, Color(1, 1, 1, 0.7), 4)
 	hint.anchor_left = 0.0
 	hint.anchor_right = 1.0
@@ -123,25 +123,29 @@ func hide_screen() -> void:
 
 ## Обновить слот: занят ли живым игроком, на какой машине приехал, я ли это
 ## и не забрал ли слот бот. Пустой слот — приглушённый «Ждём игрока…» без
-## машины; слот бота — его машина на подиуме и подпись «БОТ», чтобы игрок
-## видел, с кем поедет, когда людей на все слоты не нашлось.
+## машины; слот бота показывается КАК СЛОТ ЖИВОГО ИГРОКА (ник, машина,
+## оранжевый цвет): по просьбе 01.09 бот не должен отличаться от человека,
+## слово «БОТ» с экрана убрано.
 func set_slot(slot: int, taken: bool, car_id: String, is_me: bool,
-		is_bot := false) -> void:
+		is_bot := false, pname := "") -> void:
 	if slot < 0 or slot >= _slots:
 		return
 	var name_l := _name_labels[slot]
-	name_l.text = "Player %d" % (slot + 1) + (" — ты" if is_me else "")
+	# Имя видно, только когда в слоте кто-то есть: ники ботов приходят с
+	# сервера заранее (_rx_names) и над пустым «Ждём игрока…» выдавали бы,
+	# кто именно приедет ботом.
+	if taken or is_bot or is_me:
+		name_l.text = (pname if pname != "" else "Player %d" % (slot + 1)) \
+				+ (" — ты" if is_me else "")
+	else:
+		name_l.text = ""
 	# Цвета — те же, что у стрелок над машинами: свой зелёный, соперник
-	# оранжевый (один язык меток по всей игре). Бот — блёклый серо-стальной:
-	# он и в гонке без стрелки, метки живых людей не размываем.
+	# (живой или бот — не различить) оранжевый.
 	var color := Color(1, 1, 1, 0.5)
 	if is_me:
 		color = UiKit.GREEN_ME
-	elif taken:
+	elif taken or is_bot:
 		color = UiKit.ORANGE_RIVAL
-	if is_bot and not taken:
-		name_l.text = "БОТ"
-		color = Color(0.72, 0.76, 0.8)
 	name_l.add_theme_color_override("font_color", color)
 	var show_car := taken or is_bot
 	_views[slot].visible = show_car
@@ -194,7 +198,7 @@ func _build_slot(s: int) -> void:
 	panel.offset_top = y0
 	panel.offset_bottom = y0 + h
 
-	var name_l := _label(panel, "Player %d" % (s + 1), 24, Color(1, 1, 1, 0.5), 6)
+	var name_l := _label(panel, "", 24, Color(1, 1, 1, 0.5), 6)
 	name_l.position = Vector2(0, 10)
 	name_l.size = Vector2(w, 34)
 	name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER

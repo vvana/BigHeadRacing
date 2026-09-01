@@ -41,6 +41,10 @@ var _size_label: Label            # число участников заезда
 var _size_panel: Control          # панель «УЧАСТНИКОВ» (в футболе всегда 8)
 var _size_buttons: Array[Button] = []
 var _mode_button: Button          # переключатель ГОНКА/ФУТБОЛ
+var _canvas: CanvasLayer          # слой HUD (нужен окну ввода имени)
+var _name_btn: Button             # «ИМЯ: …» под строкой уровня
+var _name_dialog: Control         # модальное окно ввода имени (null — нет)
+var _name_edit: LineEdit
 var _scroll: ScrollContainer
 var _style_normal: StyleBoxFlat
 var _style_selected: StyleBoxFlat
@@ -54,10 +58,24 @@ func _ready() -> void:
 	_setup_hud()
 	_set_index(_index)
 	_generate_thumbs()
+	# Имя игрока: под ним его увидят соперники. Сначала спрашиваем платформу
+	# (Яндекс Игры отдают имя из SDK — см. GameState.platform_name), не
+	# дала — при ПЕРВОМ запуске показываем окно ввода.
+	if GameState.player_name == "":
+		var pn: String = GameState.platform_name()
+		if pn != "":
+			GameState.set_player_name(pn)
+			_refresh_name_btn()
+		else:
+			_open_name_dialog(true)
 
 
 func _process(delta: float) -> void:
 	_turntable.rotation.y += delta * 0.9
+	# Открыто окно ввода имени — клавиши достаются ему, а не выбору машины
+	# (иначе Enter в поле имени тут же запускал бы гонку).
+	if _name_dialog != null:
+		return
 
 	var total := CarModelLibrary.CAR_IDS.size()
 	if Input.is_action_just_pressed("ui_right") \
@@ -75,6 +93,8 @@ func _process(delta: float) -> void:
 
 
 func _start_race() -> void:
+	if _name_dialog != null:
+		return   # сначала имя — окно модальное
 	Net.leave()   # вдруг остались хвосты прошлого сетевого заезда
 	GameState.selected_car_id = CarModelLibrary.CAR_IDS[_index]
 	if GameState.game_mode == GameState.MODE_SOCCER:
@@ -233,6 +253,111 @@ func _mini_button(txt: String) -> Button:
 		b.add_theme_color_override(state, UiKit.INK)
 	b.focus_mode = Control.FOCUS_NONE
 	return b
+
+
+func _refresh_name_btn() -> void:
+	if _name_btn:
+		_name_btn.text = "ИМЯ: %s" % GameState.display_name()
+
+
+## Модальное окно ввода имени. first — первый запуск: имени ещё нет,
+## закрыть окно можно только введя его (кнопки «ОТМЕНА» нет). Дальше имя
+## меняется той же формой по клику на «ИМЯ: …» в гараже.
+func _open_name_dialog(first: bool) -> void:
+	if _name_dialog != null:
+		return
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.6)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP   # клики вниз не пропускаем
+	_canvas.add_child(dim)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_name_dialog = dim
+
+	var plate := UiKit.plate(dim, "steel", Vector2.ZERO, Vector2(460, 220))
+	plate.anchor_left = 0.5
+	plate.anchor_right = 0.5
+	plate.anchor_top = 0.5
+	plate.anchor_bottom = 0.5
+	plate.offset_left = -230
+	plate.offset_right = 230
+	plate.offset_top = -110
+	plate.offset_bottom = 110
+
+	var title := Label.new()
+	title.text = "КАК ТЕБЯ ЗОВУТ?"
+	if _ui_font:
+		title.add_theme_font_override("font", _ui_font)
+	title.add_theme_font_size_override("font_size", 26)
+	title.add_theme_color_override("font_color", Color.WHITE)
+	title.add_theme_constant_override("outline_size", 6)
+	title.add_theme_color_override("font_outline_color", UiKit.INK)
+	title.position = Vector2(0, 16)
+	title.size = Vector2(460, 34)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	plate.add_child(title)
+
+	var hint := Label.new()
+	hint.text = "Под этим именем тебя увидят другие игроки"
+	if _ui_font:
+		hint.add_theme_font_override("font", _ui_font)
+	hint.add_theme_font_size_override("font_size", 14)
+	hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
+	hint.position = Vector2(0, 54)
+	hint.size = Vector2(460, 22)
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	plate.add_child(hint)
+
+	_name_edit = LineEdit.new()
+	_name_edit.text = GameState.player_name
+	_name_edit.placeholder_text = "твоё имя"
+	_name_edit.max_length = GameState.NAME_MAX
+	_name_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	if _ui_font:
+		_name_edit.add_theme_font_override("font", _ui_font)
+	_name_edit.add_theme_font_size_override("font_size", 22)
+	var edit_sb := UiKit.steel_box(6, 0.95)
+	edit_sb.set_content_margin_all(6)
+	for state in ["normal", "focus"]:
+		_name_edit.add_theme_stylebox_override(state, edit_sb)
+	_name_edit.add_theme_color_override("font_color", Color.WHITE)
+	_name_edit.add_theme_color_override("caret_color", UiKit.YELLOW)
+	_name_edit.position = Vector2(90, 88)
+	_name_edit.size = Vector2(280, 42)
+	_name_edit.text_submitted.connect(func(_t: String) -> void:
+		_name_accept())
+	plate.add_child(_name_edit)
+	_name_edit.call_deferred("grab_focus")
+
+	var ok := Button.new()
+	ok.text = "ГОТОВО"
+	UiKit.style_button(ok, "orange", 22)
+	ok.position = Vector2(90 if first else 40, 146)
+	ok.size = Vector2(280 if first else 180, 54)
+	ok.pressed.connect(_name_accept)
+	plate.add_child(ok)
+	if not first:
+		var cancel := _mini_button("ОТМЕНА")
+		cancel.add_theme_font_size_override("font_size", 18)
+		cancel.position = Vector2(250, 152)
+		cancel.size = Vector2(170, 42)
+		cancel.pressed.connect(_close_name_dialog)
+		plate.add_child(cancel)
+
+
+func _name_accept() -> void:
+	var n: String = GameState.sanitize_name(_name_edit.text)
+	if n == "":
+		_name_edit.placeholder_text = "введи хоть что-нибудь"
+		return
+	GameState.set_player_name(n)
+	_close_name_dialog()
+
+
+func _close_name_dialog() -> void:
+	if _name_dialog:
+		_name_dialog.queue_free()
+		_name_dialog = null
+	_refresh_name_btn()
 
 
 func _change_race_size(dir: int) -> void:
@@ -553,6 +678,7 @@ func _setup_podium() -> void:
 func _setup_hud() -> void:
 	var canvas := CanvasLayer.new()
 	add_child(canvas)
+	_canvas = canvas
 	_ui_font = UiKit.font()
 
 	# Заголовок — белая эмалевая табличка с чернильным текстом и
@@ -598,6 +724,19 @@ func _setup_hud() -> void:
 	xp_label.offset_bottom = 138
 	xp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	canvas.add_child(xp_label)
+
+	# Имя игрока — строкой под уровнем; клик открывает окно смены имени.
+	_name_btn = _mini_button("")
+	_name_btn.add_theme_font_size_override("font_size", 16)
+	_name_btn.anchor_left = 0.25
+	_name_btn.anchor_right = 0.25
+	_name_btn.offset_left = -110
+	_name_btn.offset_right = 110
+	_name_btn.offset_top = 144
+	_name_btn.offset_bottom = 174
+	_name_btn.pressed.connect(func() -> void: _open_name_dialog(false))
+	canvas.add_child(_name_btn)
+	_refresh_name_btn()
 
 	# Имя машины — на стальной табличке.
 	var name_panel := UiKit.plate(canvas, "steel", Vector2.ZERO,

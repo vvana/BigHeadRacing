@@ -179,8 +179,32 @@ func _drive_carried() -> void:
 	for body in carrier.get_colliding_bodies():
 		var hitter := body as Car
 		if hitter != null and hitter != carrier:
+			var fwd_c := -carrier.global_transform.basis.z
+			fwd_c.y = 0.0
+			var from_hitter := carrier.global_position - hitter.global_position
+			from_hitter.y = 0.0
+			var carrier_v := carrier.linear_velocity
 			var pop := global_position - hitter.global_position
 			pop.y = 0.0
+			# Удар в КОРМУ ведущего — «таран-паровозик» (жалоба 01.09: двое
+			# сцепившихся загоняли впередистоящего вместе с мячом прямо в
+			# ворота): пинок «от бьющего» шёл ровно вдоль сцепки, и мяч
+			# продолжал катиться в ворота перед толкаемой машиной. Теперь
+			# при ударе сзади мяч СРЫВАЕТСЯ ВБОК с линии тарана, а его ход
+			# вперёд режется — паровозик остаётся ни с чем.
+			if fwd_c.length_squared() > 1e-6 \
+					and from_hitter.length_squared() > 1e-4 \
+					and from_hitter.normalized().dot(fwd_c.normalized()) > 0.6:
+				fwd_c = fwd_c.normalized()
+				var perp := Vector3(-fwd_c.z, 0.0, fwd_c.x)
+				var side := signf(perp.dot(
+						hitter.global_position - carrier.global_position))
+				if side == 0.0:
+					side = 1.0
+				_release()
+				linear_velocity = carrier_v * 0.5 \
+						- perp * side * DETACH_POP * 2.0
+				return
 			_release()
 			if pop.length_squared() > 1e-4:
 				linear_velocity += pop.normalized() * DETACH_POP

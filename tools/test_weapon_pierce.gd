@@ -9,11 +9,15 @@ extends Node3D
 ##    цела. Теперь коридор перепроверяется каждый тик жизни луча.
 ## 3) ГЛУШИЛКА: мерялся только ЦЕНТР машины — кольцо, чиркнувшее по
 ##    борту, не оглушало («цепляешь краем — не всегда оглушает»).
-##    Теперь три пробы по кузову с полушириной (ScrambleWave.BODY_R).
+##    Теперь дистанция до прямоугольника кузова (ScrambleWave.BODY_HALF_*).
 ## 4) СТЕНА: куча машин продавливала кузов сквозь тонкое ограждение —
 ##    Car._clamp_inside_walls возвращает центр за грань; честно
 ##    приземлившихся СНАРУЖИ (далеко за стеной) кламп не трогает.
-## На старом коде проверки 1-4 — честный FAIL.
+## 5) ГЛУШИЛКА, куча машин: волна гасла об ПЕРВОГО задетого — сосед,
+##    визуально накрытый теми же кольцами, оставался цел («круги коснулись
+##    моей машины, но не оглушили», 01.09). Теперь глушатся ВСЕ задетые
+##    в кадр смерти волны.
+## На старом коде проверки 1-5 — честный FAIL.
 
 var _main: Node3D
 var _frame := 0
@@ -123,6 +127,36 @@ func _physics_process(_d: float) -> void:
 			var dist: float = _main._track.distance_from_axis_at(
 					_mine_victim.global_position, _mine_victim.track_offset)
 			_ok["упавшего снаружи не тянет сквозь стену"] = dist > _half + 3.0
+			# 5) Волна в КУЧЕ машин: двое по бокам её пути (±2 м) — оглушены
+			# ОБА. Старый код гас волну об первого по списку, второй —
+			# визуально накрытый теми же кольцами — оставался цел.
+			var curve: Curve3D = _main._track._curve
+			var off: float = curve.get_baked_length() * 0.06
+			var base: Vector3 = curve.sample_baked(off)
+			var tan_v: Vector3 = curve.sample_baked(off + 1.0) - base
+			tan_v.y = 0.0
+			tan_v = tan_v.normalized()
+			var right := tan_v.cross(Vector3.UP)
+			_shooter.global_transform = Transform3D(
+					Basis.looking_at(tan_v), base + Vector3.UP * 0.62)
+			_shooter.linear_velocity = Vector3.ZERO
+			_laser_victim._end_ghost()
+			for pair: Array in [[_laser_victim, -1.0], [_mine_victim, 1.0]]:
+				var c: Car = pair[0]
+				c.global_transform = Transform3D(Basis.looking_at(tan_v),
+						base + tan_v * 9.0 + right * 2.0 * (pair[1] as float)
+						+ Vector3.UP * 0.62)
+				c.linear_velocity = Vector3.ZERO
+			_shooter.weapon = Weapons.SCRAMBLE
+			_shooter.use_weapon()
+		160:
+			_ok["волна глушит обоих соседей в куче"] = \
+					_laser_victim.scramble_left() > 3.5 \
+					and _mine_victim.scramble_left() > 3.5
+			if not _ok["волна глушит обоих соседей в куче"]:
+				print("  [куча] слева %.2f c, справа %.2f c"
+						% [_laser_victim.scramble_left(),
+							_mine_victim.scramble_left()])
 			var all_ok := true
 			for k: String in _ok:
 				if not _ok[k]:
