@@ -1922,7 +1922,16 @@ func _rx_shove(victim_slot: int, dir: Vector3, closing: float,
 		return
 	if not (dir.is_finite() and is_finite(closing) and is_finite(spin)):
 		return
-	if _cars[s].global_position.distance_to(victim.global_position) > 8.0:
+	# Агрессор видел жертву В ПРОШЛОМ (на свой буфер ~0.35 c): на встречных
+	# курсах 30+ м/с серверные «сейчас»-позиции расходятся дальше прежнего
+	# допуска, и честный таран молча выбрасывался («тяжело оказывать
+	# воздействие», жалоба 01.09). Меряем и к текущей позиции жертвы, и к
+	# отмотанной на его лаг — хватит любой из двух.
+	var attacker := _cars[s]
+	var d_now := attacker.global_position.distance_to(victim.global_position)
+	var d_past := attacker.global_position.distance_to(
+			victim.past_position(attacker.net_shot_lag()))
+	if minf(d_now, d_past) > 8.0:
 		return
 	var now := Time.get_ticks_msec() / 1000.0
 	var key := s * 100 + victim_slot

@@ -11,10 +11,17 @@ extends Node3D
 ##
 ## Сценарий: машина едет мимо куба по сырым данным ТОЧНО через него, а
 ## тело искусственно смещено вбок (имитируем хвост сглаживания).
+##
+## Фаза 2 (жалоба 01.09 «по сети машины по-прежнему проезжают сквозь
+## бонус»): снимки владельца приходят реже кадров сервера, и сырая точка
+## ПЕРЕШАГИВАЕТ куб — снимок за 4 м ДО куба, следующий в 4 м ЗА ним.
+## Точечная проверка мазала; замёт отрезка между снимками обязан выдать.
 
 var _main: Node3D
 var _car: Car
 var _box: WeaponBox
+var _box2: WeaponBox
+var _dir := Vector3.FORWARD
 var _frame := 0
 var _got := false
 
@@ -68,6 +75,36 @@ func _physics_process(_d: float) -> void:
 		return
 	if _frame == 61:
 		print("бокс отметил выдачу: %s" % str(_got))
-		print("BOXPICKUP TEST: %s" % ("PASS" if _got
+		return
+	# ---- Фаза 2: сырые точки ПЕРЕШАГИВАЮТ куб (снимки реже кадров). ----
+	if _frame == 70:
+		var f2: Vector3 = -_car.global_transform.basis.z
+		f2.y = 0.0
+		_dir = f2.normalized()
+		_box2 = WeaponBox.new()
+		_main.add_child(_box2)
+		_box2.global_position = _car.global_position \
+				+ _dir * 30.0 + Vector3(0, 0.5, 0)
+		return
+	if _frame == 75:
+		# Снимок за 4 м ДО куба (бокс запомнит эту точку)...
+		_snap_to(_box2.global_position - _dir * 4.0)
+		return
+	if _frame == 80:
+		# ...следующий — в 4 м ЗА кубом: ни одна ТОЧКА куб не задевает
+		# (зазор 4 м при пороге 1.5), выдать обязан замёт отрезка.
+		_snap_to(_box2.global_position + _dir * 4.0)
+		return
+	if _frame == 90:
+		var got2: bool = _box2._next_pickup.has(_car.get_instance_id())
+		print("перешагнутый куб выдан: %s" % str(got2))
+		print("BOXPICKUP TEST: %s" % ("PASS" if _got and got2
 				else "FAIL — куб задет по сырым данным, а бонус не выдан"))
-		get_tree().quit(0 if _got else 1)
+		get_tree().quit(0 if _got and got2 else 1)
+
+
+## Скормить машине сырой снимок владельца в точке p (тело не трогаем).
+func _snap_to(p: Vector3) -> void:
+	_car.net_apply_snapshot(p - Vector3(0, 0.5, 0),
+			_car.global_transform.basis.get_rotation_quaternion(),
+			Vector3.ZERO, 5000.0 + float(_frame))

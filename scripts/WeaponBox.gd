@@ -15,6 +15,8 @@ const PER_CAR_COOLDOWN := 2.5
 var _mesh: MeshInstance3D
 # id машины → время (сек. с запуска), когда ей снова можно выдать бонус.
 var _next_pickup := {}
+# id машины → её сырое положение на ПРОШЛОЙ проверке (для замёта отрезка).
+var _last_true := {}
 
 
 func _ready() -> void:
@@ -80,22 +82,41 @@ func _physics_process(_delta: float) -> void:
 			continue
 		if not car.alive or car.is_ghost():
 			continue
+		var id := car.get_instance_id()
 		var p := car.true_position()
-		if absf(p.y - global_position.y) > 1.6:
-			continue
+		var prev: Vector3 = _last_true.get(id, p)
+		_last_true[id] = p
+		# Снимки владельца приходят РЕЖЕ кадров сервера, и на 30+ м/с сырая
+		# точка между двумя проверками перешагивает несколько метров — куб
+		# 1.3 м проваливался между ними («проехал сквозь бонус, оружия нет»,
+		# жалоба 01.09). Метём весь отрезок прошлое→текущее шагом ≤1 м.
+		# Рывок длиннее 12 м — телепорт (респавн/взрыв), его не метём.
+		var travel := prev.distance_to(p)
+		if travel > 12.0:
+			prev = p
+			travel = 0.0
 		var f := car.true_forward() * 0.9
-		var a := p - f
-		var b := p + f
-		var ab := b - a
-		var len2 := ab.length_squared()
-		var t := 0.0
-		if len2 > 1e-6:
-			t = clampf((global_position - a).dot(ab) / len2, 0.0, 1.0)
-		var near := a + ab * t
-		var gap := Vector2(near.x - global_position.x,
-				near.z - global_position.z).length()
-		if gap < 1.5:
-			_give(car)
+		var steps := int(travel) + 1
+		for k in steps + 1:
+			var q := prev.lerp(p, float(k) / float(steps))
+			if absf(q.y - global_position.y) > 1.6:
+				continue
+			if _gap_to_body(q, f) < 1.5:
+				_give(car)
+				break
+
+
+## Зазор в плане от центра куба до отрезка кузова (позиция ± курс×0.9).
+func _gap_to_body(p: Vector3, f: Vector3) -> float:
+	var a := p - f
+	var ab := f * 2.0
+	var len2 := ab.length_squared()
+	var t := 0.0
+	if len2 > 1e-6:
+		t = clampf((global_position - a).dot(ab) / len2, 0.0, 1.0)
+	var near := a + ab * t
+	return Vector2(near.x - global_position.x,
+			near.z - global_position.z).length()
 
 
 func _on_body(body: Node3D) -> void:

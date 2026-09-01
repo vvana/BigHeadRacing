@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testsocdrib"]
+
+[ext_resource type="Script" path="res://tools/test_soccer_dribble.gd" id="1_testsocdrib"]
+
+[node name="TestSoccerDribble" type="Node3D"]
+script = ExtResource("1_testsocdrib")

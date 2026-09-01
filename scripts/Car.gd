@@ -131,6 +131,11 @@ var _snap_stamp := -1.0   # тик ЧАСОВ АВТОРА состояния (�
 # отбрасывается — иначе при тёрке бок-о-бок машину било бы дважды (свой
 # рикошет + событие соперника).
 var _touch_mute := {}
+# Зеркальная защита: id марионетки → мс, когда от её владельца ПРИШЁЛ толчок.
+# Мой контакт с этой марионеткой в ближайшие 0.7 c — тот же самый таран,
+# доехавший до меня с опозданием буфера: без защиты жертву било дважды
+# (событие + свой рикошет), отсюда «моя машина разворачивается легко».
+var _shove_rx := {}
 # История позиций на СЕРВЕРЕ (~0.7 c, кадр физики): по ней лазер игрока
 # отматывает цели назад — стрелявший целится в картину, отстающую на
 # буфер воспроизведения (~0.35 c) и полёт пакета, и без отмотки «попал на
@@ -179,6 +184,8 @@ var _lamps: Array[MeshInstance3D] = []
 var _grounded_wheels := 0
 var _can_jump := true
 var _wall_align_time := 0.0     # окно доворота после касания стены, с
+var _wall_near := false         # кузов у грани ограждения (аналитически)
+var _wall_body: Node3D = null   # тело стен, с которым снято столкновение
 var _bump_spin_time := 0.0      # окно после тарана: руль не глушит закрутку
 var _jump_time := 0.0           # после прыжка клапан вертикали у стены отключён
 var _air_time := 0.0            # сколько уже летим, с (для нарастания прижима)
@@ -1038,6 +1045,13 @@ func _bounce_off_cars() -> void:
 		if now.has(id):
 			continue
 		now[id] = true
+		# Владелец этой марионетки только что прислал толчок об этом же
+		# таране (см. _shove_rx): удар уже учтён событием, свой импульс и
+		# закрутка были бы ВТОРЫМ ударом от того же столкновения — жертву
+		# «разворачивало легко». Выдавливание и расталкивание ниже оставляем.
+		var shoved_already: bool = other.net_role == NetRole.PUPPET \
+				and Time.get_ticks_msec() \
+				- float(_shove_rx.get(id, -1.0e12)) < 700.0
 		if other.net_role == NetRole.PUPPET:
 			_puppet_touch = true
 			# НЕПРОНИЦАЕМОСТЬ марионетки — вручную (решатель эту пару не
@@ -1085,7 +1099,7 @@ func _bounce_off_cars() -> void:
 		# рикошет от любого мусора в данных не превысит толчка 8 м/с.
 		var other_vel := other.contact_velocity()
 		var closing := minf((other_vel - linear_velocity).dot(away), 20.0)
-		if closing > 0.5:
+		if closing > 0.5 and not shoved_already:
 			apply_central_impulse(away * closing * 0.4 * mass)
 			if other.net_role == NetRole.PUPPET:
 				# Помечаем контакт: если соперник пришлёт толчок-событие об
@@ -1118,7 +1132,7 @@ func _bounce_off_cars() -> void:
 		rel.y = 0.0
 		var lever := -away * minf(dist * 0.5, 1.5)
 		var spin := lever.cross(rel.limit_length(15.0)).y * bump_spin
-		if absf(spin) > 0.15:
+		if absf(spin) > 0.15 and not shoved_already:
 			# Итог клампится: серия контактов (удар — отскок — снова удар)
 			# не должна раскручивать волчком.
 			angular_velocity.y = clampf(angular_velocity.y + spin, -3.0, 3.0)
@@ -1170,6 +1184,11 @@ func apply_net_shove(attacker: Car, dir: Vector3, closing: float,
 	if not dir.is_finite() or dir.length() < 0.5:
 		return
 	dir = dir.normalized()
+	# Зеркальная защита от двойного удара: свой рикошет об ЭТУ марионетку в
+	# ближайшее окно — дубль этого же тарана (её тело доедет до контакта
+	# позже на буфер воспроизведения). Отмечаем только ПРИМЕНЁННЫЙ толчок.
+	if attacker != null:
+		_shove_rx[attacker.get_instance_id()] = float(Time.get_ticks_msec())
 	# Каппы те же, что у собственного рикошета: сближение ≤ 20 (толчок
 	# ≤ 8 м/с), закрутка в пределах ±3.
 	_ext_push_time = 0.3
@@ -1860,7 +1879,19 @@ func _wall_slide(delta: float) -> void:
 	# На трассе без ограждений (песчаная) вести не вдоль чего: съезд с
 	# полотна легален, его наказывает сам песок (см. _on_sand).
 	if track == null or not track.has_walls:
+		_wall_near = false
 		return
+	# Кузов больше НЕ сталкивается с тримешем ограждения в решателе: стыки
+	# сегментов — «рёбра», о которые машину то отбрасывало, то тормозило,
+	# то разворачивало (жалобы 28.08–01.09, капы ниже лечили лишь следствия).
+	# Стена для машин теперь целиком аналитическая: ведение направляет
+	# скорость вдоль ГЛАДКОЙ осевой кривой, кламп в конце функции держит
+	# кузов внутри грани. Исключение действует только на пару машина-стена:
+	# снаряды, волна глушилки и мяч сталкиваются со стеной как раньше.
+	if _wall_body == null or not is_instance_valid(_wall_body):
+		for wnode in get_tree().get_nodes_in_group("walls"):
+			_wall_body = wnode
+			add_collision_exception_with(wnode)
 	var curve: Curve3D = track._curve
 	var length := curve.get_baked_length()
 	var off := track_offset
@@ -1872,6 +1903,7 @@ func _wall_slide(delta: float) -> void:
 	n.y = 0.0
 	var dist := n.length()
 	if tangent.length_squared() < 1e-6 or dist < 0.01:
+		_wall_near = false
 		return
 	tangent = tangent.normalized()
 	n /= dist
@@ -1883,12 +1915,12 @@ func _wall_slide(delta: float) -> void:
 	# мгновенно съедал скорость.
 	if global_position.y - 0.3 > axis_pos.y + TrackBuilder.WALL_HEIGHT:
 		_wall_align_time = 0.0
+		_wall_near = false
 		return
 
 	var h := linear_velocity
 	h.y = 0.0
 	var v_out := h.dot(n)
-	var touching := _touching_wall()
 	# Просит ли руль прямо сейчас рысканье ПРОЧЬ от стены.
 	var fwd := -global_transform.basis.z
 	fwd.y = 0.0
@@ -1917,6 +1949,23 @@ func _wall_slide(delta: float) -> void:
 	# внутри стены, а на широких — в нескольких метрах от неё.
 	var wall_face := track.half_width_at_offset(off) \
 			- TrackBuilder.WALL_THICKNESS * 0.5
+	# «Касание» — аналитическое (кузов дотянулся до грани), а не контакт
+	# решателя: с исключением выше солвер стену для машин не видит вовсе.
+	# Дальше пары метров за гранью — это не пристенок, а вылет (телепорт
+	# стенда, перелёт): там track_offset может быть протухшим, и «касание»
+	# врало бы (см. ту же оговорку в _clamp_inside_walls).
+	var touching := dist + reach > wall_face - 0.05 \
+			and dist < wall_face + 0.3
+	_wall_near = touching
+	# ЦЕНТР за гранью — это НЕ пристенок: либо машина снаружи (перелёт,
+	# телепорт стенда — её возвращает автовозврат «Вне трассы», тянуть
+	# сквозь стену было бы телепортом), либо track_offset протух и dist
+	# меряется к чужой точке оси. И вести, и клампить тут нельзя. Допуск
+	# 0.3: в норме кламп ниже держит центр на face-reach, за кадр наружу
+	# не пройти и полуметра — глубже центр честно не заходит.
+	if dist > wall_face + 0.3:
+		_wall_align_time = 0.0
+		return
 	var guiding := touching or (
 			v_out > 0.05 and dist + reach + v_out * delta * 1.2 > wall_face)
 	if guiding:
@@ -1981,6 +2030,17 @@ func _wall_slide(delta: float) -> void:
 		var out_now := h_now.dot(n)
 		if out_now < -out_cap:
 			linear_velocity -= n * (out_now + out_cap)
+	# Депенетрация — вручную: солвер стену не видит, кузов держит этот
+	# кламп. Грань считается от гладкой осевой кривой — никаких рёбер,
+	# машина скользит вдоль ограждения без отбросов и подскоков.
+	# Шаг ограничен — никаких рывков (случай «центр за гранью» отсеян
+	# ранним выходом выше).
+	var over := dist + reach - wall_face
+	if over > 0.0:
+		global_position -= n * minf(over, 1.5)
+		var out_v := linear_velocity.dot(n)
+		if out_v > 0.0:
+			linear_velocity -= n * out_v
 	if _jump_time <= 0.0 and (touching or _wall_align_time > 0.0):
 		# Клапан подскока: депенетрация вклиненного угла/ребра не должна
 		# закидывать кузов на стену (после прыжка отключён).
@@ -2013,11 +2073,11 @@ func _wall_slide(delta: float) -> void:
 	angular_velocity.y = 0.0
 
 
+## Кузов у грани ограждения. Раньше — контакт решателя; теперь стена для
+## машин аналитическая (см. _wall_slide), и «касание» — вылет кузова до
+## грани, посчитанный там же на этом кадре физики.
 func _touching_wall() -> bool:
-	for body in get_colliding_bodies():
-		if body.is_in_group("walls"):
-			return true
-	return false
+	return _wall_near
 
 
 ## Не даёт кузову развернуться больше max_track_angle_deg поперёк направления
@@ -2493,8 +2553,11 @@ func _clamp_inside_walls() -> void:
 	# Далеко за стеной — это НЕ продавливание этого кадра (перелетел и
 	# приземлился снаружи): тянуть сквозь стену не надо, вернёт
 	# автовозврат «Вне трассы». Продавливание кламп режет каждый кадр,
-	# глубже пары метров за грань оно зайти не успевает.
-	if d > limit + 2.5:
+	# глубже метра за грань оно зайти не успевает (стена для машин теперь
+	# аналитическая, и «войны» с солвером, маскировавшей широкий допуск,
+	# больше нет — машина, ПОСТАВЛЕННАЯ за стеной в паре метров, должна
+	# достаться автовозврату, а не втягиваться сквозь стену).
+	if d > limit + 1.2:
 		return
 	var out := lat / d
 	global_position = Vector3(here.x, global_position.y, here.z) + out * limit
