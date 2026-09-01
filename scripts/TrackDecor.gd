@@ -1,14 +1,18 @@
 class_name TrackDecor
 extends Node3D
 ## Декор трассы из готовых лоуполи-ассетов (BEDRILL Track Environment Free +
-## Cartoon Tracks Pack): финишная арка, стартовая ферма с огнями, трибуны,
-## деревья, воздушные шары, реклама и знаки перед поворотами.
+## Cartoon Tracks Pack + Palmov Low Poly Locations + ithappy Cartoon City):
+## финишная арка, стартовая ферма с огнями, трибуны, деревья, воздушные шары,
+## реклама и знаки перед поворотами; в пустыне — пирамиды, сфинкс и кактусы;
+## в ночном городе — мультяшные здания со светящимися окнами и светофоры.
 ## ТОЛЬКО ВИЗУАЛ: ни у одного пропса нет коллизий, всё стоит за ограждением
 ## (или в воздухе/на полотне без физики) — геймплей не задет.
 
 const DIR := "res://assets/models/track_env/"
 const CDIR := DIR + "cartoon/"
 const TEX_DIR := CDIR + "textures/"
+const PDIR := DIR + "palmov/"     # Palmov Island: пустыня (одна палитра)
+const CITY_DIR := DIR + "city/"   # ithappy Cartoon City: здания, светофоры
 
 # Мультяшные FBX ссылаются на .psd-текстуры, которые Godot не читает, —
 # назначаем PNG-версии вручную по имени материала внутри FBX.
@@ -52,7 +56,10 @@ func build(track: TrackBuilder) -> void:
 		_build_space()
 		return
 	_build_start_area()
-	_build_tribunes()
+	# Трибуны — гоночная атрибутика: на классике и в городе. В пустыне их
+	# нет — там вестерн (станция, лошади, бочки), зрителей не завезли.
+	if track.kind != TrackBuilder.KIND_SAND:
+		_build_tribunes()
 	# Ночью воздушных шаров не бывает — в городе вместо них здания.
 	if track.kind != TrackBuilder.KIND_NEON:
 		_build_balloons()
@@ -62,8 +69,12 @@ func build(track: TrackBuilder) -> void:
 	# Деревья — только на классике: в пустыне не растут, в городе — здания.
 	if track.kind == TrackBuilder.KIND_GRASS:
 		_build_trees()
+		_build_race_extras()
 	if track.kind == TrackBuilder.KIND_NEON:
 		_build_city()
+		_build_street_lamps()
+	if track.kind == TrackBuilder.KIND_SAND:
+		_build_desert()
 
 
 ## ---------- размещение ----------
@@ -88,7 +99,37 @@ func _build_start_area() -> void:
 	gantry_pos.y = _ground_y(gantry_pos)
 	_spawn(CDIR + "prop_startlights.FBX", gantry_pos, -out, 1.0, false)
 
-	# Башня комментаторов и тент-паддок — снаружи стартовой прямой.
+	# Снаружи стартовой прямой: на классике и в городе — башня комментаторов
+	# и тент-паддок с табличками команд; в пустыне — вестерн-паддок:
+	# водонапорная башня, телега, коновязь с лошадьми и бочки.
+	if _track.kind == TrackBuilder.KIND_SAND:
+		var tank_pos := _axis_at_dist(18.0) + out * (_half(0.0) + 14.0)
+		tank_pos.y = _ground_y(tank_pos)
+		_spawn(PDIR + "water_tank.fbx", tank_pos, -out, 1.1, false)
+		_occupy(tank_pos, 7.0)
+
+		var cart_pos := _axis_at_dist(32.0) + out * (_half(0.0) + 9.0)
+		cart_pos.y = _ground_y(cart_pos)
+		_spawn(PDIR + "cart.fbx", cart_pos, _forward(0.0), 1.0, false)
+		_occupy(cart_pos, 5.0)
+
+		var hitch_pos := _axis_at_dist(-14.0) + out * (_half(0.0) + 6.0)
+		hitch_pos.y = _ground_y(hitch_pos)
+		_spawn(PDIR + "hitching_post.fbx", hitch_pos, -out, 1.0, false)
+		for i in 2:
+			var hp := hitch_pos + _forward(0.0) * (2.2 * i - 1.1) - out * 1.6
+			hp.y = _ground_y(hp)
+			_spawn(PDIR + ("horse_brown.fbx" if i == 0 else "horse_white.fbx"),
+					hp, out, 1.0, false)
+		_occupy(hitch_pos, 5.0)
+
+		for i in 4:
+			var p := _axis_at_dist(-26.0 - 5.0 * i) + out * (_half(0.0) + 2.0)
+			p.y = _ground_y(p)
+			_spawn(PDIR + (["barrel_a.fbx", "box_a.fbx", "barrel_b.fbx",
+					"box_b.fbx"][i]), p, -out, 1.0, false)
+		return
+
 	var tower_pos := _axis_at_dist(18.0) + out * (_half(0.0) + 14.0)
 	tower_pos.y = _ground_y(tower_pos)
 	_spawn(CDIR + "prop_tower.FBX", tower_pos, -out, 0.55, false)
@@ -142,8 +183,12 @@ func _build_balloons() -> void:
 		i += 1
 
 
-## Мелочь вдоль обочин: флаги, конусы, шины, реклама, фонари — с шагом
-## по кругу, чередуя стороны и виды. Всё за ограждением.
+## Мелочь вдоль обочин — с шагом по кругу, чередуя стороны и виды. Всё за
+## ограждением. Набор ТЕМАТИЧЕСКИЙ: на классике — гоночная атрибутика
+## (флаги, шины, конусы, реклама), в пустыне — вестерн (бочки, ящики,
+## деревянные вешки, кактусы), в городе — светофоры, урны, остановки и
+## билборды. Фонарные столбы — ТОЛЬКО в ночном городе (_build_street_lamps),
+## и там они светят по-настоящему.
 func _build_roadside() -> void:
 	var length: float = _track._curve.get_baked_length()
 	var kinds: Array = [
@@ -153,10 +198,34 @@ func _build_roadside() -> void:
 		[CDIR + "prop_adbox_A.FBX", 1.4, false],
 		[DIR + "Tire_free.fbx", 1.0, true],
 		[CDIR + "prop_adbox_B.FBX", 1.4, false],
-		[DIR + "Pole_light_free.fbx", 0.8, true],
+		[CDIR + "prop_tyre_1x1_A.FBX", 1.0, false],
 		[CDIR + "prop_adbox_C.FBX", 1.4, false],
 	]
-	var step := 21.0
+	if _track.kind == TrackBuilder.KIND_SAND:
+		kinds = [
+			[PDIR + "barrel_a.fbx", 1.0, false],
+			[PDIR + "wooden_post.fbx", 1.0, false],
+			[PDIR + "box_a.fbx", 1.0, false],
+			[PDIR + "cactus_b.fbx", 1.1, false],
+			[PDIR + "barrel_b.fbx", 1.0, false],
+			[PDIR + "wooden_post.fbx", 1.0, false],
+			[PDIR + "box_b.fbx", 1.0, false],
+			[PDIR + "stone_a.fbx", 1.2, false],
+		]
+	# В городе обочина городская: светофоры (эмиссивные — светятся в ночи),
+	# урны, автобусные остановки и билборды вместо флагов и конусов.
+	elif _track.kind == TrackBuilder.KIND_NEON:
+		kinds = [
+			[CITY_DIR + "traffic_light_c.fbx", 1.0, false],
+			[CITY_DIR + "trash_can_a.fbx", 1.0, false],
+			[CITY_DIR + "bus_stop.fbx", 1.0, false, true],
+			[CITY_DIR + "billboard_wide.fbx", 0.9, false],
+			[CITY_DIR + "traffic_light_a.fbx", 0.85, false],
+			[CITY_DIR + "trash_can_b.fbx", 1.0, false],
+			[CITY_DIR + "traffic_light_b.fbx", 0.85, false],
+			[CITY_DIR + "billboard_a.fbx", 0.62, false],
+		]
+	var step := 18.0
 	var n := int(length / step)
 	for i in n:
 		var d := step * (i + 0.5)
@@ -169,7 +238,10 @@ func _build_roadside() -> void:
 		var p := pos + side * (_half(t) + 1.7)
 		p.y = _ground_y(p)
 		var kind: Array = kinds[i % kinds.size()]
-		_spawn(String(kind[0]), p, -side, float(kind[1]), bool(kind[2]))
+		# 4-й элемент — разворот на 180° (у остановки «спина» в +Z:
+		# без разворота она стояла к дороге глухой стенкой).
+		var face := side if kind.size() > 3 and kind[3] else -side
+		_spawn(String(kind[0]), p, face, float(kind[1]), bool(kind[2]))
 
 
 ## Пики кривизны контура — самые крутые повороты. Возвращает массив
@@ -219,10 +291,13 @@ func _turn_peaks(max_count: int, min_abs: float) -> Array:
 
 
 ## Щиты-указатели перед крутыми поворотами: на внешней стороне поворота
-## за 12 м до вершины.
+## за 12 м до вершины. На гоночных трассах (классика и город) перед щитом —
+## мультяшные таблички отсчёта дистанции 3-2-1 (как на настоящих трассах).
 func _build_turn_signs() -> void:
 	var n := _track._pts.size()
 	var length: float = _track._curve.get_baked_length()
+	var racing := _track.kind == TrackBuilder.KIND_GRASS \
+			or _track.kind == TrackBuilder.KIND_NEON
 	for pair: Array in _turn_peaks(5, 0.30):
 		var i: int = pair[0]
 		var t := float(i) / n - 12.0 / length  # за 12 м до вершины
@@ -233,6 +308,14 @@ func _build_turn_signs() -> void:
 		var p := pos + side * (_half(t) + 1.6)
 		p.y = _ground_y(p)
 		_spawn(DIR + "Sign_free.fbx", p, -_forward(t), 1.2, true)
+		if not racing:
+			continue
+		for k in 3:   # 1 — ближе всех к повороту, 3 — дальше всех
+			var td := float(i) / n - (22.0 + 10.0 * k) / length
+			var dp := _axis(td) + side * (_half(td) + 1.5)
+			dp.y = _ground_y(dp)
+			_spawn(CDIR + "prop_distance_%d.FBX" % (k + 1), dp,
+					-_forward(td), 1.0, false)
 
 
 ## Разметка на полотне: стартовая решётка под машинами, белые стрелки
@@ -316,6 +399,289 @@ func _build_trees() -> void:
 		placed += 1
 
 
+## ---------- гоночные экстры классики ----------
+
+## Классика — «домашний ипподром»: дополнительные трибуны (Palmov),
+## мачты стадионного освещения (днём не горят — просто антураж гоночного
+## комплекса) и широкие рекламные щиты вдоль полотна.
+func _build_race_extras() -> void:
+	# [t по кругу, путь, масштаб, отступ от полотна, полурадиус пропса].
+	# Точка проверяется ГЛОБАЛЬНО (_track.distance_from_axis): контур
+	# извилистый, и «наружу» от одного участка может стоять соседний виток —
+	# без проверки трибуна ложилась прямо на полотно. Не влезло — пробуем
+	# ту же вещь чуть дальше по кругу.
+	for item: Array in [
+		[0.30, PDIR + "grandstand_b.fbx", 1.5, 8.0, 8.0],
+		[0.42, PDIR + "grandstand_a.fbx", 1.5, 8.0, 6.5],
+		[0.88, CDIR + "prop_seats_small.FBX", 0.62, 9.0, 5.0],
+		[0.18, CITY_DIR + "billboard_wide.fbx", 1.0, 4.0, 4.5],
+		[0.48, CITY_DIR + "billboard_wide.fbx", 1.0, 4.0, 4.5],
+		[0.70, CITY_DIR + "billboard_wide.fbx", 1.0, 4.0, 4.5],
+		[0.05, PDIR + "stadium_light.fbx", 1.3, 12.0, 2.0],
+		[0.35, PDIR + "stadium_light.fbx", 1.3, 12.0, 2.0],
+		[0.56, PDIR + "stadium_light.fbx", 1.3, 12.0, 2.0],
+		[0.78, PDIR + "stadium_light.fbx", 1.3, 12.0, 2.0],
+	]:
+		var off: float = item[3]
+		var foot: float = item[4]
+		for k in 10:
+			var t: float = float(item[0]) + 0.021 * k
+			var out := _outward(t)
+			var p := _axis(t) + out * (_half(t) + off)
+			var d: float = _track.distance_from_axis(p)
+			if d < TrackBuilder.TRACK_HALF_WIDTH + 1.5 + foot:
+				continue
+			if _is_occupied(p, foot):
+				continue
+			p.y = _ground_y(p)
+			var node := _spawn(String(item[1]), p, -out, float(item[2]), false)
+			if node != null:
+				_push_outside(node, out, _half(t) + 2.5)
+				_occupy(node.position, foot)
+			break
+
+
+## ---------- уличные фонари ночного города ----------
+
+## Фонарные столбы ЕСТЬ ТОЛЬКО ЗДЕСЬ — и они светят по-настоящему:
+## тёплый OmniLight без теней у головки каждого фонаря. Шаг крупный,
+## чтобы огней было ~15-18 на круг — дёшево и достаточно.
+func _build_street_lamps() -> void:
+	var length: float = _track._curve.get_baked_length()
+	var step := 40.0
+	var n := int(length / step)
+	for i in n:
+		var d := step * (i + 0.35)
+		# Стартовую прямую не трогаем — там арка и стартовые огни.
+		if d < 25.0 or d > length - 20.0:
+			continue
+		var t := d / length
+		var side := _outward(t) if i % 2 == 0 else -_outward(t)
+		var p := _axis(t) + side * (_half(t) + 1.5)
+		p.y = _ground_y(p)
+		var lamp := _spawn(DIR + "Pole_light_free.fbx", p, -side, 0.8, true)
+		if lamp == null:
+			continue
+		var light := OmniLight3D.new()
+		light.light_color = Color(1.0, 0.85, 0.55)
+		light.light_energy = 3.2
+		light.omni_range = 19.0
+		light.shadow_enabled = false
+		lamp.add_child(light)
+		# Головка фонаря: вверх и к полотну (+Z локально — к трассе;
+		# позиция в локальных координатах, масштаб узла 0.8 её ужмёт).
+		light.position = Vector3(0, 5.8, 1.8)
+
+
+## ---------- пустыня (Palmov Island) ----------
+
+const CACTI: Array[String] = [
+	"cactus_a.fbx", "cactus_b.fbx", "cactus_c.fbx",
+	"cactus_d.fbx", "cactus_e.fbx", "cactus_f.fbx",
+]
+const DESERT_STONES: Array[String] = [
+	"stone_a.fbx", "stone_b.fbx", "stone_c.fbx", "stone_d.fbx",
+]
+const DRY_TREES: Array[String] = ["dry_tree_a.fbx", "dry_tree_b.fbx"]
+const DESERT_GRASS: Array[String] = ["grass_yellow_a.fbx", "grass_yellow_b.fbx"]
+const DESERT_CRATES: Array[String] = [
+	"barrel_a.fbx", "barrel_b.fbx", "box_a.fbx", "box_b.fbx",
+]
+const HORSES: Array[String] = ["horse_brown.fbx", "horse_white.fbx"]
+const PALMS: Array[String] = ["palm_large.fbx", "palm_bent.fbx"]
+
+
+## Пустыня: вестерн-станция с поездом, оазисы с пальмами, дальние монументы
+## (пирамиды, сфинкс, гора-череп) за трассой и россыпь кактусов, камней,
+## сухих деревьев, пучков жёлтой травы, брошенных бочек-ящиков и пасущихся
+## лошадей по дюнам.
+## Коллизий нет: по песку разрешено ездить, машина проходит насквозь.
+func _build_desert() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20260901
+	_build_desert_station(rng)
+	_build_desert_monuments(rng)
+	_build_oases(rng)
+	# Россыпь: [набор файлов, штук, отступ от кромки, масштаб от, масштаб до]
+	for item: Array in [
+		[CACTI, 70, 5.0, 0.9, 1.6],
+		[DESERT_STONES, 46, 4.0, 0.8, 2.2],
+		[DRY_TREES, 20, 9.0, 1.0, 1.5],
+		[DESERT_GRASS, 60, 3.0, 0.9, 1.4],
+		[DESERT_CRATES, 18, 6.0, 0.9, 1.1],
+		[HORSES, 6, 24.0, 0.95, 1.05],
+	]:
+		var files: Array[String] = item[0]
+		var count: int = item[1]
+		var margin: float = item[2]
+		var half := TrackBuilder.GROUND_SIZE * 0.47
+		var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
+		var placed := 0
+		var attempts := 0
+		while placed < count and attempts < count * 8:
+			attempts += 1
+			var p := Vector3(rng.randf_range(-half, half), 0,
+					rng.randf_range(-half, half))
+			if _track.distance_from_axis(p) < edge + margin:
+				continue
+			if _is_occupied(p, 2.5):
+				continue
+			p.y = _ground_y(p)
+			var yaw := Vector3(rng.randf_range(-1, 1), 0, rng.randf_range(-1, 1))
+			if yaw.length_squared() < 0.01:
+				yaw = Vector3.FORWARD
+			_spawn(PDIR + files[rng.randi() % files.size()], p, yaw,
+					rng.randf_range(float(item[3]), float(item[4])), false)
+			placed += 1
+
+
+## Вестерн-станция: рельсы, паровоз с двумя вагонами, здание станции,
+## водонапорная башня, коновязь с лошадью и ящики на «перроне». Одна
+## сборная сцена в свободном секторе пустыни, подальше от полотна.
+func _build_desert_station(rng: RandomNumberGenerator) -> void:
+	var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
+	var half := TrackBuilder.GROUND_SIZE * 0.47
+	for attempt in 90:
+		var ang := rng.randf_range(0.0, TAU)
+		var dist := rng.randf_range(half * 0.45, half * 0.85)
+		var p0 := Vector3(cos(ang) * dist, 0, sin(ang) * dist)
+		if absf(p0.x) > half - 20.0 or absf(p0.z) > half - 20.0:
+			continue
+		if _track.distance_from_axis(p0) < edge + 38.0:
+			continue
+		if _is_occupied(p0, 30.0):
+			continue
+		# Рельсы — вдоль «горизонта» (перпендикулярно лучу от центра мира),
+		# станция — со стороны, дальней от центра (задником к краю мира).
+		var along := Vector3(-p0.z, 0, p0.x).normalized()
+		var side := Vector3(p0.x, 0, p0.z).normalized()
+		# [файл, смещение вдоль рельсов, смещение вбок, лицом куда, масштаб]
+		for item: Array in [
+			["railway.fbx", 0.0, 0.0, along, 1.0],
+			["train.fbx", -8.0, 0.0, along, 1.0],
+			["wagon_passenger.fbx", 5.2, 0.0, along, 1.0],
+			["wagon_freight.fbx", 18.0, 0.0, along, 1.0],
+			["railway_station.fbx", 0.0, 10.0, -side, 1.0],
+			["water_tank.fbx", -18.0, 6.0, -side, 1.0],
+			["hitching_post.fbx", 8.0, 5.0, -side, 1.0],
+			["horse_brown.fbx", 9.5, 3.6, side, 1.0],
+			["barrel_a.fbx", -4.0, 4.0, along, 1.0],
+			["box_a.fbx", -5.5, 4.2, along, 1.0],
+			["box_b.fbx", -4.6, 5.3, along, 1.0],
+		]:
+			var p := p0 + along * float(item[1]) + side * float(item[2])
+			p.y = _ground_y(p)
+			_spawn(PDIR + String(item[0]), p, item[3], float(item[4]), false)
+		_occupy(p0, 30.0)
+		return
+
+
+## Оазисы: 3 группы пальм с травой у подножия — зелёные пятна среди дюн.
+func _build_oases(rng: RandomNumberGenerator) -> void:
+	var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
+	var half := TrackBuilder.GROUND_SIZE * 0.47
+	var placed := 0
+	var attempts := 0
+	while placed < 3 and attempts < 120:
+		attempts += 1
+		var c := Vector3(rng.randf_range(-half, half), 0,
+				rng.randf_range(-half, half))
+		if _track.distance_from_axis(c) < edge + 10.0:
+			continue
+		if _is_occupied(c, 9.0):
+			continue
+		for k in rng.randi_range(2, 3):
+			var pa := c + Vector3(rng.randf_range(-3.0, 3.0), 0,
+					rng.randf_range(-3.0, 3.0))
+			pa.y = _ground_y(pa)
+			var yaw := Vector3(rng.randf_range(-1, 1), 0, rng.randf_range(-1, 1))
+			_spawn(PDIR + PALMS[rng.randi() % PALMS.size()], pa,
+					yaw if yaw.length_squared() > 0.01 else Vector3.FORWARD,
+					rng.randf_range(0.85, 1.15), false)
+		for k in 4:
+			var pg := c + Vector3(rng.randf_range(-4.5, 4.5), 0,
+					rng.randf_range(-4.5, 4.5))
+			pg.y = _ground_y(pg)
+			_spawn(PDIR + DESERT_GRASS[rng.randi() % DESERT_GRASS.size()],
+					pg, Vector3.FORWARD, rng.randf_range(0.9, 1.3), false)
+		_occupy(c, 8.0)
+		placed += 1
+
+
+## Монументы пустыни: ищем каждому место в своём секторе круга — подальше
+## от полотна, слегка утопив в песок (низ на дюнах неровный).
+func _build_desert_monuments(rng: RandomNumberGenerator) -> void:
+	var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
+	var half := TrackBuilder.GROUND_SIZE * 0.47
+	# [файл, масштаб, радиус занимаемого места (м) с учётом масштаба]
+	var items: Array = [
+		["pyramid_b.fbx", 3.2, 34.0],
+		["sphinx.fbx", 2.6, 18.0],
+		["pyramid_a.fbx", 2.6, 18.0],
+		["skull_mountain.fbx", 2.6, 28.0],
+	]
+	for k in items.size():
+		var item: Array = items[k]
+		var clear: float = item[2]
+		for attempt in 60:
+			var ang := TAU * k / items.size() + rng.randf_range(-0.55, 0.55)
+			var dist := rng.randf_range(half * 0.55, half * 0.95)
+			var p := Vector3(cos(ang) * dist, 0, sin(ang) * dist)
+			if absf(p.x) > half or absf(p.z) > half:
+				continue
+			if _track.distance_from_axis(p) < edge + 8.0 + clear:
+				continue
+			if _is_occupied(p, clear):
+				continue
+			p.y = _ground_y(p) - 0.4
+			_spawn(PDIR + String(item[0]), p, Vector3(-p.x, 0, -p.z),
+					float(item[1]), false)
+			_occupy(p, clear)
+			break
+
+
+## ---------- ночной город (ithappy Cartoon City) ----------
+
+const CITY_BUILDINGS: Array[Array] = [
+	# файл (без .fbx), высота модели (м), полудиагональ основания (м)
+	["building_grid", 51.8, 18.4],
+	["building_terrace", 24.5, 21.4],
+	["building_tower", 53.2, 18.8],
+]
+
+
+## «Первая линия» города: настоящие мультяшные здания с отдельным мешем
+## светящихся окон (*_night.fbx ставится в ту же точку). Кап высоты тот же,
+## что у процедурных коробок: h ≤ 0.5·d — не закрывать камеру.
+func _build_city_landmarks(rng: RandomNumberGenerator) -> void:
+	var half := TrackBuilder.GROUND_SIZE * 0.47
+	var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
+	var placed := 0
+	var attempts := 0
+	while placed < 9 and attempts < 300:
+		attempts += 1
+		var p := Vector3(rng.randf_range(-half, half), 0,
+				rng.randf_range(-half, half))
+		var d: float = _track.distance_from_axis(p)
+		if d < edge + 14.0:
+			continue
+		var item: Array = CITY_BUILDINGS[placed % CITY_BUILDINGS.size()]
+		var s: float = clampf(d * 0.5 / float(item[1]), 0.2, 0.42)
+		var foot: float = float(item[2]) * s
+		# Ближний угол здания не должен вылезать к полотну.
+		if d - foot < edge + 8.0:
+			continue
+		if _is_occupied(p, foot + 6.0):
+			continue
+		p.y = _ground_y(p)
+		var face: Vector3 = _track._curve.get_closest_point(p) - p
+		var node := _spawn(CITY_DIR + String(item[0]) + ".fbx", p, face, s, false)
+		if node != null:
+			_spawn(CITY_DIR + String(item[0]) + "_night.fbx", p, face, s, false)
+			_occupy(p, foot + 4.0)
+			placed += 1
+
+
 ## Палитра неоновых вывесок ночного города.
 const NEON_COLORS: Array[Color] = [
 	Color(1.0, 0.2, 0.85),   # маджента
@@ -338,6 +704,16 @@ const NEON_COLORS: Array[Color] = [
 func _build_city() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 20260825
+	# Сначала — настоящие здания (займут место), коробки заполнят остальное.
+	_build_city_landmarks(rng)
+	# Пара фонтанов на «площадях» у трассы.
+	for t: float in [0.25, 0.62]:
+		var out := _outward(t)
+		var fp := _axis(t) + out * (_half(t) + 9.0)
+		fp.y = _ground_y(fp)
+		if not _is_occupied(fp, 4.0):
+			_spawn(CITY_DIR + "fountain.fbx", fp, -out, 1.0, false)
+			_occupy(fp, 5.0)
 	var wall_mat := StandardMaterial3D.new()
 	wall_mat.albedo_color = Color(0.06, 0.07, 0.11)
 	wall_mat.emission_enabled = true
@@ -396,9 +772,13 @@ func _build_city() -> void:
 		add_child(roof)
 		_occupy(b.position, maxf(w, depth) * 0.75)
 		placed += 1
-		# Вывеска — на фасаде к трассе, у части домов.
-		if rng.randf() < 0.55:
+		# Вывеска на фасаде к трассе: у части домов — неоновая плашка,
+		# у высоких иногда — вертикальный светящийся signboard (ithappy).
+		var r := rng.randf()
+		if r < 0.45:
 			_add_neon_sign(b.position, w, depth, hgt, rng)
+		elif r < 0.65 and hgt > 13.0:
+			_add_signboard(b.position, w, depth, hgt, rng)
 
 
 ## Сетка окон для эмиссивной текстуры зданий: 8×8 окон на тайл, часть
@@ -453,6 +833,23 @@ func _add_neon_sign(
 	sign_node.rotation.y = atan2(-to_track.x, -to_track.z)
 
 
+## Вертикальная светящаяся вывеска (ithappy Signboard) на фасаде дома:
+## меш подвешен от якоря ВНИЗ (габарит по y: -5.4…0.25), поэтому точка
+## спавна — на высоте, вывеска свисает вдоль фасада.
+func _add_signboard(
+	center: Vector3, w: float, depth: float, hgt: float,
+	rng: RandomNumberGenerator
+) -> void:
+	var to_track: Vector3 = _track._curve.get_closest_point(center) - center
+	to_track.y = 0.0
+	if to_track.length_squared() < 1.0:
+		return
+	to_track = to_track.normalized()
+	var pos := center + to_track * (maxf(w, depth) * 0.5 + 0.4)
+	pos.y = _ground_y(center) + minf(hgt - 1.0, rng.randf_range(9.0, 13.0))
+	_spawn(CITY_DIR + "signboard.fbx", pos, to_track, 1.0, false)
+
+
 ## Палитра планет космической трассы.
 const PLANET_COLORS: Array[Color] = [
 	Color(0.85, 0.45, 0.25),   # рыжий гигант
@@ -484,9 +881,16 @@ func _build_space() -> void:
 	# вместо близости: читается с любой точки трассы, полотно не заслоняет.
 	_spawn_planet(Vector3(cos(0.9) * 165.0, 62.0, sin(0.9) * 165.0),
 			20.0, Color(0.88, 0.74, 0.48), true, rng)
-	# Кометы прилетают периодически (см. _process).
+	# Кометы прилетают периодически, шаттл кружит по орбите, ускорители
+	# кувыркаются (см. _process).
 	_comet_rng.seed = 20260903
 	set_process(true)
+	# Космический шаттл (Palmov) на медленной орбите вокруг мира — между
+	# трассой и кольцом планет, полный оборот ~2 минуты.
+	_shuttle = _spawn(PDIR + "space_shuttle.fbx",
+			Vector3(cos(_shuttle_ang) * SHUTTLE_R, SHUTTLE_H,
+					sin(_shuttle_ang) * SHUTTLE_R),
+			Vector3.FORWARD, 2.2, false)
 	# Астероиды: серые глыбы, парят невысоко над «пустотой».
 	var rock_mat := StandardMaterial3D.new()
 	rock_mat.albedo_color = Color(0.42, 0.4, 0.48)
@@ -517,6 +921,30 @@ func _build_space() -> void:
 		rock.position = Vector3(x, rng.randf_range(3.0, 12.0), z)
 		placed += 1
 
+	# «Космический мусор»: отработанные ракетные ускорители (Palmov)
+	# дрейфуют среди астероидов и медленно кувыркаются (см. _process).
+	var junk_placed := 0
+	var junk_attempts := 0
+	while junk_placed < 5 and junk_attempts < 120:
+		junk_attempts += 1
+		var x := rng.randf_range(-half, half)
+		var z := rng.randf_range(-half, half)
+		if _track.distance_from_axis(Vector3(x, 0, z)) < edge + 14.0:
+			continue
+		var yaw := Vector3(rng.randf_range(-1, 1), 0, rng.randf_range(-1, 1))
+		if yaw.length_squared() < 0.01:
+			yaw = Vector3.FORWARD
+		var junk := _spawn(PDIR + "rocket_booster.fbx",
+				Vector3(x, rng.randf_range(5.0, 16.0), z), yaw,
+				rng.randf_range(0.5, 0.8), false)
+		if junk != null:
+			junk.rotation.x = rng.randf_range(-0.5, 0.5)
+			junk.rotation.z = rng.randf_range(-0.4, 0.4)
+			_junk.append({"node": junk, "spin": Vector3(
+					rng.randf_range(-0.1, 0.1), rng.randf_range(-0.15, 0.15),
+					rng.randf_range(-0.1, 0.1))})
+		junk_placed += 1
+
 
 ## ---- Кометы (только космос): далёкий белый росчерк, периодически
 ## проносящийся по небу СБОКУ от мира (жалоба 31.08: «кометы должны быть
@@ -526,9 +954,14 @@ const COMET_MAX := 3          # больше одновременно не де�
 const COMET_FIRST := 1.5      # первая — почти сразу после старта, с
 const COMET_DIST := 260.0     # хорда пролёта: ближе к центру мира не заходит
 const COMET_RUN := 220.0      # плечо пролёта в каждую сторону от хорды, м
+const SHUTTLE_R := 150.0      # радиус орбиты шаттла (планеты — на 150-195)
+const SHUTTLE_H := 55.0       # высота орбиты, м
 var _comets: Array[Dictionary] = []
 var _comet_timer := COMET_FIRST
 var _comet_rng := RandomNumberGenerator.new()
+var _shuttle: Node3D
+var _shuttle_ang := 2.4       # стартовая точка орбиты — в стороне от старта
+var _junk: Array[Dictionary] = []   # кувыркающиеся ускорители
 
 
 func _process(delta: float) -> void:
@@ -547,6 +980,20 @@ func _process(delta: float) -> void:
 			node.queue_free()
 			_comets.remove_at(i)
 		i -= 1
+	# Шаттл: круговая орбита с лёгкой «волной» по высоте, нос по ходу.
+	if _shuttle != null:
+		_shuttle_ang += delta * (TAU / 120.0)
+		var pos := Vector3(cos(_shuttle_ang) * SHUTTLE_R,
+				SHUTTLE_H + sin(_shuttle_ang * 3.0) * 4.0,
+				sin(_shuttle_ang) * SHUTTLE_R)
+		var ahead := Vector3(cos(_shuttle_ang + 0.02) * SHUTTLE_R,
+				SHUTTLE_H + sin((_shuttle_ang + 0.02) * 3.0) * 4.0,
+				sin(_shuttle_ang + 0.02) * SHUTTLE_R)
+		_shuttle.position = pos
+		_shuttle.look_at(ahead)
+	# Ускорители медленно кувыркаются.
+	for j in _junk:
+		(j["node"] as Node3D).rotation += (j["spin"] as Vector3) * delta
 
 
 ## Комета проносится ВДАЛИ: по прямой, чья ближайшая к центру мира точка —
@@ -778,8 +1225,17 @@ static func _recenter(root: Node3D) -> void:
 			(child as Node3D).position -= shift
 
 
+## Материалы городских моделей ithappy, которым нужна своя настройка.
+const CITY_MATS := {
+	"Color": true, "Color_Glossy": true, "Emissive": true,
+	"Glass": true, "Road_Signs": true, "Billboard": true,
+}
+
+
 ## Мультяшным мешам назначает текстуры по имени материала; светодиодам
-## стартовых огней — красную эмиссию.
+## стартовых огней — красную эмиссию. FBX Palmov и ithappy ссылаются на
+## текстуры, которых Godot при импорте не нашёл, — палитры назначаются
+## здесь вручную (у Palmov все материалы «texture main[.NNN]»).
 func _apply_cartoon_materials(root: Node3D) -> void:
 	for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
 		for s in mi.mesh.get_surface_count():
@@ -787,7 +1243,10 @@ func _apply_cartoon_materials(root: Node3D) -> void:
 			if src == null:
 				continue
 			var mat_name := src.resource_name
-			if CARTOON_TEX.has(mat_name) or mat_name == "startlights":
+			if mat_name.begins_with("texture main"):
+				mat_name = "palmov"
+			if CARTOON_TEX.has(mat_name) or mat_name == "startlights" \
+					or mat_name == "palmov" or CITY_MATS.has(mat_name):
 				mi.set_surface_override_material(s, _material(mat_name))
 
 
@@ -800,6 +1259,30 @@ func _material(mat_name: String) -> StandardMaterial3D:
 		mat.emission_enabled = true
 		mat.emission = Color(1.0, 0.1, 0.1)
 		mat.emission_energy_multiplier = 1.6
+	elif mat_name == "palmov":
+		mat.albedo_texture = load(PDIR + "texture_main.png")
+		mat.roughness = 1.0
+	elif mat_name == "Emissive":
+		# Светящиеся окна зданий и огни светофоров: emission-цвет ЧЁРНЫЙ,
+		# оператор ADD — светится сама текстура палитры.
+		var tex: Texture2D = load(CITY_DIR + "texture_city.png")
+		mat.albedo_texture = tex
+		mat.emission_enabled = true
+		mat.emission = Color(0, 0, 0)
+		mat.emission_texture = tex
+		mat.emission_energy_multiplier = 1.6
+	elif mat_name == "Glass":
+		mat.albedo_color = Color(0.16, 0.22, 0.32)
+		mat.roughness = 0.15
+		mat.metallic = 0.4
+	elif mat_name == "Road_Signs":
+		mat.albedo_texture = load(CITY_DIR + "texture_signs.png")
+	elif mat_name == "Billboard":
+		mat.albedo_texture = load(CITY_DIR + "texture_banners.png")
+	elif CITY_MATS.has(mat_name):   # Color / Color_Glossy
+		mat.albedo_texture = load(CITY_DIR + "texture_city.png")
+		if mat_name == "Color_Glossy":
+			mat.roughness = 0.35
 	else:
 		mat.albedo_texture = load(TEX_DIR + CARTOON_TEX[mat_name])
 	_mats[mat_name] = mat
