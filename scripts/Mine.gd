@@ -36,6 +36,9 @@ var _life := 25.0
 # с ускорением свободного падения, пока не встанет на дорогу/землю.
 var _grounded := false
 var _fall_speed := 0.0
+# Мигание маячка: материал и накопленное время (детерминированно, без randf).
+var _beacon_mat: StandardMaterial3D
+var _blink_t := 0.0
 
 
 func _ready() -> void:
@@ -53,29 +56,69 @@ func _ready() -> void:
 	col.shape = sphere
 	add_child(col)
 
+	# Визуал (2026-09-02, «сделай мину более визуально заметной»): корпус
+	# крупнее прежнего, вокруг — светящаяся жёлтая сигнальная полоса, по
+	# кругу шипы (силуэт морской мины читается издалека), сверху — красный
+	# маячок, МИГАЮЩИЙ в _physics_process. Всё детерминированное, без randf.
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.13, 0.13, 0.16)
+	mat.metallic = 0.4
+	mat.roughness = 0.45
+
 	var body_mesh := MeshInstance3D.new()
 	var cyl := CylinderMesh.new()
-	cyl.top_radius = 0.5
-	cyl.bottom_radius = 0.6
-	cyl.height = 0.26
+	cyl.top_radius = 0.55
+	cyl.bottom_radius = 0.72
+	cyl.height = 0.3
 	body_mesh.mesh = cyl
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.15, 0.15, 0.17)
+	body_mesh.position.y = 0.02
 	body_mesh.material_override = mat
 	add_child(body_mesh)
 
+	# Сигнальная полоса — усечённый конус чуть шире корпуса, жёлтая эмиссия.
+	var band := MeshInstance3D.new()
+	var band_cyl := CylinderMesh.new()
+	band_cyl.top_radius = 0.64
+	band_cyl.bottom_radius = 0.74
+	band_cyl.height = 0.12
+	band.mesh = band_cyl
+	band.position.y = 0.05
+	var band_mat := StandardMaterial3D.new()
+	band_mat.albedo_color = Color(1.0, 0.78, 0.08)
+	band_mat.emission_enabled = true
+	band_mat.emission = Color(1.0, 0.7, 0.05)
+	band_mat.emission_energy_multiplier = 1.4
+	band.material_override = band_mat
+	add_child(band)
+
+	# Шипы по кругу (6 шт., наклонены наружу).
+	var spike_mesh := CylinderMesh.new()
+	spike_mesh.top_radius = 0.0
+	spike_mesh.bottom_radius = 0.07
+	spike_mesh.height = 0.26
+	for i in 6:
+		var spike := MeshInstance3D.new()
+		spike.mesh = spike_mesh
+		var a := TAU * i / 6.0
+		spike.position = Vector3(cos(a) * 0.62, 0.1, sin(a) * 0.62)
+		# Наклон наружу: сперва крен -0.9 рад (к +X), потом рысканьем -a
+		# разворачиваем этот крен в радиальное направление шипа.
+		spike.rotation = Vector3(0.0, -a, -0.9)
+		spike.material_override = mat
+		add_child(spike)
+
 	var dot := MeshInstance3D.new()
 	var dot_mesh := SphereMesh.new()
-	dot_mesh.radius = 0.11
-	dot_mesh.height = 0.22
+	dot_mesh.radius = 0.16
+	dot_mesh.height = 0.32
 	dot.mesh = dot_mesh
-	dot.position.y = 0.17
-	var dot_mat := StandardMaterial3D.new()
-	dot_mat.albedo_color = Color(1, 0.1, 0.1)
-	dot_mat.emission_enabled = true
-	dot_mat.emission = Color(1, 0.05, 0.05)
-	dot_mat.emission_energy_multiplier = 2.0
-	dot.material_override = dot_mat
+	dot.position.y = 0.26
+	_beacon_mat = StandardMaterial3D.new()
+	_beacon_mat.albedo_color = Color(1, 0.1, 0.1)
+	_beacon_mat.emission_enabled = true
+	_beacon_mat.emission = Color(1, 0.05, 0.05)
+	_beacon_mat.emission_energy_multiplier = 2.0
+	dot.material_override = _beacon_mat
 	add_child(dot)
 
 	if inert:
@@ -85,6 +128,13 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	# Маячок МИГАЕТ (примерно 1.4 раза в секунду) — боевая мина должна
+	# бросаться в глаза. Работает и у инертной копии на клиенте.
+	_blink_t += delta
+	if _beacon_mat:
+		var pulse := 0.5 + 0.5 * sin(_blink_t * 9.0)
+		_beacon_mat.emission_energy_multiplier = 1.2 + 6.5 * pulse
+		_beacon_mat.albedo_color = Color(1.0, 0.08 + 0.5 * pulse, 0.08)
 	if not _grounded:
 		_fall(delta)
 	# Инертная копия (клиент) не срабатывает вовсе: у неё выключен

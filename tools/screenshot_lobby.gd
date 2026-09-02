@@ -24,13 +24,13 @@ func _ready() -> void:
 	# человека, свободные слоты забрали боты — с 01.09 бот на экране
 	# неотличим от живого игрока (ник, машина, оранжевый цвет).
 	_lobby.set_status("Все в сборе — поехали!")
-	_lobby.set_slot(0, true, "sharky", true, false, "Андрей")
-	_lobby.set_slot(1, true, "twinmill", false, false, "Жека_777")
-	_lobby.set_slot(2, false, "invader", false, true, "Шумахер")
-	_lobby.set_slot(3, false, "dakar", false, true, "Настя")
+	_lobby.set_slot(0, true, "fastback", true, false, "Андрей")
+	_lobby.set_slot(1, true, "diablo", false, false, "Жека_777")
+	_lobby.set_slot(2, false, "chevelle", false, true, "Шумахер")
+	_lobby.set_slot(3, false, "safari", false, true, "Настя")
 	if Net.race_size > 4:
-		_lobby.set_slot(4, true, "ballistik", false, false, "Nagibator2000")
-		_lobby.set_slot(5, false, "powerpipes", false, true, "Пельмень")
+		_lobby.set_slot(4, true, "dragster", false, false, "Nagibator2000")
+		_lobby.set_slot(5, false, "godfather", false, true, "Пельмень")
 		_lobby.set_slot(6, false, "roadster", false, true, "Молния74")
 
 

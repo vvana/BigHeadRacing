@@ -476,16 +476,22 @@ func pickup_weapon_for(car: Car) -> int:
 ## ростер (клиенты присылают свой выбор в _rx_hello), иначе игроки видели
 ## бы у соперника не ту машину, что он выбрал.
 func _pick_car_ids(count: int) -> PackedStringArray:
-	var pool := CarModelLibrary.CAR_IDS.duplicate()
-	pool.shuffle()
+	# Пул — полные id скинов (по случайному цвету на машину); повторы
+	# отсекаются по БАЗЕ, чтобы в заезде не было двух одинаковых моделей
+	# разного цвета.
+	var pool := CarModelLibrary.shuffled_bot_pool()
 	var res := PackedStringArray()
+	var used := {}
 	if not Net.is_online():
 		res.append(GameState.selected_car_id)
+		used[CarModelLibrary.base_id(GameState.selected_car_id)] = true
 	for id: String in pool:
 		if res.size() >= count:
 			break
-		if not res.has(id):
+		var base := CarModelLibrary.base_id(id)
+		if not used.has(base):
 			res.append(id)
+			used[base] = true
 	while res.size() < count:
 		res.append(pool[res.size() % pool.size()])
 	return res
@@ -768,13 +774,16 @@ func _show_finish(place: int) -> void:
 	if _count_label:
 		_count_label.visible = false
 	var gained: int = GameState.place_xp(place) + _my_kills * GameState.KILL_XP
+	var coins: int = GameState.place_money(place) \
+			+ _my_kills * GameState.KILL_MONEY
 	var before: Vector3i = GameState.level_info()
-	GameState.add_xp(gained)
+	GameState.add_money(coins)
+	GameState.add_xp(gained)   # может добавить и бонус монет за уровень
 	var info: Vector3i = GameState.level_info()
 	_finish_label.text = "ФИНИШ!  МЕСТО %d ИЗ %d" % [place, _cars.size()]
 	if _finish_xp_label:
-		_finish_xp_label.text = "+%d ОПЫТА   ·   УРОВЕНЬ %d  (%d / %d)" \
-				% [gained, info.x, info.y, info.z]
+		_finish_xp_label.text = "+%d ОПЫТА  ·  +%d МОНЕТ  ·  УРОВЕНЬ %d  (%d / %d)" \
+				% [gained, coins, info.x, info.y, info.z]
 	if info.x > before.x and _announcer:
 		_announcer.big("НОВЫЙ УРОВЕНЬ %d!" % info.x, "", "teal")
 	_finish_root.visible = true

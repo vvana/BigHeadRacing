@@ -1,14 +1,13 @@
 extends Node3D
 ## Служебные снимки ФАР: ночной город, машины на решётке, крупный план
 ## носа с передне-бокового ракурса. Модели подставляются НАСИЛЬНО (в
-## заезде они случайные), чтобы попали и проблемные — низкие (wildthing,
-## twinmill, sweet16, roadrocket: на них старая фиксированная фара висела
-## выше крыши), узконосая sharky и высокие motocrossed/redbaron.
+## заезде они случайные) — с 2026-09-02 в игре ровно 8 машин Unity-пака,
+## берём все: от низкого дракстера до высокого внедорожника.
 ## Запуск: godot --path . res://tools/ShotHeadlights.tscn -- <папка>
 
 const CARS: Array[String] = [
-	"wildthing", "twinmill", "sweet16", "roadrocket",
-	"sharky", "motocrossed", "redbaron", "stock",
+	"fastback", "godfather", "lemans", "superbird",
+	"chevelle", "diablo", "dragster", "safari",
 ]
 
 var _main: Node3D

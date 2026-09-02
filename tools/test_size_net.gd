@@ -6,7 +6,7 @@ extends Node
 ##      КЛИЕНТА построена на 6 машин (сервер продиктовал размер в
 ##      _rx_track, наша сцена совпала с ним без перестройки: желание
 ##      выставлено в Net.race_size ещё до подключения — как это делает
-##      кнопка «ПО СЕТИ»);
+##      кнопка «СТАРТ»);
 ##   2) стрелок соперников — 5 (по одной на каждый чужой слот);
 ##   3) счётчики мест и слотов — той же длины.
 ##
@@ -35,7 +35,7 @@ func _ready() -> void:
 	if Net.is_online():
 		return
 	GameState.race_size = WANT
-	Net.race_size = WANT   # то же делает кнопка «ПО СЕТИ» (_join_pressed)
+	Net.race_size = WANT   # то же делает кнопка «СТАРТ» (_start_race)
 	var addr := "127.0.0.1"
 	for a: String in OS.get_cmdline_user_args():
 		if not a.begins_with("--"):

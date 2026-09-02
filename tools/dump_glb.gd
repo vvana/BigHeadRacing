@@ -3,7 +3,7 @@
 extends SceneTree
 
 func _init() -> void:
-	var glb_path := "res://assets/models/hotwheels/source/Turbo Driver Cars.glb"
+	var glb_path := "res://assets/models/unitycars/source/Car-1.fbx"
 	var args := OS.get_cmdline_user_args()
 	if args.size() > 0:
 		glb_path = args[0]

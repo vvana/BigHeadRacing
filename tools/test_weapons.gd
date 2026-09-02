@@ -9,6 +9,7 @@ var _tan := Vector3.FORWARD
 var _right := Vector3.RIGHT
 var _ok := {}
 var _wall_n := Vector3.RIGHT
+var _max_into := -1.0           # пик проекции носа на стену в заносе у стены
 var _beam_pos := Vector3.ZERO   # где был луч лазера до сдвига машины
 
 
@@ -51,6 +52,13 @@ func _physics_process(_d: float) -> void:
 	var v1: Car = _main._cars[1]
 	var v2: Car = _main._cars[2]
 	var v3: Car = _main._cars[3]
+	# Пик «нос в стену» для фазы масла у стены (после кадра 530 закрутка
+	# уже применена, контроль — на кадре 560).
+	if _frame > 530 and _frame < 560:
+		var f := -v1.global_transform.basis.z
+		f.y = 0.0
+		if f.length_squared() > 1e-6:
+			_max_into = maxf(_max_into, f.normalized().dot(_wall_n))
 	match _frame:
 		160:
 			# Отсчёт кончился (все controls_enabled=true) — глушим всех.
@@ -173,7 +181,9 @@ func _physics_process(_d: float) -> void:
 					_main._track.distance_from_axis(v1.global_position),
 					v1.linear_velocity.length()],
 					"пятно живо=", slick2 != null)
-			# Фаза МАСЛО У СТЕНЫ: занос обязан крутить нос ОТ ограждения.
+			# Фаза МАСЛО У СТЕНЫ: занос обязан крутить нос В ограждение
+			# (просьба 02.09: «масло должно сильнее разворачивать машину в
+			# ограждение» — раньше крутило ОТ стены, и эффект был незаметен).
 			# Ставим жертву вплотную к внешнему борту, носом строго вдоль
 			# трассы, и роняем на неё занос напрямую (пятно тут не нужно —
 			# проверяем ВЫБОР СТОРОНЫ, а не срабатывание Area3D).
@@ -185,16 +195,17 @@ func _physics_process(_d: float) -> void:
 			v1._slip_time = 0.0
 			v1.apply_oil_slip()
 			_wall_n = _right
-			_ok["занос у стены не в стену"] = 					signf(v1.angular_velocity.y) 					== -signf((-v1.global_transform.basis.z).signed_angle_to(
+			_max_into = -1.0
+			_ok["занос у стены крутит в стену"] = 					signf(v1.angular_velocity.y) 					== signf((-v1.global_transform.basis.z).signed_angle_to(
 							_wall_n, Vector3.UP))
 		560:
-			# И через полсекунды нос действительно ушёл ОТ стены.
-			var fwd_now := -v1.global_transform.basis.z
-			fwd_now.y = 0.0
-			var into := fwd_now.normalized().dot(_wall_n)
-			_ok["нос ушёл от стены"] = into < -0.15
-			if into >= -0.15:
-				print("  [масло у стены] проекция носа на стену %.2f" % into)
+			# И за полсекунды нос действительно СМОТРЕЛ в ограждение (пик
+			# проекции копится в _physics_process: закрутка быстрая, к
+			# контрольному кадру нос мог провернуться дальше).
+			_ok["нос развернуло в стену"] = _max_into > 0.35
+			if _max_into <= 0.35:
+				print("  [масло у стены] пик проекции носа на стену %.2f"
+						% _max_into)
 			# Фаза АВИАУДАР.
 			_place(attacker, _base, _tan)
 			attacker.weapon = Weapons.AIRSTRIKE

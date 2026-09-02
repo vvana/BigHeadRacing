@@ -4,26 +4,32 @@ extends Node3D
 ## Управление: ←→ / A D — листать, ↑↓ — по рядам сетки, мышь — клик по
 ## ячейке (повторный клик по выбранной — старт), Enter/Space — в гонку.
 
-## Человеческие названия машин (ID → имя на экране).
+## Человеческие названия машин (БАЗОВЫЙ id → имя на экране).
 const DISPLAY_NAMES := {
-	"stock": "Stock Car", "rd": "RD-04", "sharky": "Sharkruiser",
-	"invader": "Invader", "arachno": "Arachnorod", "dk": "Drift King",
-	"dakar": "Dakar", "jt": "Jet Threat",
-	"24seven": "24/Seven", "backdraft": "Backdraft", "ballistik": "Ballistik",
-	"corvette": "Corvette", "coupe": "Coupe", "deora": "Deora II",
-	"elcamino": "El Camino", "f150": "Ford F-150",
-	"irocfirebird": "Firebird IROC", "krazy8s": "Krazy 8s",
-	"megaduty": "Mega-Duty", "motocrossed": "Moto-Crossed",
-	"muscletone": "Muscletone", "nomad": "Nomad",
-	"powerocket": "Power Rocket", "powerpipes": "Power Pipes",
-	"powerpistons": "Power Pistons", "rageous": "Rageous",
-	"redbaron": "Red Baron", "roadrocket": "Road Rocket",
-	"roadrunner": "Road Runner", "sidedraft": "Sidedraft",
-	"silverbullet": "Silver Bullet", "slingshot": "Slingshot",
-	"sweet16": "Sweet 16 II", "switchback": "Switchback",
-	"tbird": "'57 T-Bird", "thunderbolt": "Thunderbolt",
-	"toyotarsc": "Toyota RSC", "twinmill": "Twin Mill",
-	"vulture": "Vulture", "wildthing": "Wild Thing", "zotic": "Zotic",
+	"vz01": "Копейка", "vz02": "Двойка", "vz21": "Нива",
+	"vz03": "Тройка", "vz04": "Четвёрка", "vz05": "Пятёрка",
+	"vz06": "Шестёрка", "vz07": "Семёрка", "vz05r": "Пятёрка Спорт",
+	"vz08": "Зубило", "vz09": "Девятка", "vz099": "Самара 99",
+	"gz21": "Волга 21", "gz24": "Волга 24", "vz31": "Нива Лонг",
+	"fastback": "Fastback", "godfather": "Godfather", "lemans": "Le Mans GT",
+	"superbird": "Superbird", "chevelle": "Chevelle SS", "diablo": "Diablo",
+	"dragster": "Dragster", "safari": "Safari 4x4",
+}
+
+## Названия цветов-скинов для подсказок.
+const COLOR_NAMES := {
+	"black": "чёрный", "blue": "синий", "gray": "серый",
+	"green": "зелёный", "lightblue": "голубой", "purple": "фиолетовый",
+	"red": "красный", "sand": "песочный", "white": "белый",
+	"yellow": "жёлтый",
+}
+## Цвет квадратика-образца (приблизительный тон краски палитры).
+const SWATCH_COLORS := {
+	"black": Color(0.12, 0.12, 0.13), "blue": Color(0.13, 0.3, 0.62),
+	"gray": Color(0.55, 0.57, 0.6), "green": Color(0.24, 0.5, 0.26),
+	"lightblue": Color(0.42, 0.7, 0.85), "purple": Color(0.48, 0.26, 0.62),
+	"red": Color(0.73, 0.16, 0.17), "sand": Color(0.8, 0.71, 0.5),
+	"white": Color(0.93, 0.93, 0.93), "yellow": Color(0.92, 0.77, 0.13),
 }
 
 const GRID_COLUMNS := 5
@@ -49,10 +55,24 @@ var _scroll: ScrollContainer
 var _style_normal: StyleBoxFlat
 var _style_selected: StyleBoxFlat
 var _ui_font: FontFile  # Russo One — индустриальный, с кириллицей
+var _xp_label: Label              # строка «УРОВЕНЬ · ОПЫТ · МОНЕТЫ»
+var _start_btn: Button            # «СТАРТ» (у купленной машины)
+var _buy_btn: Button              # «КУПИТЬ · цена» (у закрытой машины)
+var _color_btns: Array[Button] = []   # ряд квадратиков-скинов
+var _color_panel: Control         # подложка ряда скинов
+var _grid_locks: Array[Label] = []    # значки «N ур.» на ячейках сетки
+var _buy_flash := 0               # поколение вспышки «НЕ ХВАТАЕТ МОНЕТ»
+
+
+## Полный id скина машины из сетки: база + её текущий цвет.
+func _full_id(i: int) -> String:
+	var base: String = CarModelLibrary.CAR_IDS[i]
+	return CarModelLibrary.skin_id(base, GameState.color_of(base))
 
 
 func _ready() -> void:
-	_index = maxi(0, CarModelLibrary.CAR_IDS.find(GameState.selected_car_id))
+	_index = maxi(0, CarModelLibrary.CAR_IDS.find(
+			CarModelLibrary.base_id(GameState.selected_car_id)))
 	_setup_environment()
 	_setup_podium()
 	_setup_hud()
@@ -92,16 +112,52 @@ func _process(delta: float) -> void:
 		_start_race()
 
 
+## «СТАРТ» — единственная кнопка запуска: гонка идёт ПО СЕТИ (адрес из
+## поля, по умолчанию VDS). Сервер не ответил / нет адреса — тихо стартуем
+## оффлайн с ботами: они и так подписаны человеческими никами и от живых
+## игроков неотличимы, игрок просто едет. Футбол сетевого протокола пока
+## не имеет — сразу оффлайн.
 func _start_race() -> void:
 	if _name_dialog != null:
 		return   # сначала имя — окно модальное
+	var base: String = CarModelLibrary.CAR_IDS[_index]
+	if not GameState.car_owned(base):
+		return   # закрытая машина — сперва купить (кнопка «КУПИТЬ»)
 	Net.leave()   # вдруг остались хвосты прошлого сетевого заезда
-	GameState.selected_car_id = CarModelLibrary.CAR_IDS[_index]
+	GameState.select_car(base)
 	if GameState.game_mode == GameState.MODE_SOCCER:
 		# Футбол: своя арена, трасса не нужна.
 		get_tree().change_scene_to_file("res://scenes/Soccer.tscn")
 		return
-	# Трасса на заезд — случайная из доступных.
+	var text := _host_edit.text.strip_edges() if _host_edit else ""
+	var addr := text
+	var port := Net.PORT
+	# Порт можно дописать через двоеточие: 1.2.3.4:9977. Режем ПОСЛЕДНЕЕ
+	# двоеточие — в IPv6-адресе их много.
+	var colon := text.rfind(":")
+	if colon > 0:
+		addr = text.substr(0, colon)
+		port = int(text.substr(colon + 1))
+		if port <= 0:
+			port = Net.PORT
+	if addr.is_empty():
+		_start_offline()
+		return
+	# Свою сцену строим сразу под желаемый размер: если мы окажемся первым
+	# игроком лобби, сервер примет его и перестройка не понадобится; если
+	# заезд уже другого размера — сервер продиктует свой (_rx_track).
+	Net.race_size = GameState.race_size
+	if _net_status:
+		_net_status.text = "Подключение…"
+	if Net.join_server(addr, port):
+		_watch_connect_timeout()
+	else:
+		_start_offline()
+
+
+## Оффлайн-заезд: игрок + (race_size−1) ботов, случайная трасса.
+func _start_offline() -> void:
+	Net.leave()
 	GameState.track_kind = TrackBuilder.pick_random_kind()
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
 
@@ -368,8 +424,10 @@ func _change_race_size(dir: int) -> void:
 		_size_label.text = str(GameState.race_size)
 
 
-## Панель сетевой игры: адрес сервера и кнопка подключения. Сама гонка
-## начнётся, когда сервер подтвердит соединение (сигнал Net.joined).
+## Сетевая строка гаража: статус подключения и поле адреса сервера.
+## Отдельной кнопки «ПО СЕТИ» больше нет — по сети везёт сама «СТАРТ»
+## (см. _start_race); гонка начнётся, когда сервер подтвердит соединение
+## (сигнал Net.joined), а не ответит — оффлайн с ботами.
 func _build_net_ui(canvas: Node) -> void:
 	_net_status = Label.new()
 	_net_status.text = ""
@@ -427,56 +485,13 @@ func _build_net_ui(canvas: Node) -> void:
 	_host_edit.offset_bottom = -130
 	canvas.add_child(_host_edit)
 
-	var net_btn := Button.new()
-	net_btn.text = "ПО СЕТИ"
-	UiKit.style_button(net_btn, "teal", 26)
-	net_btn.anchor_left = 0.0
-	net_btn.anchor_right = 0.0
-	net_btn.anchor_top = 1.0
-	net_btn.anchor_bottom = 1.0
-	net_btn.offset_left = 460
-	net_btn.offset_right = 680
-	net_btn.offset_top = -122
-	net_btn.offset_bottom = -52
-	net_btn.pressed.connect(_join_pressed)
-	canvas.add_child(net_btn)
-
 	Net.joined.connect(_on_joined)
 	Net.join_failed.connect(_on_join_failed)
 
 
-func _join_pressed() -> void:
-	# Сетевой футбол потребует нового протокола сервера — пока только боты.
-	if GameState.game_mode == GameState.MODE_SOCCER:
-		_net_status.text = "Футбол по сети пока недоступен"
-		return
-	var text := _host_edit.text.strip_edges()
-	var addr := text
-	var port := Net.PORT
-	# Порт можно дописать через двоеточие: 1.2.3.4:9977. Режем ПОСЛЕДНЕЕ
-	# двоеточие — в IPv6-адресе их много.
-	var colon := text.rfind(":")
-	if colon > 0:
-		addr = text.substr(0, colon)
-		port = int(text.substr(colon + 1))
-		if port <= 0:
-			port = Net.PORT
-	if addr.is_empty():
-		_net_status.text = "Укажите адрес сервера"
-		return
-	GameState.selected_car_id = CarModelLibrary.CAR_IDS[_index]
-	# Свою сцену строим сразу под желаемый размер: если мы окажемся первым
-	# игроком лобби, сервер примет его и перестройка не понадобится; если
-	# заезд уже другого размера — сервер продиктует свой (_rx_track).
-	Net.race_size = GameState.race_size
-	_net_status.text = "Подключение к %s:%d…" % [addr, port]
-	if Net.join_server(addr, port):
-		_watch_connect_timeout()
-
-
 ## ENet сам по себе может молчать очень долго, поэтому ограничиваем
-## ожидание вручную: не ответил за CONNECT_TIMEOUT — рвём и говорим об этом,
-## чтобы не сидеть на экране «Подключение…» неизвестно сколько.
+## ожидание вручную: не ответил за CONNECT_TIMEOUT — рвём и тихо стартуем
+## оффлайн с ботами (для игрока разницы нет — ники у ботов человеческие).
 func _watch_connect_timeout() -> void:
 	await get_tree().create_timer(Net.CONNECT_TIMEOUT).timeout
 	if not is_inside_tree() or not Net.is_client():
@@ -484,9 +499,7 @@ func _watch_connect_timeout() -> void:
 	var peer := multiplayer.multiplayer_peer
 	if peer != null and peer.get_connection_status() 			== MultiplayerPeer.CONNECTION_CONNECTED:
 		return
-	Net.leave()
-	if _net_status:
-		_net_status.text = "Сервер не ответил за %d с — можно играть с ботами" 				% int(Net.CONNECT_TIMEOUT)
+	_start_offline()
 
 
 func _on_joined() -> void:
@@ -497,8 +510,10 @@ func _on_joined() -> void:
 
 
 func _on_join_failed(reason: String) -> void:
-	if _net_status:
-		_net_status.text = reason
+	# Сервер отказал или оборвался на этапе подключения — не мучаем игрока
+	# сообщениями, просто едем оффлайн с ботами (причина — в лог).
+	print("Сеть недоступна (", reason, ") — оффлайн-заезд")
+	_start_offline()
 
 
 func _set_index(i: int) -> void:
@@ -506,18 +521,203 @@ func _set_index(i: int) -> void:
 	_index = i
 	if _model:
 		_model.queue_free()
-	var id: String = CarModelLibrary.CAR_IDS[_index]
-	_model = CarModelLibrary.build(id, 3.2, 0.02)
+	var base: String = CarModelLibrary.CAR_IDS[_index]
+	_model = CarModelLibrary.build(_full_id(_index), 3.2, 0.02)
 	if _model:
 		_turntable.add_child(_model)
-	_name_label.text = DISPLAY_NAMES.get(id, id)
+	var owned: bool = GameState.car_owned(base)
+	_name_label.text = DISPLAY_NAMES.get(base, base)
+	_name_label.add_theme_color_override("font_color",
+			Color.WHITE if owned else Color(1, 1, 1, 0.45))
 	_count_label.text = "%d / %d" % [_index + 1, CarModelLibrary.CAR_IDS.size()]
+	# Закрытая машина стоит на подиуме «тенью» — видно, но не наша.
+	if _model and not owned:
+		_dim_model(_model)
+	_refresh_lock_ui()
+	_refresh_swatches()
 	# Подсветка ячейки в сетке.
 	if _buttons.size() > prev:
 		_apply_style(_buttons[prev], _style_normal)
 	if _buttons.size() > _index:
 		_apply_style(_buttons[_index], _style_selected)
 		_scroll.ensure_control_visible(_buttons[_index])
+
+
+## Затемнить модель на подиуме (закрытая машина — «силуэт в тени»).
+func _dim_model(model: Node) -> void:
+	for child in model.get_children():
+		if child is MeshInstance3D:
+			var mi := child as MeshInstance3D
+			var dim := StandardMaterial3D.new()
+			dim.albedo_color = Color(0.1, 0.1, 0.12)
+			dim.roughness = 0.9
+			mi.material_override = dim
+		_dim_model(child)
+
+
+## Кнопки под подиумом: у купленной машины — «СТАРТ», у закрытой —
+## «КУПИТЬ · цена» (уровень мал — серая «С N УРОВНЯ · цена»).
+func _refresh_lock_ui() -> void:
+	var base: String = CarModelLibrary.CAR_IDS[_index]
+	var owned: bool = GameState.car_owned(base)
+	if _start_btn:
+		_start_btn.visible = owned
+	if _buy_btn == null:
+		return
+	_buy_btn.visible = not owned
+	if owned:
+		return
+	_buy_flash += 1   # сбросить возможную вспышку «НЕ ХВАТАЕТ МОНЕТ»
+	var lvl: int = GameState.car_unlock_level(base)
+	var price: int = GameState.car_price(base)
+	if GameState.level_info().x < lvl:
+		_buy_btn.disabled = true
+		_buy_btn.text = "С %d УРОВНЯ · %s" % [lvl, _fmt_money(price)]
+	else:
+		_buy_btn.disabled = false
+		_buy_btn.text = "КУПИТЬ · %s" % _fmt_money(price)
+
+
+## Цена с тонкой шпацией между тысячами: 24000 → «24 000».
+func _fmt_money(n: int) -> String:
+	var s := str(n)
+	var out := ""
+	while s.length() > 3:
+		out = " " + s.right(3) + out
+		s = s.left(s.length() - 3)
+	return s + out
+
+
+func _buy_pressed() -> void:
+	var base: String = CarModelLibrary.CAR_IDS[_index]
+	if GameState.try_buy_car(base):
+		_refresh_money_label()
+		_refresh_grid_locks()
+		_set_index(_index)   # перестроить подиум уже без «тени»
+		return
+	# Уровень проверен кнопкой — значит, не хватило монет: мигнуть ценой.
+	_buy_flash += 1
+	var gen := _buy_flash
+	var old := _buy_btn.text
+	_buy_btn.text = "НЕ ХВАТАЕТ МОНЕТ"
+	await get_tree().create_timer(1.2).timeout
+	if is_inside_tree() and _buy_flash == gen and _buy_btn.visible:
+		_buy_btn.text = old
+
+
+func _refresh_money_label() -> void:
+	if _xp_label == null:
+		return
+	var info: Vector3i = GameState.level_info()
+	_xp_label.text = "УРОВЕНЬ %d  ·  ОПЫТ %d / %d  ·  МОНЕТЫ %d" \
+			% [info.x, info.y, info.z, GameState.money]
+
+
+## Значки «N ур.» и затемнение на закрытых ячейках сетки.
+func _refresh_grid_locks() -> void:
+	for i in _buttons.size():
+		var base: String = CarModelLibrary.CAR_IDS[i]
+		var owned: bool = GameState.car_owned(base)
+		_buttons[i].modulate = Color.WHITE if owned \
+				else Color(0.5, 0.5, 0.55)
+		if i < _grid_locks.size():
+			_grid_locks[i].visible = not owned
+		_buttons[i].tooltip_text = DISPLAY_NAMES.get(base, base) if owned \
+				else "%s — с %d уровня, %s монет" % [
+						DISPLAY_NAMES.get(base, base),
+						GameState.car_unlock_level(base),
+						_fmt_money(GameState.car_price(base))]
+
+
+# ---- Скины: ряд цветов под подиумом ----
+
+## Ряд из 10 квадратиков-красок; для машин без скинов прячется целиком.
+func _build_color_ui(canvas: Node) -> void:
+	var panel := Control.new()
+	panel.anchor_left = 0.25
+	panel.anchor_right = 0.25
+	panel.anchor_top = 1.0
+	panel.anchor_bottom = 1.0
+	panel.offset_left = -178
+	panel.offset_right = 178
+	panel.offset_top = -254
+	panel.offset_bottom = -222
+	canvas.add_child(panel)
+	_color_panel = panel
+	for k in CarModelLibrary.SOVIET_COLORS.size():
+		var color: String = CarModelLibrary.SOVIET_COLORS[k]
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(30, 30)
+		b.position = Vector2(k * 36, 0)
+		b.size = Vector2(30, 30)
+		b.focus_mode = Control.FOCUS_NONE
+		b.tooltip_text = String(COLOR_NAMES.get(color, color)).capitalize()
+		b.pressed.connect(_on_color_pressed.bind(color))
+		panel.add_child(b)
+		_color_btns.append(b)
+
+
+## Подсветить выбранный цвет текущей машины (жёлтая рамка).
+func _refresh_swatches() -> void:
+	var base: String = CarModelLibrary.CAR_IDS[_index]
+	if _color_panel == null:
+		return
+	_color_panel.visible = CarModelLibrary.has_skins(base)
+	if not _color_panel.visible:
+		return
+	var current: String = GameState.color_of(base)
+	for k in _color_btns.size():
+		var color: String = CarModelLibrary.SOVIET_COLORS[k]
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = SWATCH_COLORS.get(color, Color.MAGENTA)
+		sb.set_corner_radius_all(6)
+		if color == current:
+			sb.set_border_width_all(3)
+			sb.border_color = UiKit.YELLOW
+		else:
+			sb.set_border_width_all(1)
+			sb.border_color = Color(0, 0, 0, 0.5)
+		for state in ["normal", "hover", "pressed", "focus"]:
+			_color_btns[k].add_theme_stylebox_override(state, sb)
+
+
+func _on_color_pressed(color: String) -> void:
+	var base: String = CarModelLibrary.CAR_IDS[_index]
+	GameState.set_car_color(base, color)
+	_set_index(_index)      # перестроить подиум в новом цвете
+	_update_thumb(_index)   # и миниатюру в сетке
+
+
+## Перерисовать миниатюру одной машины (после смены цвета): из кэша /
+## с диска / рендером одного вьюпорта.
+func _update_thumb(i: int) -> void:
+	var full: String = _full_id(i)
+	if GameState.car_thumbs.has(full):
+		_buttons[i].icon = GameState.car_thumbs[full]
+		return
+	var png_path := "%s/%s.png" % [THUMB_CACHE_DIR, full]
+	if FileAccess.file_exists(png_path):
+		var img := Image.new()
+		if img.load(png_path) == OK:
+			var tex := ImageTexture.create_from_image(img)
+			GameState.car_thumbs[full] = tex
+			_buttons[i].icon = tex
+			return
+	var vp_info := _make_thumb_viewport()
+	var m := CarModelLibrary.build(full, 3.2, 0.0)
+	if m:
+		(vp_info["holder"] as Node3D).add_child(m)
+	(vp_info["vp"] as SubViewport).render_target_update_mode = \
+			SubViewport.UPDATE_ONCE
+	await RenderingServer.frame_post_draw
+	if not is_inside_tree():
+		return
+	var shot := (vp_info["vp"] as SubViewport).get_texture().get_image()
+	shot.save_png(png_path)
+	var tex2 := ImageTexture.create_from_image(shot)
+	GameState.car_thumbs[full] = tex2
+	_buttons[i].icon = tex2
+	(vp_info["vp"] as SubViewport).queue_free()
 
 
 func _on_cell_pressed(i: int) -> void:
@@ -536,7 +736,7 @@ func _generate_thumbs() -> void:
 	DirAccess.make_dir_recursive_absolute(THUMB_CACHE_DIR)
 	var missing: Array[int] = []
 	for i in CarModelLibrary.CAR_IDS.size():
-		var id: String = CarModelLibrary.CAR_IDS[i]
+		var id: String = _full_id(i)   # миниатюра — в ТЕКУЩЕМ цвете машины
 		if GameState.car_thumbs.has(id):
 			_buttons[i].icon = GameState.car_thumbs[id]
 			continue
@@ -564,8 +764,7 @@ func _generate_thumbs() -> void:
 			var holder: Node3D = vp_info["holder"]
 			for old in holder.get_children():
 				old.free()
-			var m := CarModelLibrary.build(
-					CarModelLibrary.CAR_IDS[batch[k]], 3.2, 0.0)
+			var m := CarModelLibrary.build(_full_id(batch[k]), 3.2, 0.0)
 			if m:
 				holder.add_child(m)
 			(vp_info["vp"] as SubViewport).render_target_update_mode = \
@@ -575,7 +774,7 @@ func _generate_thumbs() -> void:
 			return  # сцену сменили во время генерации
 		for k in batch.size():
 			var i: int = batch[k]
-			var id: String = CarModelLibrary.CAR_IDS[i]
+			var id: String = _full_id(i)
 			var img := (pool[k]["vp"] as SubViewport).get_texture().get_image()
 			img.save_png("%s/%s.png" % [THUMB_CACHE_DIR, id])
 			var tex := ImageTexture.create_from_image(img)
@@ -705,14 +904,15 @@ func _setup_hud() -> void:
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
-	# Уровень и опыт профиля — жёлтая строка под заголовком. Опыт даётся
-	# за место на финише (GameState), за уровни дальше откроем «штуки».
-	var info: Vector3i = GameState.level_info()
+	# Уровень, опыт и кошелёк профиля — жёлтая строка под заголовком.
+	# Опыт и монеты даются на финише (GameState); уровни открывают машины
+	# и оружие для покупки за монеты — сетка и цены в ЭКОНОМИКА.md.
 	var xp_label := Label.new()
-	xp_label.text = "УРОВЕНЬ %d   ·   ОПЫТ %d / %d" % [info.x, info.y, info.z]
+	_xp_label = xp_label
+	_refresh_money_label()
 	if _ui_font:
 		xp_label.add_theme_font_override("font", _ui_font)
-	xp_label.add_theme_font_size_override("font_size", 17)
+	xp_label.add_theme_font_size_override("font_size", 15)
 	xp_label.add_theme_color_override("font_color", UiKit.YELLOW)
 	xp_label.add_theme_constant_override("outline_size", 5)
 	xp_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
@@ -794,6 +994,25 @@ func _setup_hud() -> void:
 	start_btn.offset_bottom = -52
 	start_btn.pressed.connect(_start_race)
 	canvas.add_child(start_btn)
+	_start_btn = start_btn
+
+	# «КУПИТЬ · цена» — на месте «СТАРТ», видна только у закрытой машины.
+	var buy_btn := Button.new()
+	UiKit.style_button(buy_btn, "orange", 22)
+	buy_btn.anchor_left = 0.25
+	buy_btn.anchor_right = 0.25
+	buy_btn.anchor_top = 1.0
+	buy_btn.anchor_bottom = 1.0
+	buy_btn.offset_left = -130
+	buy_btn.offset_right = 130
+	buy_btn.offset_top = -122
+	buy_btn.offset_bottom = -52
+	buy_btn.visible = false
+	buy_btn.pressed.connect(_buy_pressed)
+	canvas.add_child(buy_btn)
+	_buy_btn = buy_btn
+
+	_build_color_ui(canvas)
 	_build_race_size_ui(canvas)
 	_build_mode_ui(canvas)
 	_build_net_ui(canvas)
@@ -873,16 +1092,35 @@ func _setup_grid(canvas: CanvasLayer) -> void:
 	_scroll.add_child(grid)
 
 	for i in CarModelLibrary.CAR_IDS.size():
-		var id: String = CarModelLibrary.CAR_IDS[i]
 		var btn := Button.new()
 		btn.custom_minimum_size = THUMB_SIZE
 		btn.expand_icon = true
-		btn.tooltip_text = DISPLAY_NAMES.get(id, id)
 		btn.focus_mode = Control.FOCUS_NONE
 		_apply_style(btn, _style_normal)
 		btn.pressed.connect(_on_cell_pressed.bind(i))
 		grid.add_child(btn)
 		_buttons.append(btn)
+		# Значок «с N уровня» на закрытой ячейке (текст ставит
+		# _refresh_grid_locks — он же красит и тултипы).
+		var lock := Label.new()
+		lock.text = "%d ур." % GameState.car_unlock_level(
+				CarModelLibrary.CAR_IDS[i])
+		if _ui_font:
+			lock.add_theme_font_override("font", _ui_font)
+		lock.add_theme_font_size_override("font_size", 13)
+		lock.add_theme_color_override("font_color", UiKit.YELLOW)
+		lock.add_theme_constant_override("outline_size", 4)
+		lock.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+		lock.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+		lock.offset_left = -52
+		lock.offset_top = -22
+		lock.offset_right = -6
+		lock.offset_bottom = -4
+		lock.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		lock.visible = false
+		btn.add_child(lock)
+		_grid_locks.append(lock)
+	_refresh_grid_locks()
 
 
 func _apply_style(btn: Button, style: StyleBoxFlat) -> void:

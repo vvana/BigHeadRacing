@@ -40,9 +40,9 @@ extends RigidBody3D
 @export var ghost_time := 2.0           # «призрак» после уничтожения
 @export var freeze_duration := 3.0      # замедление от ледышки
 @export var boost_duration := 2.5      # ускорение
-@export var slip_duration := 2.0        # занос от масляного пятна
-@export var slip_grip := 0.3            # сцепление на масле (обычное 14)
-@export var slip_thrust := 0.35         # доля тяги на масле — колёса буксуют
+@export var slip_duration := 2.6        # занос от масляного пятна
+@export var slip_grip := 0.15           # сцепление на масле (обычное 14)
+@export var slip_thrust := 0.25         # доля тяги на масле — колёса буксуют
 
 # Значок действующего эффекта над крышей.
 const STATUS_ICON_SIZE := 1.7           # ширина значка, м
@@ -2074,8 +2074,11 @@ func _wall_slide(delta: float) -> void:
 		apply_torque((up.cross(Vector3.UP) * 14.0 - spin * 2.5) * mass * 0.1)
 
 	# Если руль прямо сейчас просит рысканье ПРОЧЬ от стены — не мешаем:
-	# ни доворота, ни гашения (иначе у стены нельзя отрулить).
-	if steering_away:
+	# ни доворота, ни гашения (иначе у стены нельзя отрулить). Занос от
+	# масла тоже не гасим: доворот и обнуление рысканья съедали закрутку,
+	# и наезд на пятно у ограждения выглядел лёгким тычком (просьба 02.09
+	# — машину должно ЗАМЕТНО разворачивать в ограждение).
+	if steering_away or _slip_time > 0.0:
 		return
 	# Иначе — доворот вдоль стены и полное гашение рысканья: без руля
 	# любое вращение здесь — закрутка от удара углом, а не руление.
@@ -2110,6 +2113,14 @@ func _clamp_heading(delta: float) -> void:
 	if tangent.length_squared() < 1e-6 or fwd.length_squared() < 1e-6:
 		return
 	var ang := tangent.signed_angle_to(fwd, Vector3.UP)
+	# Занос от масла: лимит поперечного угла ОТПУЩЕН — машину честно
+	# разворачивает (хоть задом наперёд), иначе эффект пятна был незаметен
+	# (просьба 02.09). Когда занос кончается, перебор снимает штатный
+	# мгновенный кламп ниже — для закрученной машины это резкий доворот,
+	# но он совпадает с моментом, когда игрок снова получает управление.
+	if _slip_time > 0.0:
+		_track_ang_abs = absf(ang)
+		return
 	var limit := deg_to_rad(max_track_angle_deg)
 	if absf(ang) > limit:
 		rotate(Vector3.UP, -(ang - signf(ang) * limit))
@@ -2753,11 +2764,13 @@ func net_set_freeze(left: float) -> void:
 ## _bump_spin_time не даёт рулю мгновенно съесть закрутку, окно
 ## _ext_push_time — капу боковых пинков её срезать. Повторный наезд на
 ## пятно во время заноса ничего не продлевает — занос и так тяжёлый.
-## Сторона закрутки случайная только НА СВОБОДНОМ ПОЛОТНЕ: у ограждения
-## машину разворачивает в разрешённую сторону — носом ОТ стены (см.
-## _spin_away_from_wall). Иначе занос втыкал нос в отбойник, где
-## _clamp_heading и ведение у стены его тут же и съедали: эффектного
-## вращения не выходило, выходил тычок в стену.
+## Сторона закрутки — В СТОРОНУ ограждения (просьба 02.09: «масло должно
+## сильнее разворачивать машину в ограждение, эффект не заметен»), на
+## свободном полотне — случайная. Раньше крутило носом ОТ стены, а
+## _clamp_heading и ведение у стены съедали остаток закрутки — выходил
+## еле заметный вильон. Теперь на время заноса лимит поперечного угла и
+## гашение рысканья у стены ОТПУЩЕНЫ (см. _clamp_heading, _wall_slide):
+## машину честно разворачивает и утыкает в отбойник.
 func apply_oil_slip() -> void:
 	if not alive or _slip_time > 0.0:
 		return
@@ -2765,11 +2778,12 @@ func apply_oil_slip() -> void:
 	_slip_time = slip_duration
 	_bump_spin_time = slip_duration
 	_ext_push_time = slip_duration
-	var side := _spin_away_from_wall()
+	# _spin_away_from_wall отдаёт сторону ОТ стены — берём противоположную.
+	var side := -_spin_away_from_wall()
 	if side == 0.0:
 		side = 1.0 if randf() < 0.5 else -1.0
-	var spin := randf_range(3.2, 4.4) * side
-	angular_velocity.y = clampf(angular_velocity.y + spin, -4.5, 4.5)
+	var spin := randf_range(4.6, 6.0) * side
+	angular_velocity.y = clampf(angular_velocity.y + spin, -6.5, 6.5)
 
 
 ## Разрешённая сторона закрутки у ограждения: 0.0 — стена далеко, крути

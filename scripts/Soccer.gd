@@ -177,15 +177,20 @@ func _spawn_cars() -> void:
 
 ## Модели: у игрока — выбранная в гараже, у ботов — случайные другие.
 func _pick_car_ids() -> PackedStringArray:
-	var pool := CarModelLibrary.CAR_IDS.duplicate()
-	pool.shuffle()
+	# Пул — полные id скинов (случайный цвет на машину); повторы
+	# отсекаются по базе (см. Main._pick_car_ids).
+	var pool := CarModelLibrary.shuffled_bot_pool()
 	var res := PackedStringArray()
+	var used := {}
 	res.append(GameState.selected_car_id)
+	used[CarModelLibrary.base_id(GameState.selected_car_id)] = true
 	for id: String in pool:
 		if res.size() >= CAR_COUNT:
 			break
-		if not res.has(id):
+		var base := CarModelLibrary.base_id(id)
+		if not used.has(base):
 			res.append(id)
+			used[base] = true
 	return res
 
 
@@ -421,22 +426,29 @@ func _finish_match() -> void:
 	var title: String
 	var kind: String
 	var xp: int
+	var coins: int   # монеты за матч — победа как 1-е место гонки не платит:
+	                 # футбол короче и без риска быть уничтоженным
 	if _score[0] > _score[1]:
 		title = "ПОБЕДА СИНИХ %d : %d" % [_score[0], _score[1]]
 		kind = "teal"
 		xp = 100
+		coins = 500
 	elif _score[0] < _score[1]:
 		title = "ПОБЕДА КРАСНЫХ %d : %d" % [_score[1], _score[0]]
 		kind = "red"
 		xp = 20
+		coins = 200
 	else:
 		title = "НИЧЬЯ %d : %d" % [_score[0], _score[1]]
 		kind = "orange"
 		xp = 40
+		coins = 300
 	xp += _player_goals * 15
+	coins += _player_goals * 50
+	GameState.add_money(coins)
 	GameState.add_xp(xp)
 	if _announcer:
-		_announcer.big(title, "опыт +%d" % xp, kind)
+		_announcer.big(title, "опыт +%d  ·  монеты +%d" % [xp, coins], kind)
 	if _end_label:
 		_end_label.visible = true
 
