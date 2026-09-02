@@ -18,6 +18,9 @@ var inert := false
 var track: TrackBuilder = null
 var target: Car = null
 var attacker: Car = null   # кто вызвал удар — для ленты событий
+## Готовые точки падения (инертная копия на клиенте, протокол 18): сервер
+## прислал, где на самом деле рвануло, — сами ничего не выбираем.
+var preset_spots := PackedVector3Array()
 
 var _spots: Array[Vector3] = []
 var _shadows: Array[MeshInstance3D] = []
@@ -27,7 +30,7 @@ var _timer := SHADOW_DELAY
 
 
 func _ready() -> void:
-	if target == null:
+	if target == null and preset_spots.is_empty():
 		queue_free()
 		return
 	# Ракеты прилетают наклонно «из-за верхнего края экрана»: старт смещён
@@ -42,6 +45,12 @@ func _ready() -> void:
 		if f.length_squared() > 1e-4:
 			screen_top = f.normalized()
 	_fall_offset = Vector3.UP * FALL_HEIGHT + screen_top * FALL_SIDE
+	if not preset_spots.is_empty():
+		for pos in preset_spots:
+			_spots.append(pos)
+			_shadows.append(_make_shadow(pos))
+			_rockets.append(_make_rocket(pos))
+		return
 	# Без трассы (футбольная арена): тени ложатся по ХОДУ ДВИЖЕНИЯ цели —
 	# от неё самой и вперёд, с разбросом вбок. Стоячую цель накрывает
 	# ближняя тень (радиус поражения 3.2 м > первого отступа).

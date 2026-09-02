@@ -228,6 +228,11 @@ func _drive_carried() -> void:
 
 ## Отлипание: экс-ведущий помечается в _no_grab — «при повторном ударе
 ## передом снова примагничивается», но не тем же самым касанием.
+## Отпустить мяч от ведущего (зовёт и Projectile при попадании ракеты).
+func release() -> void:
+	_release()
+
+
 func _release() -> void:
 	if carrier != null and is_instance_valid(carrier):
 		_no_grab[carrier] = NO_GRAB_TIME

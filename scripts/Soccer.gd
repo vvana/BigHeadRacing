@@ -5,8 +5,6 @@ extends Node3D
 ## Оружие — из БОНУСОВ: они периодически падают с неба в случайные точки
 ## поля (SoccerDrop, одноразовые), стартуют все с пустыми руками.
 
-const CAR_SELECT := preload("res://scripts/CarSelect.gd")   # имена машин
-
 const TEAM_SIZE := 4
 const CAR_COUNT := 8
 const MATCH_TIME := 300.0     # 5 минут
@@ -26,7 +24,6 @@ var _pause_left := 0.0
 var _player_goals := 0
 var _last_minute_said := false
 var _flip_time: Array[float] = []
-var _roster := PackedStringArray()
 # Имена по машинам: игрок — из профиля, боты — ники PlayerNames (анонсы
 # голов подписываются ими — бот неотличим от живого игрока, 01.09).
 var _names := PackedStringArray()
@@ -61,7 +58,6 @@ var _drop_timer := DROP_FIRST
 var _drops_spawned := 0
 var _fire_cd: Array[float] = []   # откаты стрельбы ботов
 
-var _ui_font: FontFile
 var _score_label: Label
 var _timer_label: Label
 var _speed_label: Label
@@ -142,9 +138,11 @@ func _spawn_cars() -> void:
 		var car := Car.new()
 		car.is_player = i == 0
 		car.name = "Car%d" % i
-		car.track = null
 		car.race = self        # авиаудар (leader_car) и анонсы попаданий
 		car.weapon = -1        # стартуем без оружия — оно из бонусов
+		if i == 0:
+			car.apply_upgrades(GameState.upgrade_multipliers(
+					CarModelLibrary.base_id(GameState.selected_car_id)))
 		if i != 0:
 			car.soccer_brain = self
 			car.max_speed += randf_range(-1.0, 1.0)
@@ -160,7 +158,6 @@ func _spawn_cars() -> void:
 		_stuck_time.append(0.0)
 		_escape_time.append(0.0)
 		_want_move.append(false)
-	_roster = ids
 	# Имена: игрок (слот 0) — своё из профиля, боты — человеческие ники
 	# (PlayerNames): в анонсах голов бот выглядит как живой игрок.
 	_names = PlayerNames.pick(_cars.size())
@@ -331,10 +328,7 @@ func _on_goal(team: int) -> void:
 		if si >= 0:
 			var scorer_team := 0 if si < TEAM_SIZE else 1
 			# Автор гола — по имени (бот подписан ником, как живой игрок).
-			var scorer_name: String = "вы" if si == 0 \
-					else (_names[si] if si < _names.size()
-							else str(CAR_SELECT.DISPLAY_NAMES.get(
-									_roster[si], _roster[si])))
+			var scorer_name: String = "вы" if si == 0 else _names[si]
 			if scorer_team != team:
 				sub = "автогол! (%s)" % scorer_name
 			else:
@@ -810,7 +804,6 @@ func _update_score() -> void:
 func _setup_hud() -> void:
 	var canvas := CanvasLayer.new()
 	add_child(canvas)
-	_ui_font = UiKit.font()
 
 	# Табло по центру сверху: СИНИЕ 0 : 0 КРАСНЫЕ.
 	var plate := UiKit.plate(canvas, "steel", Vector2.ZERO, Vector2(380, 64))

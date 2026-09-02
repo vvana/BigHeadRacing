@@ -40,6 +40,9 @@ var edge_color := EDGE_COLOR
 var _axis := PackedVector2Array()
 var _left := PackedVector2Array()
 var _right := PackedVector2Array()
+# Кромки в пикселях панели (замкнутые) — пересчёт только в _rebuild.
+var _left_px := PackedVector2Array()
+var _right_px := PackedVector2Array()
 var _min := Vector2.ZERO
 var _max := Vector2.ZERO
 var _scale := 1.0
@@ -90,10 +93,13 @@ func setup(track: TrackBuilder, cars_ref: Array[Car]) -> void:
 
 
 ## Мир (X,Z) → плоскость карты: поворот на угол камеры + сжатие по вертикали.
+static var _cos_yaw := cos(deg_to_rad(YAW))
+static var _sin_yaw := sin(deg_to_rad(YAW))
+
+
 static func _to_map(p: Vector2) -> Vector2:
-	var a := deg_to_rad(YAW)
-	return Vector2(p.x * cos(a) - p.y * sin(a),
-			(p.x * sin(a) + p.y * cos(a)) * SQUISH)
+	return Vector2(p.x * _cos_yaw - p.y * _sin_yaw,
+			(p.x * _sin_yaw + p.y * _cos_yaw) * SQUISH)
 
 
 ## Метры карты → пиксели панели.
@@ -120,11 +126,19 @@ func _rebuild() -> void:
 	_road_idx = PackedInt32Array()
 	_road_col = PackedColorArray()
 	var n := _axis.size()
+	_left_px = PackedVector2Array()
+	_right_px = PackedVector2Array()
 	for i in n:
-		_road_pts.append(_to_px(_left[i]))
-		_road_pts.append(_to_px(_right[i]))
+		var l := _to_px(_left[i])
+		var r := _to_px(_right[i])
+		_road_pts.append(l)
+		_road_pts.append(r)
 		_road_col.append(ROAD_COLOR)
 		_road_col.append(ROAD_COLOR)
+		_left_px.append(l)
+		_right_px.append(r)
+	_left_px.append(_left_px[0])
+	_right_px.append(_right_px[0])
 	for i in n:
 		# Квад между сэмплами i и i+1 (последний замыкает круг) — двумя
 		# треугольниками, одним вызовом на всё полотно.
@@ -144,10 +158,10 @@ func _draw() -> void:
 	RenderingServer.canvas_item_add_triangle_array(
 			get_canvas_item(), _road_idx, _road_pts, _road_col)
 	# Кромки полотна по обеим сторонам (красные — где стоят ограждения).
-	_draw_loop(_left, edge_color)
-	_draw_loop(_right, edge_color)
+	_draw_loop(_left_px, edge_color)
+	_draw_loop(_right_px, edge_color)
 	# Стартовая линия — поперёк полотна в нулевой точке круга.
-	draw_line(_to_px(_left[0]), _to_px(_right[0]), START_COLOR, 2.0, true)
+	draw_line(_left_px[0], _right_px[0], START_COLOR, 2.0, true)
 
 	# Своя машина рисуется ПОСЛЕДНЕЙ: на старте все стоят кучей, и точка
 	# бота накрывала бы игрока — себя на карте было не найти.
@@ -174,11 +188,7 @@ func _draw() -> void:
 					me.global_transform.basis.z * -1.0, color)
 
 
-func _draw_loop(pts: PackedVector2Array, color: Color) -> void:
-	var line := PackedVector2Array()
-	for p: Vector2 in pts:
-		line.append(_to_px(p))
-	line.append(line[0])
+func _draw_loop(line: PackedVector2Array, color: Color) -> void:
 	draw_polyline(line, color, 1.5, true)
 
 

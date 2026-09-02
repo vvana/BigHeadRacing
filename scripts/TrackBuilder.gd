@@ -9,7 +9,6 @@ extends Node3D
 # обочина, порог вылета и расстановка декора, чтобы в узких местах они
 # просто отходили дальше от кромки, а не резали полотно.
 const TRACK_HALF_WIDTH := 11.0  # максимальная полуширина полотна, м
-const MIN_HALF_WIDTH := 6.0     # самое узкое место (шпилька), м
 const WALL_HEIGHT := 2.6   # заметно выше высоты прыжка (~1.9 м) — не улететь
 const WALL_THICKNESS := 0.5
 # Детализация контура. Стены и полотно — тримеши из плоских фасеток; на
@@ -90,11 +89,6 @@ func _ready() -> void:
 	_build_decor()
 
 
-# Трасса РОВНАЯ ВЕЗДЕ, кроме одной горки (просьба пользователя
-# 2026-08-21). Механика рельефа общая: HEIGHT_KEYS задаёт профиль, ему
-# следуют полотно, ограждения, обочина и декор.
-const FLAT_TRACK := false
-
 ## Работаем ли выделенным сервером. Смотрим КОМАНДНУЮ СТРОКУ, а не autoload
 ## Net, и вот почему: TrackBuilder используется ещё и в стендах, запускаемых
 ## через `--script` (tools/test_curve.gd), а в режиме --script autoload'ы НЕ
@@ -151,8 +145,6 @@ static func _ease_quintic(x: float) -> float:
 ## Высота по доле круга: внутри плато — константа, на переходах — плавная
 ## квинтическая S-кривая (см. _ease_quintic).
 static func _profile_height(t: float) -> float:
-	if FLAT_TRACK:
-		return 0.0
 	var f := fposmod(t, 1.0)
 	for i in range(HEIGHT_KEYS.size() - 1):
 		var t0: float = HEIGHT_KEYS[i][0]
@@ -482,6 +474,9 @@ func _sample_frames() -> void:
 		var ahead := _curve.sample_baked(fmod(off + 0.5, length))
 		var dir := (ahead - pos).normalized()
 		_pts.append(pos)
+		# ВНИМАНИЕ: с «* -1» это ЛЕВЫЙ вектор (FORWARD × UP = RIGHT). Знак
+		# исторический: на него завязана обмотка мешей полотна и стен, все
+		# потребители симметричны. TrackDecor считает свой _right честно.
 		_rights.append(Vector3(dir.x, 0, dir.z).normalized().cross(Vector3.UP)
 				* -1.0)
 		_widths.append(half_width_at_ratio(float(i) / SAMPLES))
@@ -769,7 +764,7 @@ func _build_walls() -> void:
 			mat.albedo_color = Color(0.75, 0.2, 0.15)
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mesh.material_override = mat
-	body.add_child(mesh)
+	_add_visual(body, mesh)   # на выделенном сервере меш стен не нужен
 
 	var col := CollisionShape3D.new()
 	var shape := ConcavePolygonShape3D.new()
@@ -1084,13 +1079,7 @@ func _dist2_at(world_pos: Vector3, off: float, length: float) -> float:
 
 ## Точка старта и направление для спавна машины.
 func start_transform() -> Transform3D:
-	var pos := _curve.sample_baked(0.0)
-	var ahead := _curve.sample_baked(3.0)
-	var dir := (ahead - pos).normalized()
-	var basis := Basis.looking_at(dir)
-	# 0.62 м — примерно на длину покоя подвески, чтобы машина не падала
-	# с высоты и не подпрыгивала при появлении.
-	return Transform3D(basis, pos + Vector3(0, 0.62, 0))
+	return respawn_transform_at(-6.0)   # та же постановка с отметки 0
 
 
 ## Точка респавна: ось трассы на 6 м вперёд от ближайшей к world_pos точки

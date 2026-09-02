@@ -8,7 +8,6 @@ extends RefCounted
 const INK := Color8(23, 27, 32)          # чернильный — текст на эмали
 const STEEL := Color8(38, 43, 49)        # тёмная сталь
 const RIM := Color8(90, 98, 107)         # металлический кант
-const ENAMEL := Color8(239, 232, 216)    # белая эмаль
 const YELLOW := Color8(242, 194, 28)
 const ORANGE := Color8(232, 100, 27)
 const RED := Color8(207, 51, 39)

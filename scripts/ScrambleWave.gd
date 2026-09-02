@@ -219,9 +219,8 @@ func _touches_body(a: Vector3, b: Vector3, center: Vector3,
 
 
 ## Только ограждения: машины считает ручная проверка в _physics_process.
-func _on_body_entered(body: Node3D) -> void:
-	if body is Car or body == shooter:
-		return
+func _on_body_entered(_body: Node3D) -> void:
+	# Машины сюда не попадают вовсе: маска Area — только ограждения (0b010).
 	_boom()
 
 

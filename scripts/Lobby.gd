@@ -157,7 +157,9 @@ func set_slot(slot: int, taken: bool, car_id: String, is_me: bool,
 			for old in _turntables[slot].get_children():
 				old.queue_free()
 		return
-	_car_labels[slot].text = CAR_NAMES.get(car_id, car_id)
+	# id приходит ПОЛНЫЙ (со скином/комплектацией) — имя по базе.
+	var base := CarModelLibrary.base_id(car_id)
+	_car_labels[slot].text = CAR_NAMES.get(base, base)
 	if car_id != "" and _slot_ids[slot] != car_id:
 		_slot_ids[slot] = car_id
 		var table := _turntables[slot]

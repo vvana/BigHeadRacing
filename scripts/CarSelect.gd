@@ -14,6 +14,9 @@ const DISPLAY_NAMES := {
 	"fastback": "Fastback", "godfather": "Godfather", "lemans": "Le Mans GT",
 	"superbird": "Superbird", "chevelle": "Chevelle SS", "diablo": "Diablo",
 	"dragster": "Dragster", "safari": "Safari 4x4",
+	# Аркадные конструкторы (Customizable Arcade Car Pack).
+	"ac1": "Стрела", "ac2": "Сарай", "ac3": "Багги", "ac4": "Малыш",
+	"ac5": "Пикап", "ac6": "Монстр", "ac7": "Маслкар", "ac8": "Кирпич",
 }
 
 ## Названия цветов-скинов для подсказок.
@@ -22,6 +25,9 @@ const COLOR_NAMES := {
 	"green": "зелёный", "lightblue": "голубой", "purple": "фиолетовый",
 	"red": "красный", "sand": "песочный", "white": "белый",
 	"yellow": "жёлтый",
+	"orange": "оранжевый", "turquoise": "бирюзовый", "cyan": "циан",
+	"pink": "розовый", "brown": "коричневый", "cream": "кремовый",
+	"grey": "серый",
 }
 ## Цвет квадратика-образца (приблизительный тон краски палитры).
 const SWATCH_COLORS := {
@@ -62,12 +68,14 @@ var _color_btns: Array[Button] = []   # ряд квадратиков-скино
 var _color_panel: Control         # подложка ряда скинов
 var _grid_locks: Array[Label] = []    # значки «N ур.» на ячейках сетки
 var _buy_flash := 0               # поколение вспышки «НЕ ХВАТАЕТ МОНЕТ»
+var _tuning: TuningPanel          # панель улучшений/косметики (поверх сетки)
+var _tuning_btn: Button           # «ТЮНИНГ» (у купленной машины)
+var _grid_panel: PanelContainer   # подложка сетки (прячется под панелью)
 
 
-## Полный id скина машины из сетки: база + её текущий цвет.
+## Полный id скина машины из сетки: база + её текущий цвет/комплектация.
 func _full_id(i: int) -> String:
-	var base: String = CarModelLibrary.CAR_IDS[i]
-	return CarModelLibrary.skin_id(base, GameState.color_of(base))
+	return GameState.full_id(CarModelLibrary.CAR_IDS[i])
 
 
 func _ready() -> void:
@@ -95,6 +103,11 @@ func _process(delta: float) -> void:
 	# Открыто окно ввода имени — клавиши достаются ему, а не выбору машины
 	# (иначе Enter в поле имени тут же запускал бы гонку).
 	if _name_dialog != null:
+		return
+	# Открыта панель тюнинга — стрелки ей не мешают; Esc закрывает.
+	if _tuning != null and _tuning.visible:
+		if Input.is_action_just_pressed("ui_cancel"):
+			_tuning.close()
 		return
 
 	var total := CarModelLibrary.CAR_IDS.size()
@@ -535,6 +548,12 @@ func _set_index(i: int) -> void:
 		_dim_model(_model)
 	_refresh_lock_ui()
 	_refresh_swatches()
+	# Панель тюнинга открыта — перевести на новую машину (чужая — закрыть).
+	if _tuning != null and _tuning.visible:
+		if owned:
+			_tuning.open(base)
+		else:
+			_tuning.close()
 	# Подсветка ячейки в сетке.
 	if _buttons.size() > prev:
 		_apply_style(_buttons[prev], _style_normal)
@@ -562,6 +581,8 @@ func _refresh_lock_ui() -> void:
 	var owned: bool = GameState.car_owned(base)
 	if _start_btn:
 		_start_btn.visible = owned
+	if _tuning_btn:
+		_tuning_btn.visible = owned
 	if _buy_btn == null:
 		return
 	_buy_btn.visible = not owned
@@ -631,45 +652,59 @@ func _refresh_grid_locks() -> void:
 
 # ---- Скины: ряд цветов под подиумом ----
 
-## Ряд из 10 квадратиков-красок; для машин без скинов прячется целиком.
+## Ряд квадратиков-красок (10 у советских, 12 у аркадных — лишние
+## прячутся); для машин без скинов прячется целиком. Цвет и подсказки
+## каждой кнопке ставит _refresh_swatches по текущей машине.
 func _build_color_ui(canvas: Node) -> void:
 	var panel := Control.new()
 	panel.anchor_left = 0.25
 	panel.anchor_right = 0.25
 	panel.anchor_top = 1.0
 	panel.anchor_bottom = 1.0
-	panel.offset_left = -178
-	panel.offset_right = 178
+	panel.offset_left = -214
+	panel.offset_right = 214
 	panel.offset_top = -254
 	panel.offset_bottom = -222
 	canvas.add_child(panel)
 	_color_panel = panel
-	for k in CarModelLibrary.SOVIET_COLORS.size():
-		var color: String = CarModelLibrary.SOVIET_COLORS[k]
+	var count := maxi(CarModelLibrary.SOVIET_COLORS.size(),
+			CarModelLibrary.ARCADE_COLORS.size())
+	for k in count:
 		var b := Button.new()
 		b.custom_minimum_size = Vector2(30, 30)
-		b.position = Vector2(k * 36, 0)
 		b.size = Vector2(30, 30)
 		b.focus_mode = Control.FOCUS_NONE
-		b.tooltip_text = String(COLOR_NAMES.get(color, color)).capitalize()
-		b.pressed.connect(_on_color_pressed.bind(color))
+		b.pressed.connect(func() -> void: _on_color_pressed(b))
 		panel.add_child(b)
 		_color_btns.append(b)
 
 
-## Подсветить выбранный цвет текущей машины (жёлтая рамка).
+## Раскрасить ряд под текущую машину и подсветить выбранный цвет (жёлтая
+## рамка). Ряд центрируется по числу цветов.
 func _refresh_swatches() -> void:
 	var base: String = CarModelLibrary.CAR_IDS[_index]
 	if _color_panel == null:
 		return
-	_color_panel.visible = CarModelLibrary.has_skins(base)
+	var colors := CarModelLibrary.colors_for(base)
+	_color_panel.visible = not colors.is_empty()
 	if not _color_panel.visible:
 		return
 	var current: String = GameState.color_of(base)
+	var x0 := (428 - (colors.size() * 36 - 6)) * 0.5
 	for k in _color_btns.size():
-		var color: String = CarModelLibrary.SOVIET_COLORS[k]
+		var b := _color_btns[k]
+		b.visible = k < colors.size()
+		if not b.visible:
+			continue
+		var color: String = colors[k]
+		b.position = Vector2(x0 + k * 36, 0)
+		b.set_meta("color", color)
+		b.tooltip_text = String(COLOR_NAMES.get(color, color)).capitalize()
 		var sb := StyleBoxFlat.new()
-		sb.bg_color = SWATCH_COLORS.get(color, Color.MAGENTA)
+		if CarModelLibrary.is_arcade(base):
+			sb.bg_color = (CarModelLibrary.ARCADE_PAINTS[color] as Array)[1]
+		else:
+			sb.bg_color = SWATCH_COLORS.get(color, Color.MAGENTA)
 		sb.set_corner_radius_all(6)
 		if color == current:
 			sb.set_border_width_all(3)
@@ -678,14 +713,35 @@ func _refresh_swatches() -> void:
 			sb.set_border_width_all(1)
 			sb.border_color = Color(0, 0, 0, 0.5)
 		for state in ["normal", "hover", "pressed", "focus"]:
-			_color_btns[k].add_theme_stylebox_override(state, sb)
+			b.add_theme_stylebox_override(state, sb)
 
 
-func _on_color_pressed(color: String) -> void:
+func _on_color_pressed(btn: Button) -> void:
 	var base: String = CarModelLibrary.CAR_IDS[_index]
-	GameState.set_car_color(base, color)
+	GameState.set_car_color(base, str(btn.get_meta("color", "")))
 	_set_index(_index)      # перестроить подиум в новом цвете
 	_update_thumb(_index)   # и миниатюру в сетке
+
+
+# ---- Тюнинг: улучшения и косметика ----
+
+func _open_tuning() -> void:
+	var base: String = CarModelLibrary.CAR_IDS[_index]
+	if not GameState.car_owned(base) or _tuning == null:
+		return
+	_grid_panel.visible = false
+	_tuning.open(base)
+
+
+## Панель что-то купила/переставила: кошелёк, подиум, миниатюра.
+func _on_tuning_changed() -> void:
+	_refresh_money_label()
+	_set_index(_index)
+	_update_thumb(_index)
+
+
+func _on_tuning_closed() -> void:
+	_grid_panel.visible = true
 
 
 ## Перерисовать миниатюру одной машины (после смены цвета): из кэша /
@@ -1012,6 +1068,23 @@ func _setup_hud() -> void:
 	canvas.add_child(buy_btn)
 	_buy_btn = buy_btn
 
+	# «ТЮНИНГ» — справа от «СТАРТ», только у своей машины: улучшения
+	# (4 слота × 3 ступени) и косметика аркадных конструкторов.
+	var tune_btn := Button.new()
+	tune_btn.text = "ТЮНИНГ"
+	UiKit.style_button(tune_btn, "teal", 17)
+	tune_btn.anchor_left = 0.25
+	tune_btn.anchor_right = 0.25
+	tune_btn.anchor_top = 1.0
+	tune_btn.anchor_bottom = 1.0
+	tune_btn.offset_left = 138
+	tune_btn.offset_right = 240
+	tune_btn.offset_top = -112
+	tune_btn.offset_bottom = -62
+	tune_btn.pressed.connect(_open_tuning)
+	canvas.add_child(tune_btn)
+	_tuning_btn = tune_btn
+
 	_build_color_ui(canvas)
 	_build_race_size_ui(canvas)
 	_build_mode_ui(canvas)
@@ -1079,6 +1152,18 @@ func _setup_grid(canvas: CanvasLayer) -> void:
 	panel.offset_bottom = -20
 	panel.offset_right = -16
 	canvas.add_child(panel)
+	_grid_panel = panel
+
+	# Панель тюнинга — на месте сетки, пока открыта.
+	_tuning = TuningPanel.new()
+	_tuning.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
+	_tuning.offset_left = -600
+	_tuning.offset_top = 20
+	_tuning.offset_bottom = -20
+	_tuning.offset_right = -16
+	_tuning.changed.connect(_on_tuning_changed)
+	_tuning.closed.connect(_on_tuning_closed)
+	canvas.add_child(_tuning)
 
 	_scroll = ScrollContainer.new()
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED

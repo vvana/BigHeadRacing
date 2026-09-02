@@ -246,7 +246,19 @@ func _build_roadside() -> void:
 
 ## Пики кривизны контура — самые крутые повороты. Возвращает массив
 ## пар [индекс сэмпла, знаковый угол] (угол > 0 — поворот влево).
+var _peaks_cache := {}
+
+
+## Пики поворотов — с кэшем: окно кривизны по 1536 точкам и сортировка
+## считались дважды за постройку (щиты и стрелки просят одно и то же).
 func _turn_peaks(max_count: int, min_abs: float) -> Array:
+	var key := "%d:%.3f" % [max_count, min_abs]
+	if not _peaks_cache.has(key):
+		_peaks_cache[key] = _turn_peaks_calc(max_count, min_abs)
+	return _peaks_cache[key]
+
+
+func _turn_peaks_calc(max_count: int, min_abs: float) -> Array:
 	var pts: PackedVector3Array = _track._pts
 	var n := pts.size()
 	var length: float = _track._curve.get_baked_length()
@@ -1127,7 +1139,9 @@ func _forward(t: float) -> Vector3:
 
 
 func _right(t: float) -> Vector3:
-	return _forward(t).cross(Vector3.UP) * -1.0
+	# FORWARD × UP = RIGHT. Прежнее «* -1» давало ЛЕВО, и щиты 3-2-1
+	# вставали ВНУТРИ поворота; прочие потребители симметричны.
+	return _forward(t).cross(Vector3.UP)
 
 
 ## Наружу от полотна. Раньше бралось просто направление от начала координат
@@ -1163,6 +1177,8 @@ func _ground_y(p: Vector3) -> float:
 func _push_outside(node: Node3D, out: Vector3, min_dist: float) -> void:
 	var closest := INF
 	for mi: MeshInstance3D in node.find_children("*", "MeshInstance3D", true, false):
+		if mi.mesh == null:
+			continue
 		var ab := mi.global_transform * mi.mesh.get_aabb()
 		for k in 8:
 			closest = minf(closest,
@@ -1213,6 +1229,8 @@ static func _recenter(root: Node3D) -> void:
 	var merged := AABB()
 	var first := true
 	for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
+		if mi.mesh == null:
+			continue
 		var ab := mi.transform * mi.mesh.get_aabb()
 		merged = ab if first else merged.merge(ab)
 		first = false
@@ -1238,6 +1256,8 @@ const CITY_MATS := {
 ## здесь вручную (у Palmov все материалы «texture main[.NNN]»).
 func _apply_cartoon_materials(root: Node3D) -> void:
 	for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
+		if mi.mesh == null:
+			continue
 		for s in mi.mesh.get_surface_count():
 			var src := mi.mesh.surface_get_material(s)
 			if src == null:

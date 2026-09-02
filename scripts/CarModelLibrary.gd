@@ -3,11 +3,8 @@ extends RefCounted
 ## Собирает визуальные модели машин.
 ## Парк (2026-09-02): 15 советских машин (Low Poly Soviet Car Pack, Unity)
 ## с 10 цветами-скинами каждая + 8 машин Unity «Low Poly Car Vehicle Pack»
-## (без скинов). Все — из одиночных FBX (один файл = одна машина).
-## Поддержка общих GLB-паков (_build_from) оставлена на случай новых паков.
-
-# Общие GLB-паки. ПУСТ с 2026-09-02: hot-wheels-паки удалены.
-const GLB_PATHS: Array[String] = []
+## (без скинов) + 8 аркадных машин-конструкторов (Customizable Arcade Car
+## Pack): кузов + сменные колёса/мотор/спойлер/выхлоп, 36 красок, наклейки.
 
 # ---- Советский пак: id машины + цвет = отдельный FBX ----
 # Файл: SOVIET_DIR/<id>/<id>_<color>.fbx. Цвет сидит в UV (общая
@@ -25,12 +22,14 @@ const SOVIET_IDS: Array[String] = [
 	"vz05r", "vz08", "vz09", "vz099", "gz21", "gz24", "vz31",
 ]
 ## Цвет по умолчанию (пока игрок не выбрал свой) — у всех разный, чтобы
-## сетка выбора выглядела пёстро.
+## сетка выбора выглядела пёстро. У аркадных — цвет краски ARCADE_COLORS.
 const DEFAULT_COLORS := {
 	"vz01": "red", "vz02": "lightblue", "vz21": "green", "vz03": "white",
 	"vz04": "blue", "vz05": "yellow", "vz06": "sand", "vz07": "purple",
 	"vz05r": "red", "vz08": "gray", "vz09": "lightblue", "vz099": "black",
 	"gz21": "white", "gz24": "black", "vz31": "green",
+	"ac1": "red", "ac2": "cyan", "ac3": "yellow", "ac4": "green",
+	"ac5": "orange", "ac6": "purple", "ac7": "blue", "ac8": "pink",
 }
 
 ## Машины из ОДИНОЧНЫХ файлов БЕЗ скинов (Unity «Low Poly Car Vehicle
@@ -48,21 +47,138 @@ const SINGLE_CAR_PATHS := {
 	"safari": "res://assets/models/unitycars/source/Car-8.fbx",
 }
 
+# ---- Аркадный пак: конструктор (Customizable Arcade Car Pack, Unity) ----
+# ОДИН файл Cars.fbx со всеми деталями: 8 кузовов «Car N», 10 колёс
+# «Wheel N», 10 моторов «Engine N» (на капот), 10 спойлеров «Spoiler N»,
+# 10 выхлопов «Exhaust N». Машина собирается из кузова + 4 колёс + деталей
+# по слотам; позиции слотов на каждом кузове — из префабов Unity
+# (ARCADE_BODIES). Поверхности мешей: «body» — краска (цвет задаём мы),
+# «details» — палитра ColorPalette.png (стёкла, фары, шины), «bottom» —
+# днище, «sticker» — наклейка (текстуры Stickers N-M.png, по две в файле),
+# «sticker line» — двойная полоса. Нос в +Z, как у остальных паков.
+const ARCADE_PATH := "res://assets/models/arcadecars/source/Cars.fbx"
+const ARCADE_TEX := "res://assets/models/arcadecars/textures/"
+const ARCADE_IDS: Array[String] = [
+	"ac1", "ac2", "ac3", "ac4", "ac5", "ac6", "ac7", "ac8",
+]
+## Краски: 12 цветов × 3 оттенка (1 тёмный, 2 обычный, 3 светлый) —
+## значения из материалов пака (sRGB).
+const ARCADE_COLORS: Array[String] = [
+	"red", "orange", "yellow", "green", "turquoise", "cyan",
+	"blue", "purple", "pink", "brown", "cream", "grey",
+]
+const ARCADE_PAINTS := {
+	"red": [Color(0.4, 0, 0), Color(1, 0, 0), Color(1, 0.6, 0.6)],
+	"orange": [Color(0.4, 0.2, 0), Color(1, 0.5, 0), Color(1, 0.8, 0.6)],
+	"yellow": [Color(0.4, 0.4, 0), Color(1, 1, 0), Color(1, 1, 0.6)],
+	"green": [Color(0, 0.4, 0), Color(0, 1, 0), Color(0.6, 1, 0.6)],
+	"turquoise": [Color(0.098, 0.361, 0.276), Color(0.251, 0.902, 0.696),
+			Color(0.702, 0.961, 0.879)],
+	"cyan": [Color(0, 0.4, 0.4), Color(0, 1, 1), Color(0.6, 1, 1)],
+	"blue": [Color(0, 0, 0.4), Color(0, 0, 1), Color(0.6, 0.6, 1)],
+	"purple": [Color(0.2, 0, 0.4), Color(0.5, 0, 1), Color(0.8, 0.6, 1)],
+	"pink": [Color(0.4, 0.16, 0.28), Color(1, 0.4, 0.7), Color(1, 0.76, 0.88)],
+	"brown": [Color(0.2, 0.1, 0.04), Color(0.5, 0.25, 0.1), Color(0.8, 0.7, 0.64)],
+	"cream": [Color(0.509, 0.447, 0.32), Color(0.774, 0.677, 0.493),
+			Color(0.981, 0.893, 0.717)],
+	"grey": [Color(0.113, 0.113, 0.113), Color(0.5, 0.5, 0.5),
+			Color(0.943, 0.943, 0.943)],
+}
+## Сколько вариантов у каждой детали (индекс 1..PART_COUNT; 0 — «нет»).
+const PART_COUNT := 10
+## Слоты деталей → буква в id скина.
+const PART_SLOTS: Array[String] = ["wheel", "engine", "spoiler", "exhaust"]
+const ARCADE_KEYS := {
+	"wheel": "w", "engine": "e", "spoiler": "s", "exhaust": "x",
+	"sticker": "k", "line": "l", "glitter": "g",
+}
+## Стоковая комплектация: колёса №1, без мотора/спойлера/выхлопа,
+## обычный красный, без наклеек.
+const ARCADE_DEFAULT := {
+	"color": "red", "shade": 2, "glitter": 0, "wheel": 1, "engine": 0,
+	"spoiler": 0, "exhaust": 0, "sticker": 0, "line": 0,
+}
+## Геометрия кузовов из префабов Unity (координаты относительно кузова):
+## wheel_f/wheel_r — правое переднее/заднее колесо (левое — зеркально),
+## ws_f/ws_r — масштаб колёс; engine/spoiler/exhaust — [позиция, масштаб].
+const ARCADE_BODIES := {
+	"ac1": {"mesh": "Car 1",
+		"wheel_f": Vector3(0.9, 0.22, 1.923), "wheel_r": Vector3(0.9, 0.286, -1.868),
+		"ws_f": Vector3(0.956, 0.956, 0.956), "ws_r": Vector3(1.097, 1.097, 1.097),
+		"engine": [Vector3(0, 1.072, 1.663), Vector3.ONE],
+		"spoiler": [Vector3(0, 1.13, -2.593), Vector3.ONE],
+		"exhaust": [Vector3(0, 0.099, -2.512), Vector3.ONE]},
+	"ac2": {"mesh": "Car 2",
+		"wheel_f": Vector3(0.86, 0.233, 1.94), "wheel_r": Vector3(0.86, 0.233, -1.641),
+		"ws_f": Vector3.ONE, "ws_r": Vector3.ONE,
+		"engine": [Vector3(0, 1.234, 2.043), Vector3(0.77, 0.77, 0.77)],
+		"spoiler": [Vector3(0, 1.7, -2.224), Vector3(0.754, 1, 1)],
+		"exhaust": [Vector3(0, 0.21, -2.613), Vector3(0.93, 1, 1)]},
+	"ac3": {"mesh": "Car 3",
+		"wheel_f": Vector3(0.9, 0.209, 2.345), "wheel_r": Vector3(0.88, 0.243, -2.111),
+		"ws_f": Vector3(0.912, 0.912, 0.912), "ws_r": Vector3.ONE,
+		"engine": [Vector3(0, 0.48, 1.749), Vector3(1.318, 1.318, 1.318)],
+		"spoiler": [Vector3(0, 0.984, -2.339), Vector3(0.969, 1, 1)],
+		"exhaust": [Vector3(0, 0.0, -2.673), Vector3(0.95, 1, 1)]},
+	"ac4": {"mesh": "Car 4",
+		"wheel_f": Vector3(0.95, 0.217, 1.666), "wheel_r": Vector3(0.95, 0.25, -1.817),
+		"ws_f": Vector3(0.95, 0.932, 0.932), "ws_r": Vector3(0.982, 0.982, 0.982),
+		"engine": [Vector3(0, 1.056, 1.467), Vector3.ONE],
+		"spoiler": [Vector3(0, 1.669, -1.772), Vector3(0.859, 0.753, 0.753)],
+		"exhaust": [Vector3(0, 0.145, -2.512), Vector3.ONE]},
+	"ac5": {"mesh": "Car 5",
+		"wheel_f": Vector3(0.9, 0.2, 1.85), "wheel_r": Vector3(0.9, 0.2, -1.622),
+		"ws_f": Vector3(1, 0.947, 0.947), "ws_r": Vector3(1, 0.947, 0.947),
+		"engine": [Vector3(0, 1.33, 1.968), Vector3(0.8, 0.8, 0.8)],
+		"spoiler": [Vector3(0, 1.237, -2.64), Vector3(1.156, 0.753, 0.753)],
+		"exhaust": [Vector3(0, 0.16, -2.546), Vector3.ONE]},
+	"ac6": {"mesh": "Car 6",
+		"wheel_f": Vector3(1.15, -0.01, 1.766), "wheel_r": Vector3(1.15, -0.01, -1.917),
+		"ws_f": Vector3(1.787, 1.787, 1.787), "ws_r": Vector3(1.787, 1.787, 1.787),
+		"engine": [Vector3(0, 1.75, 1.864), Vector3.ONE],
+		"spoiler": [Vector3(0, 1.945, -2.479), Vector3(1.176, 1.176, 1.176)],
+		"exhaust": [Vector3(0, 0.747, -2.402), Vector3(1.141, 1, 1)]},
+	"ac7": {"mesh": "Car 7",
+		"wheel_f": Vector3(0.9, 0.199, 1.772), "wheel_r": Vector3(0.9, 0.252, -1.756),
+		"ws_f": Vector3(1, 0.93, 0.93), "ws_r": Vector3(1.062, 1.062, 1.062),
+		"engine": [Vector3(0, 0.927, 2.017), Vector3.ONE],
+		"spoiler": [Vector3(0, 1.088, -2.656), Vector3(1.126, 1.126, 1.126)],
+		"exhaust": [Vector3(0, 0.19, -2.639), Vector3(0.98, 1, 1)]},
+	"ac8": {"mesh": "Car 8",
+		"wheel_f": Vector3(1.046, 0.321, 1.949), "wheel_r": Vector3(1.046, 0.321, -1.831),
+		"ws_f": Vector3(1.15, 1.15, 1.15), "ws_r": Vector3(1.15, 1.15, 1.15),
+		"engine": [Vector3(0, 1.539, 2.281), Vector3.ONE],
+		"spoiler": [Vector3(0, 2.473, -2.597), Vector3(1.007, 1.046, 1.046)],
+		"exhaust": [Vector3(-0.018, 0.32, -2.846), Vector3(1.085, 1, 1)]},
+}
+
 ## БАЗОВЫЕ идентификаторы машин (без цвета) — порядок сетки гаража:
 ## сперва 3 стартовые, дальше по порядку открытия (GameState.CAR_UNLOCKS).
 const CAR_IDS: Array[String] = [
 	"vz01", "vz02", "vz21",
-	"vz03", "vz04", "vz05", "vz06", "vz07", "vz05r", "vz08", "vz09",
-	"vz099", "gz21", "gz24", "vz31",
-	"fastback", "safari", "chevelle", "godfather", "lemans", "superbird",
-	"dragster", "diablo",
+	"vz03", "vz04", "vz05", "ac1", "vz06", "vz07", "ac2", "vz05r", "vz08",
+	"ac3", "vz09", "vz099", "ac4", "gz21", "gz24", "ac5", "vz31",
+	"fastback", "ac6", "safari", "chevelle", "ac7", "godfather", "lemans",
+	"ac8", "superbird", "dragster", "diablo",
 ]
 
 
-# ---- Скины: разбор и сборка id вида "vz01_red" ----
+# ---- Скины: разбор и сборка id ----
+# Советский: "vz01_red" (база_цвет). Аркадный: "ac3-yellow2-g1-w5-e3-s0-x2-k4-l1"
+# (база-краска оттенок-металлик-колёса-мотор-спойлер-выхлоп-наклейка-полоса);
+# пропущенные части — из ARCADE_DEFAULT. Полный id уезжает в сетевой hello
+# и определяет визуал у соперников.
 
-## База полного id: "vz01_red" → "vz01"; id без цвета возвращается как есть.
+static func is_arcade(base: String) -> bool:
+	return ARCADE_IDS.has(base)
+
+
+## База полного id: "vz01_red" → "vz01", "ac3-…" → "ac3"; id без
+## суффиксов возвращается как есть.
 static func base_id(id: String) -> String:
+	var dash := id.find("-")
+	if dash > 0 and ARCADE_IDS.has(id.substr(0, dash)):
+		return id.substr(0, dash)
 	var cut := id.rfind("_")
 	if cut > 0 and SOVIET_COLORS.has(id.substr(cut + 1)):
 		return id.substr(0, cut)
@@ -71,24 +187,42 @@ static func base_id(id: String) -> String:
 
 ## Цвет полного id: "vz01_red" → "red"; нет суффикса — цвет по умолчанию.
 static func color_of_id(id: String) -> String:
+	var base := base_id(id)
+	if is_arcade(base):
+		return String(arcade_parse(id)["color"])
 	var cut := id.rfind("_")
 	if cut > 0 and SOVIET_COLORS.has(id.substr(cut + 1)):
 		return id.substr(cut + 1)
-	return default_color(base_id(id))
+	return default_color(base)
 
 
-## Есть ли у машины скины-цвета (советский пак).
+## Есть ли у машины скины-цвета (советский и аркадный паки).
 static func has_skins(base: String) -> bool:
-	return SOVIET_IDS.has(base)
+	return SOVIET_IDS.has(base) or is_arcade(base)
+
+
+## Список цветов-скинов машины (пусто — скинов нет).
+static func colors_for(base: String) -> Array[String]:
+	if is_arcade(base):
+		return ARCADE_COLORS
+	if SOVIET_IDS.has(base):
+		return SOVIET_COLORS
+	var none: Array[String] = []
+	return none
 
 
 static func default_color(base: String) -> String:
 	return DEFAULT_COLORS.get(base, "red")
 
 
-## Полный id скина: база + цвет ("vz01" + "red" → "vz01_red").
-## Для машин без скинов цвет игнорируется.
+## Полный id скина: база + цвет ("vz01" + "red" → "vz01_red"; аркадная —
+## стоковая комплектация в этом цвете). Для машин без скинов цвет
+## игнорируется.
 static func skin_id(base: String, color: String) -> String:
+	if is_arcade(base):
+		var cfg := ARCADE_DEFAULT.duplicate()
+		cfg["color"] = color if ARCADE_COLORS.has(color) else default_color(base)
+		return arcade_id(base, cfg)
 	if not has_skins(base):
 		return base
 	if not SOVIET_COLORS.has(color):
@@ -96,18 +230,97 @@ static func skin_id(base: String, color: String) -> String:
 	return "%s_%s" % [base, color]
 
 
-## Пул для ботов: по одному СЛУЧАЙНОМУ цвету на каждую машину, перемешан.
-## Боты замков не знают — ездят на чём угодно (так заезд пёстрый, а
-## игрок видит будущие покупки вживую). RNG — СВОЙ: глобальный поток
-## randf/randi питает детерминированные регрессионные стенды, пул не
-## должен его сдвигать (TestWeapons ловил).
+## Собрать id аркадной машины из комплектации (ключи ARCADE_DEFAULT;
+## пропущенные — по умолчанию, значения зажимаются в допустимые).
+static func arcade_id(base: String, cfg: Dictionary) -> String:
+	var c := _clamp_cfg(cfg)
+	return "%s-%s%d-g%d-w%d-e%d-s%d-x%d-k%d-l%d" % [
+		base, c["color"], c["shade"], c["glitter"], c["wheel"], c["engine"],
+		c["spoiler"], c["exhaust"], c["sticker"], c["line"]]
+
+
+## Разобрать id аркадной машины в комплектацию (+ "base"). Битые и
+## пропущенные части — по умолчанию: чужой клиент с любым id не уронит.
+static func arcade_parse(id: String) -> Dictionary:
+	var cfg := ARCADE_DEFAULT.duplicate()
+	var parts := id.split("-")
+	cfg["base"] = parts[0]
+	for i in range(1, parts.size()):
+		var tok: String = parts[i]
+		if tok.is_empty():
+			continue
+		var key := tok[0]
+		var rest := tok.substr(1)
+		if i == 1:
+			# Краска: имя цвета + цифра оттенка ("yellow2").
+			var col := tok.rstrip("0123456789")
+			if ARCADE_COLORS.has(col):
+				cfg["color"] = col
+			var sh := tok.substr(col.length())
+			if sh.is_valid_int():
+				cfg["shade"] = int(sh)
+			continue
+		if not rest.is_valid_int():
+			continue
+		for name in ARCADE_KEYS:
+			if ARCADE_KEYS[name] == key:
+				cfg[name] = int(rest)
+	return _clamp_cfg(cfg)
+
+
+static func _clamp_cfg(cfg: Dictionary) -> Dictionary:
+	var c := ARCADE_DEFAULT.duplicate()
+	for k in cfg:
+		c[k] = cfg[k]
+	if not ARCADE_COLORS.has(c["color"]):
+		c["color"] = "red"
+	c["shade"] = clampi(int(c["shade"]), 1, 3)
+	c["glitter"] = clampi(int(c["glitter"]), 0, 1)
+	c["line"] = clampi(int(c["line"]), 0, 1)
+	c["wheel"] = clampi(int(c["wheel"]), 1, PART_COUNT)
+	for k in ["engine", "spoiler", "exhaust", "sticker"]:
+		c[k] = clampi(int(c[k]), 0, PART_COUNT)
+	return c
+
+
+## Ступень улучшения, нужная для детали с номером index в слоте slot:
+## 0 — сток (колёса №1; мотор/спойлер/выхлоп «нет»), дальше по три
+## варианта на ступень (1–3 → I, 4–6 → II, 7–10 → III; у колёс сдвиг
+## на один, т.к. №1 — стоковые).
+static func part_tier(slot: String, index: int) -> int:
+	var n := index - 1 if slot == "wheel" else index
+	if n <= 0:
+		return 0
+	return mini(3, floori((n - 1) / 3.0) + 1)
+
+
+## Пул для ботов: по одному СЛУЧАЙНОМУ цвету на каждую машину, перемешан;
+## аркадные — со случайной комплектацией (витрина тюнинга). Боты замков
+## не знают — ездят на чём угодно (так заезд пёстрый, а игрок видит
+## будущие покупки вживую). RNG — СВОЙ: глобальный поток randf/randi
+## питает детерминированные регрессионные стенды, пул не должен его
+## сдвигать (TestWeapons ловил).
 static func shuffled_bot_pool() -> Array[String]:
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
 	var out: Array[String] = []
 	for base in CAR_IDS:
-		out.append(skin_id(base,
-				SOVIET_COLORS[rng.randi_range(0, SOVIET_COLORS.size() - 1)]))
+		if is_arcade(base):
+			var cfg := {
+				"color": ARCADE_COLORS[rng.randi_range(0, ARCADE_COLORS.size() - 1)],
+				"shade": rng.randi_range(1, 3),
+				"glitter": rng.randi_range(0, 1),
+				"wheel": rng.randi_range(1, PART_COUNT),
+				"engine": rng.randi_range(0, PART_COUNT),
+				"spoiler": rng.randi_range(0, PART_COUNT),
+				"exhaust": rng.randi_range(0, PART_COUNT),
+				"sticker": rng.randi_range(0, PART_COUNT),
+				"line": rng.randi_range(0, 1),
+			}
+			out.append(arcade_id(base, cfg))
+		else:
+			out.append(skin_id(base,
+					SOVIET_COLORS[rng.randi_range(0, SOVIET_COLORS.size() - 1)]))
 	for i in range(out.size() - 1, 0, -1):   # Фишер–Йетс на своём RNG
 		var j := rng.randi_range(0, i)
 		var tmp := out[i]
@@ -123,6 +336,12 @@ static var _pack_cache: Dictionary = {}
 
 # Общий материал советского пака (текстура-палитра + эмиссия стёкол).
 static var _soviet_mat: StandardMaterial3D
+
+# Аркадный пак: имя узла → MeshInstance3D в распакованном Cars.fbx,
+# текстуры и материалы (общие, кэшируются по ключу).
+static var _arcade_nodes: Dictionary = {}
+static var _arcade_tex: Dictionary = {}
+static var _arcade_mats: Dictionary = {}
 
 
 static func _pack_src(path: String) -> Node:
@@ -171,14 +390,12 @@ static func _soviet_material() -> StandardMaterial3D:
 
 ## Собирает визуал машины car_id: Node3D с деталями, отцентрованный,
 ## носом вперёд (-Z), длиной target_length метров, низом на base_y.
-## car_id может нести цвет ("vz01_red"); без цвета — цвет по умолчанию.
-## variant — номер слота для общих GLB-паков (сейчас не используется).
-## Вернёт null, если машина не нашлась.
+## car_id может нести цвет ("vz01_red") или комплектацию ("ac3-…");
+## без них — цвет по умолчанию / сток. Вернёт null, если машина не нашлась.
 static func build(
 	car_id: String,
 	target_length := 3.2,
-	base_y := -0.35,
-	variant := 0
+	base_y := -0.35
 ) -> Node3D:
 	var t0 := Time.get_ticks_msec()
 	var id := car_id.to_lower()
@@ -192,11 +409,8 @@ static func build(
 	elif SINGLE_CAR_PATHS.has(base):
 		model = _build_single(
 				String(SINGLE_CAR_PATHS[base]), base, target_length, base_y)
-	else:
-		for path in GLB_PATHS:
-			model = _build_from(path, base, target_length, base_y, variant)
-			if model:
-				break
+	elif is_arcade(base):
+		model = _build_arcade(arcade_parse(id), id, target_length, base_y)
 	if model:
 		var dt := Time.get_ticks_msec() - t0
 		if dt > 100:
@@ -306,91 +520,185 @@ static func _collect_meshes(
 		_collect_meshes(child, t, out)
 
 
-static func _build_from(
-	glb_path: String,
-	car_id: String,
-	target_length: float,
-	base_y: float,
-	variant: int
-) -> Node3D:
-	# Пак из кэша (см. _pack_src): src ЖИВЁТ между вызовами, освобождать
-	# и модифицировать его нельзя — только читать и duplicate() детали.
-	var src := _pack_src(glb_path)
-	if src == null:
+# ---- Аркадный конструктор ----
+
+## Меш детали по имени узла в Cars.fbx ("Car 3", "Wheel 7"…); null — нет.
+static func _arcade_mesh(name: String) -> Mesh:
+	if _arcade_nodes.is_empty():
+		var src := _pack_src(ARCADE_PATH)
+		if src == null:
+			return null
+		var items: Array[Dictionary] = []
+		_collect_meshes(src, Transform3D.IDENTITY, items)
+		for it in items:
+			_arcade_nodes[String((it["node"] as Node).name)] = it["node"]
+	var mi: MeshInstance3D = _arcade_nodes.get(name)
+	return mi.mesh if mi else null
+
+
+## Текстура пака как ImageTexture (см. грабли в _soviet_material: 2D-импорт
+## в слоте материала биндится ненадёжно — перегоняем в ImageTexture).
+static func _arcade_texture(file: String) -> ImageTexture:
+	if not _arcade_tex.has(file):
+		var t: Texture2D = load(ARCADE_TEX + file)
+		_arcade_tex[file] = ImageTexture.create_from_image(t.get_image()) \
+				if t else null
+	return _arcade_tex[file]
+
+
+## Материал по ключу (кэш): "details" — палитра, "bottom" — днище,
+## "paint:<цвет><оттенок><металлик>" — краска, "sticker:<n>" — наклейка,
+## "line" — двойная полоса, "hidden" — невидимая поверхность.
+static func _arcade_material(key: String) -> StandardMaterial3D:
+	if _arcade_mats.has(key):
+		return _arcade_mats[key]
+	var m := StandardMaterial3D.new()
+	if key == "details":
+		m.albedo_texture = _arcade_texture("ColorPalette.png")
+		m.albedo_texture_force_srgb = true
+		m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+		m.roughness = 0.55
+		m.metallic_specular = 0.4
+	elif key == "bottom":
+		m.albedo_texture = _arcade_texture("Bottom.png")
+		m.albedo_texture_force_srgb = true
+		m.roughness = 0.9
+	elif key.begins_with("paint:"):
+		# "paint:yellow21" → цвет yellow, оттенок 2, металлик 1.
+		var spec := key.substr(6)
+		var col := spec.rstrip("0123456789")
+		var shade := int(spec.substr(col.length(), 1))
+		var glitter := spec.ends_with("1")
+		var shades: Array = ARCADE_PAINTS.get(col, ARCADE_PAINTS["red"])
+		m.albedo_color = shades[clampi(shade, 1, 3) - 1]
+		if glitter:
+			# «Металлик»: зеркальный блик и лёгкий лак поверх краски.
+			m.metallic = 0.85
+			m.roughness = 0.32
+			m.clearcoat_enabled = true
+			m.clearcoat = 0.6
+		else:
+			m.metallic = 0.0
+			m.roughness = 0.45
+			m.metallic_specular = 0.5
+	elif key.begins_with("sticker:"):
+		var n := int(key.substr(8))
+		var pair := floori((n - 1) / 2.0) * 2 + 1
+		m.albedo_texture = _arcade_texture("Stickers %d-%d.png" % [pair, pair + 1])
+		m.albedo_texture_force_srgb = true
+		# В файле две наклейки друг над другом: чётная — верхняя половина.
+		if n % 2 == 0:
+			m.uv1_offset = Vector3(0, 0.5, 0)
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+		m.alpha_scissor_threshold = 0.45
+		m.roughness = 0.5
+	elif key == "line":
+		m.albedo_color = Color(0.113, 0.113, 0.113)
+		m.roughness = 0.5
+	else:   # hidden — все пиксели отсекаются
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+		m.alpha_scissor_threshold = 0.5
+		m.albedo_color = Color(0, 0, 0, 0)
+	_arcade_mats[key] = m
+	return m
+
+
+## Экземпляр меша с материалами по именам поверхностей пака ("body",
+## "details", "bottom", "sticker", "sticker line"): body — краска paint_key.
+static func _arcade_part(mesh: Mesh, paint_key: String, sticker: int,
+		line: int) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	for i in mesh.get_surface_count():
+		var mat := mesh.surface_get_material(i)
+		var nm := mat.resource_name if mat else ""
+		var key := ""
+		match nm:
+			"body": key = paint_key
+			"details": key = "details"
+			"bottom": key = "bottom"
+			"sticker": key = "sticker:%d" % sticker if sticker > 0 else "hidden"
+			"sticker line": key = "line" if line > 0 else "hidden"
+			_: key = "details"
+		mi.set_surface_override_material(i, _arcade_material(key))
+	return mi
+
+
+## Аркадная машина из комплектации cfg (arcade_parse): кузов + 4 колеса
+## в пивотах (крутятся/рулятся, как у советских) + мотор/спойлер/выхлоп
+## по слотам кузова. Все размеры — в единицах пака, потом общий масштаб
+## по длине КУЗОВА (детали на длину не влияют, иначе выхлоп-ракета
+## укоротил бы машину).
+static func _build_arcade(cfg: Dictionary, car_id: String,
+		target_length: float, base_y: float) -> Node3D:
+	var base: String = cfg.get("base", "")
+	if not ARCADE_BODIES.has(base):
 		return null
-
-	# Слоты, где стоит деталь с именем машины (может быть несколько рядов).
-	var needle := "_%s_" % car_id
-	var slots: Array[Vector3] = []
-	for child in src.get_children():
-		if child is MeshInstance3D \
-				and String(child.name).to_lower().begins_with(needle) \
-				and not slots.has(child.position):
-			slots.append(child.position)
-	if slots.is_empty():
-		return null   # src кэширован — не освобождаем
-	slots.sort_custom(func(a: Vector3, b: Vector3) -> bool: return a.z > b.z)
-	var slot: Vector3 = slots[clampi(variant, 0, slots.size() - 1)]
-
-	# Собираем все детали слота; AABB — с учётом поворота узла (Z-up-паки).
+	var geo: Dictionary = ARCADE_BODIES[base]
+	var body_mesh := _arcade_mesh(String(geo["mesh"]))
+	var wheel_mesh := _arcade_mesh("Wheel %d" % int(cfg["wheel"]))
+	if body_mesh == null or wheel_mesh == null:
+		return null
+	var paint := "paint:%s%d%d" % [cfg["color"], cfg["shade"], cfg["glitter"]]
 	var container := Node3D.new()
 	container.name = "CarModel_" + car_id
-	var parts: Array[Dictionary] = []
-	var combined := AABB()
-	var front_z := 0.0
-	var first := true
-	for child in src.get_children():
-		if child is MeshInstance3D and child.position.distance_to(slot) < 0.01:
-			var copy: MeshInstance3D = child.duplicate()
-			copy.position = Vector3.ZERO
-			var aabb: AABB = copy.transform * copy.mesh.get_aabb()
-			combined = aabb if first else combined.merge(aabb)
-			first = false
-			parts.append({
-				"copy": copy,
-				"aabb": aabb,
-				"is_wheel": String(copy.name).to_lower().contains("wheel"),
-			})
-			if String(copy.name).to_lower().contains("wheel_front"):
-				front_z = aabb.get_center().z
 
-	var s := target_length / combined.size.z
-	var flipped := front_z > 0.0  # модель смотрит в +Z — надо развернуть
+	var body := _arcade_part(body_mesh, paint, int(cfg["sticker"]), int(cfg["line"]))
+	body.name = "Body"
+	container.add_child(body)
+	var body_aabb := body_mesh.get_aabb()
+	var combined := body_aabb
+	var s := target_length / body_aabb.size.z
 
-	# Колёса оборачиваем в пивоты по центру ступицы, чтобы их можно было
-	# крутить (spin вокруг X пивота) и поворачивать рулём (вокруг Y).
-	for p in parts:
-		var copy: MeshInstance3D = p["copy"]
-		if p["is_wheel"]:
-			var hub: Vector3 = (p["aabb"] as AABB).get_center()
-			var pivot := Node3D.new()
-			pivot.name = "WheelPivot_" + copy.name
-			pivot.position = hub
-			copy.position = -hub
-			pivot.add_child(copy)
-			pivot.set_meta("wheel_radius", (p["aabb"] as AABB).size.y * 0.5 * s)
-			pivot.set_meta("is_front",
-					String(copy.name).to_lower().contains("front"))
-			# При развороте контейнера на PI локальная ось X смотрит
-			# в другую сторону — знак вращения колёс меняется.
-			pivot.set_meta("spin_sign", -1.0 if flipped else 1.0)
-			container.add_child(pivot)
-		else:
-			container.add_child(copy)
+	# Колёса: меш в файле сделан для одной стороны (торчит наружу по x);
+	# на другую сторону — разворот на PI вокруг Y, как в префабе пака.
+	var wheel_aabb := wheel_mesh.get_aabb()
+	var mesh_side := signf(wheel_aabb.get_center().x)
+	if mesh_side == 0.0:
+		mesh_side = 1.0
+	for spec in [[1, true], [-1, true], [1, false], [-1, false]]:
+		var side: int = spec[0]
+		var front: bool = spec[1]
+		var pos: Vector3 = geo["wheel_f"] if front else geo["wheel_r"]
+		pos.x = absf(pos.x) * side
+		var ws: Vector3 = geo["ws_f"] if front else geo["ws_r"]
+		var pivot := Node3D.new()
+		pivot.name = "WheelPivot_%s%s" % ["f" if front else "r", "r" if side > 0 else "l"]
+		pivot.position = pos
+		var wheel := _arcade_part(wheel_mesh, paint, 0, 0)
+		wheel.name = "Wheel"
+		var rot := Basis.IDENTITY if float(side) == mesh_side \
+				else Basis(Vector3.UP, PI)
+		wheel.transform = Transform3D(rot.scaled(ws), Vector3.ZERO)
+		pivot.add_child(wheel)
+		pivot.set_meta("wheel_radius", wheel_aabb.size.y * 0.5 * ws.y * s)
+		pivot.set_meta("is_front", front)
+		pivot.set_meta("spin_sign", -1.0)   # контейнер развёрнут на PI
+		container.add_child(pivot)
+		combined = combined.merge(Transform3D(rot.scaled(ws), pos) * wheel_aabb)
 
+	# Детали по слотам: индекс 0 — слот пуст.
+	for slot in ["engine", "spoiler", "exhaust"]:
+		var idx := int(cfg[slot])
+		if idx <= 0:
+			continue
+		var mesh := _arcade_mesh("%s %d" % [slot.capitalize(), idx])
+		if mesh == null:
+			continue
+		var place: Array = geo[slot]
+		var part := _arcade_part(mesh, paint, 0, 0)
+		part.name = slot.capitalize()
+		part.transform = Transform3D(Basis.IDENTITY.scaled(place[1]), place[0])
+		container.add_child(part)
+
+	# Нос кузова в +Z — разворот на PI, как у одиночных файлов; центр по
+	# кузову, низ — по колёсам (они ниже днища).
+	var center := body_aabb.get_center()
 	container.scale = Vector3.ONE * s
-	var center := combined.get_center()
-	if flipped:
-		container.rotation.y = PI
-		container.position = Vector3(
-			center.x * s,
-			base_y - combined.position.y * s,
-			center.z * s
-		)
-	else:
-		container.position = Vector3(
-			-center.x * s,
-			base_y - combined.position.y * s,
-			-center.z * s
-		)
+	container.rotation.y = PI
+	container.position = Vector3(
+		center.x * s,
+		base_y - combined.position.y * s,
+		center.z * s
+	)
 	return container

@@ -31,7 +31,7 @@ func _physics_process(_delta: float) -> void:
 			_dist_when_placed = track.distance_from_axis(outside)
 			print("placed outside wall: dist_to_axis=%.2f (порог %.2f)" % [
 				_dist_when_placed,
-				half + load("res://scripts/Main.gd").OFFTRACK_MARGIN])
+				half + track.offtrack_margin])
 		240:  # ~4 секунды при 60 Гц — авто-возврат должен был сработать
 			var dist := track.distance_from_axis(_main._car.global_position)
 			print("OFFTRACK TEST: %s (dist_to_axis=%.2f)" % [

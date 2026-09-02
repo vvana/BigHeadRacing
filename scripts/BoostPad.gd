@@ -31,10 +31,14 @@ func _ready() -> void:
 	add_child(col)
 
 	# Косметика не для сервера (headless-рендер сыпет «Parameter m is null»).
-	if not Net.is_server():
+	# Сетевой слой — по пути, а не по имени автолоада: в стендах --script
+	# автолоадов нет, и упоминание Net валило компиляцию TrackBuilder
+	# (test_curve, check_axis_jump, dump_profile).
+	var net: Node = get_node_or_null("/root/Net")
+	if net == null or not net.is_server():
 		_build_visual()
 
-	if Net.is_client():
+	if net != null and net.is_client():
 		set_deferred("monitoring", false)
 	else:
 		body_entered.connect(_on_body)
@@ -74,8 +78,12 @@ func _build_visual() -> void:
 
 
 func _on_body(body: Node3D) -> void:
-	var car := body as Car
-	if car == null or not car.alive or car.is_ghost():
+	# Без имени класса Car: стенды --script компилируют TrackBuilder без
+	# автолоадов, а Car ссылается на Net — утиная типизация вместо каста.
+	if not body.has_method("apply_boost"):
+		return
+	var car = body
+	if not car.alive or car.is_ghost():
 		return
 	var id := car.get_instance_id()
 	var now := Time.get_ticks_msec() / 1000.0

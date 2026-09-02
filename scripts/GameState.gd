@@ -14,32 +14,74 @@ var selected_car_id := "vz01_red"
 # цен из ЭКОНОМИКА.md (разделы 3–4). Скины-цвета бесплатны у купленной
 # машины. Куплённое — в профиле (owned_cars), цвета — там же (car_colors).
 const FREE_CARS: Array[String] = ["vz01", "vz02", "vz21"]
-## База → Vector2i(уровень открытия, цена в монетах).
+## База → Vector2i(уровень открытия, цена в монетах). 28 платных машин:
+## почти по одной на уровень со 2-го по 30-й (ЭКОНОМИКА.md, раздел 4);
+## аркадные конструкторы (ac1..ac8) рассыпаны по всей лестнице — тюнинг
+## виден с 5-го уровня.
 const CAR_UNLOCKS := {
 	"vz03": Vector2i(2, 600),
 	"vz04": Vector2i(3, 1200),
 	"vz05": Vector2i(4, 2000),
-	"vz06": Vector2i(5, 3000),
-	"vz07": Vector2i(6, 4500),
-	"vz05r": Vector2i(7, 6500),
-	"vz08": Vector2i(8, 9000),
-	"vz09": Vector2i(9, 12000),
-	"vz099": Vector2i(10, 15000),
-	"gz21": Vector2i(12, 19000),
-	"gz24": Vector2i(14, 24000),
-	"vz31": Vector2i(16, 29000),
-	"fastback": Vector2i(18, 35000),
-	"safari": Vector2i(20, 42000),
-	"chevelle": Vector2i(21, 46000),
-	"godfather": Vector2i(22, 50000),
-	"lemans": Vector2i(24, 59000),
-	"superbird": Vector2i(26, 69000),
-	"dragster": Vector2i(28, 80000),
-	"diablo": Vector2i(30, 92000),
+	"ac1": Vector2i(5, 3000),
+	"vz06": Vector2i(6, 4000),
+	"vz07": Vector2i(7, 5500),
+	"ac2": Vector2i(8, 7000),
+	"vz05r": Vector2i(9, 9000),
+	"vz08": Vector2i(10, 11000),
+	"ac3": Vector2i(11, 13500),
+	"vz09": Vector2i(12, 16000),
+	"vz099": Vector2i(13, 19000),
+	"ac4": Vector2i(14, 22000),
+	"gz21": Vector2i(15, 25000),
+	"gz24": Vector2i(16, 29000),
+	"ac5": Vector2i(17, 33000),
+	"vz31": Vector2i(18, 37000),
+	"fastback": Vector2i(19, 41000),
+	"ac6": Vector2i(20, 46000),
+	"safari": Vector2i(21, 50000),
+	"chevelle": Vector2i(22, 55000),
+	"ac7": Vector2i(23, 60000),
+	"godfather": Vector2i(24, 65000),
+	"lemans": Vector2i(25, 70000),
+	"ac8": Vector2i(26, 76000),
+	"superbird": Vector2i(27, 82000),
+	"dragster": Vector2i(28, 88000),
+	"diablo": Vector2i(30, 95000),
 }
 
 var owned_cars: Array = []   # купленные базы (стартовые тут не хранятся)
 var car_colors := {}         # база → выбранный цвет скина
+
+# ---- Улучшения машин: 4 слота × 3 ступени (ЭКОНОМИКА.md, раздел 5) ----
+# Каждая машина — четыре слота: мотор (разгон), колёса (сцепление и руль),
+# спойлер (потолок скорости), выхлоп (длительность ускорения). В каждом
+# слоте три ступени; ступень открывается уровнем игрока и покупается за
+# процент от цены машины (у стартовых — от условной FREE_CAR_BASE_PRICE).
+# У аркадных конструкторов ступень ещё и ОТКРЫВАЕТ детали на кузов: по
+# три варианта на ступень (CarModelLibrary.part_tier); у остальных машин
+# ступени — только характеристики.
+const UPGRADE_SLOTS: Array[String] = ["engine", "wheel", "spoiler", "exhaust"]
+const UPGRADE_STEPS := 3
+const UPGRADE_PRICE_PCT: Array[float] = [0.04, 0.06, 0.08]   # ступени I, II, III
+const UPGRADE_LEVELS: Array[int] = [2, 6, 12]                # с какого уровня
+const FREE_CAR_BASE_PRICE := 1000
+## Прибавка одной ступени к характеристике слота (множитель 1 + k·ступень).
+const UPGRADE_EFFECT := {
+	"engine": 0.04, "wheel": 0.04, "spoiler": 0.02, "exhaust": 0.10,
+}
+
+# ---- Косметика аркадных машин (раздел 7а): пакеты на машину ----
+# «Наклейки» открывают все 10 наклеек и двойную полосу, «Металлик» —
+# металлик-версию всех 36 красок. Сами краски (12 цветов × 3 оттенка)
+# бесплатны, как цвета советских машин.
+const PACK_STICKERS := "stickers"
+const PACK_METALLIC := "metallic"
+const PACK_PCT := {PACK_STICKERS: 0.20, PACK_METALLIC: 0.40}
+const PACK_MIN := {PACK_STICKERS: 300, PACK_METALLIC: 600}
+
+var car_upgrades := {}   # база → {слот: ступень 0..3}
+var car_tuning := {}     # аркадная база → комплектация (ключи ARCADE_DEFAULT)
+var car_packs := {}      # база → {пакет: true}
 
 ## Вид трассы ближайшего заезда (TrackBuilder.KINDS). Оффлайн выбирается
 ## случайно при старте из гаража; по сети сюда пишет _rx_track (вид диктует
@@ -111,6 +153,10 @@ const AD_COOLDOWN := 600.0      # секунд отдыха после пары 
 var _ads_in_pair := 0           # роликов текущей пары уже досмотрено
 var _ad_pair_done_at := 0.0     # unix-время завершения последней пары
 
+# ---- Разовый подарок 1 000 000 монет (2026-09-02, себе и второму игроку) ----
+const GIFT_1M_AMOUNT := 1_000_000
+var _gift_1m_claimed := false
+
 
 func _ready() -> void:
 	var sel := ""
@@ -129,11 +175,25 @@ func _ready() -> void:
 		var colors: Variant = cf.get_value("profile", "car_colors", {})
 		if colors is Dictionary:
 			car_colors = colors
+		var ups: Variant = cf.get_value("profile", "car_upgrades", {})
+		if ups is Dictionary:
+			car_upgrades = ups
+		var tun: Variant = cf.get_value("profile", "car_tuning", {})
+		if tun is Dictionary:
+			car_tuning = tun
+		var packs: Variant = cf.get_value("profile", "car_packs", {})
+		if packs is Dictionary:
+			car_packs = packs
 		sel = str(cf.get_value("profile", "selected_car", ""))
+		_gift_1m_claimed = bool(cf.get_value("profile", "gift_1m_claimed", false))
 	# Восстановить выбор машины; пропавшая/некупленная база → стартовая.
 	if not CarModelLibrary.CAR_IDS.has(sel) or not car_owned(sel):
 		sel = FREE_CARS[0]
-	selected_car_id = CarModelLibrary.skin_id(sel, color_of(sel))
+	selected_car_id = full_id(sel)
+	if not _gift_1m_claimed:
+		_gift_1m_claimed = true
+		money += GIFT_1M_AMOUNT
+		_save_profile()
 
 
 ## Общая чистка имени: пробелы по краям и повторные внутри, длина NAME_MAX.
@@ -148,10 +208,7 @@ static func sanitize_name(n: String) -> String:
 ## Запомнить имя игрока (переживает перезапуск игры).
 func set_player_name(n: String) -> void:
 	player_name = sanitize_name(n)
-	var cf := ConfigFile.new()
-	cf.load(PROFILE_PATH)   # не затирать другие поля профиля
-	cf.set_value("profile", "player_name", player_name)
-	cf.save(PROFILE_PATH)
+	_save_profile()
 
 
 ## Имя для показа: пока не введено — просто «Игрок».
@@ -175,19 +232,13 @@ func platform_name() -> String:
 ## Запомнить выбранное число участников (переживает перезапуск игры).
 func set_race_size(n: int) -> void:
 	race_size = n
-	var cf := ConfigFile.new()
-	cf.load(PROFILE_PATH)   # не затирать другие поля профиля
-	cf.set_value("profile", "race_size", race_size)
-	cf.save(PROFILE_PATH)
+	_save_profile()
 
 
 ## Запомнить выбранный режим игры (гонка/футбол).
 func set_game_mode(m: String) -> void:
 	game_mode = m
-	var cf := ConfigFile.new()
-	cf.load(PROFILE_PATH)   # не затирать другие поля профиля
-	cf.set_value("profile", "game_mode", game_mode)
-	cf.save(PROFILE_PATH)
+	_save_profile()
 
 
 ## Начислить опыт и сразу сохранить профиль на диск. Каждый взятый уровень
@@ -244,40 +295,167 @@ func try_buy_car(base: String) -> bool:
 	if not try_spend(car_price(base)):
 		return false
 	owned_cars.append(base)
-	var cf := ConfigFile.new()
-	cf.load(PROFILE_PATH)   # не затирать другие поля профиля
-	cf.set_value("profile", "owned_cars", owned_cars)
-	cf.save(PROFILE_PATH)
+	_save_profile()
 	return true
 
 
 ## Выбранный цвет скина машины (не выбирался — цвет по умолчанию).
+## У аркадных цвет живёт в комплектации (car_tuning).
 func color_of(base: String) -> String:
+	if CarModelLibrary.is_arcade(base):
+		return str(tuning_of(base)["color"])
 	return str(car_colors.get(base, CarModelLibrary.default_color(base)))
 
 
 ## Запомнить цвет скина; если эта машина сейчас выбрана — перекрасить
 ## и выбор. Переживает перезапуск игры.
 func set_car_color(base: String, color: String) -> void:
+	if CarModelLibrary.is_arcade(base):
+		set_tuning(base, "color", color)
+		return
 	car_colors[base] = color
-	if CarModelLibrary.base_id(selected_car_id) == base:
-		selected_car_id = CarModelLibrary.skin_id(base, color)
-	var cf := ConfigFile.new()
-	cf.load(PROFILE_PATH)   # не затирать другие поля профиля
-	cf.set_value("profile", "car_colors", car_colors)
-	cf.set_value("profile", "selected_car",
-			CarModelLibrary.base_id(selected_car_id))
-	cf.save(PROFILE_PATH)
+	_refresh_selected(base)
+	_save_profile()
 
 
-## Выбрать машину (база): selected_car_id собирается с её текущим цветом.
-## Переживает перезапуск игры.
+## Полный id скина машины с её текущим цветом / комплектацией.
+func full_id(base: String) -> String:
+	if CarModelLibrary.is_arcade(base):
+		return CarModelLibrary.arcade_id(base, tuning_of(base))
+	return CarModelLibrary.skin_id(base, color_of(base))
+
+
+## Выбрать машину (база): selected_car_id собирается с её текущим цветом
+## и комплектацией. Переживает перезапуск игры.
 func select_car(base: String) -> void:
-	selected_car_id = CarModelLibrary.skin_id(base, color_of(base))
-	var cf := ConfigFile.new()
-	cf.load(PROFILE_PATH)   # не затирать другие поля профиля
-	cf.set_value("profile", "selected_car", base)
-	cf.save(PROFILE_PATH)
+	selected_car_id = full_id(base)
+	_save_profile()
+
+
+## Если base сейчас выбрана — пересобрать selected_car_id (цвет/детали).
+func _refresh_selected(base: String) -> void:
+	if CarModelLibrary.base_id(selected_car_id) == base:
+		selected_car_id = full_id(base)
+
+
+# ---- Улучшения: ступени слотов ----
+
+## Цена, от которой считаются улучшения и пакеты: цена машины, у
+## стартовых — условная FREE_CAR_BASE_PRICE.
+func price_base(base: String) -> int:
+	return car_price(base) if CAR_UNLOCKS.has(base) else FREE_CAR_BASE_PRICE
+
+
+## Купленная ступень слота (0..UPGRADE_STEPS).
+func upgrade_level(base: String, slot: String) -> int:
+	var ups: Dictionary = car_upgrades.get(base, {})
+	return clampi(int(ups.get(slot, 0)), 0, UPGRADE_STEPS)
+
+
+## Цена СЛЕДУЮЩЕЙ ступени слота (0 — всё куплено). Округлена до десятков.
+func upgrade_price(base: String, slot: String) -> int:
+	var lv := upgrade_level(base, slot)
+	if lv >= UPGRADE_STEPS:
+		return 0
+	return maxi(10, int(round(price_base(base) * UPGRADE_PRICE_PCT[lv] / 10.0)) * 10)
+
+
+## Уровень игрока, нужный для следующей ступени слота.
+func upgrade_unlock_level(base: String, slot: String) -> int:
+	var lv := upgrade_level(base, slot)
+	return UPGRADE_LEVELS[mini(lv, UPGRADE_STEPS - 1)]
+
+
+## Купить следующую ступень слота: нужна своя машина, уровень и монеты.
+func try_buy_upgrade(base: String, slot: String) -> bool:
+	if not car_owned(base) or not UPGRADE_SLOTS.has(slot):
+		return false
+	var lv := upgrade_level(base, slot)
+	if lv >= UPGRADE_STEPS or level_info().x < upgrade_unlock_level(base, slot):
+		return false
+	if not try_spend(upgrade_price(base, slot)):
+		return false
+	if not car_upgrades.has(base):
+		car_upgrades[base] = {}
+	car_upgrades[base][slot] = lv + 1
+	_save_profile()
+	return true
+
+
+## Множители характеристик по купленным ступеням (Car.apply_upgrades):
+## accel — мотор, grip — колёса, speed — спойлер, boost — выхлоп.
+func upgrade_multipliers(base: String) -> Dictionary:
+	return {
+		"accel": 1.0 + UPGRADE_EFFECT["engine"] * upgrade_level(base, "engine"),
+		"grip": 1.0 + UPGRADE_EFFECT["wheel"] * upgrade_level(base, "wheel"),
+		"speed": 1.0 + UPGRADE_EFFECT["spoiler"] * upgrade_level(base, "spoiler"),
+		"boost": 1.0 + UPGRADE_EFFECT["exhaust"] * upgrade_level(base, "exhaust"),
+	}
+
+
+# ---- Косметика: пакеты и комплектация аркадных машин ----
+
+func pack_owned(base: String, pack: String) -> bool:
+	var packs: Dictionary = car_packs.get(base, {})
+	return bool(packs.get(pack, false))
+
+
+func pack_price(base: String, pack: String) -> int:
+	var raw := price_base(base) * float(PACK_PCT.get(pack, 0.0))
+	return maxi(int(PACK_MIN.get(pack, 0)), int(round(raw / 10.0)) * 10)
+
+
+## Купить пакет косметики (наклейки / металлик) на свою машину.
+func try_buy_pack(base: String, pack: String) -> bool:
+	if not car_owned(base) or not PACK_PCT.has(pack) or pack_owned(base, pack):
+		return false
+	if not try_spend(pack_price(base, pack)):
+		return false
+	if not car_packs.has(base):
+		car_packs[base] = {}
+	car_packs[base][pack] = true
+	_save_profile()
+	return true
+
+
+## Комплектация аркадной машины (копия; пропущенное — сток, цвет — по
+## умолчанию для этой базы).
+func tuning_of(base: String) -> Dictionary:
+	var cfg: Dictionary = CarModelLibrary.ARCADE_DEFAULT.duplicate()
+	cfg["color"] = CarModelLibrary.default_color(base)
+	var saved: Dictionary = car_tuning.get(base, {})
+	for k in saved:
+		cfg[k] = saved[k]
+	return cfg
+
+
+## Можно ли поставить value в ключ key комплектации: деталь — куплена ли
+## её ступень, наклейки/полоса — пакет наклеек, металлик — пакет металлика;
+## цвет и оттенок свободны.
+func tuning_allowed(base: String, key: String, value: Variant) -> bool:
+	match key:
+		"color": return CarModelLibrary.ARCADE_COLORS.has(str(value))
+		"shade": return int(value) >= 1 and int(value) <= 3
+		"glitter": return int(value) == 0 or pack_owned(base, PACK_METALLIC)
+		"sticker", "line":
+			return int(value) == 0 or pack_owned(base, PACK_STICKERS)
+		"wheel", "engine", "spoiler", "exhaust":
+			return CarModelLibrary.part_tier(key, int(value)) \
+					<= upgrade_level(base, key)
+	return false
+
+
+## Поставить деталь/краску/наклейку (проверяет права, см. tuning_allowed);
+## если машина выбрана — обновляет и выбор. Переживает перезапуск.
+func set_tuning(base: String, key: String, value: Variant) -> bool:
+	if not CarModelLibrary.is_arcade(base) or not tuning_allowed(base, key, value):
+		return false
+	if not car_tuning.has(base):
+		car_tuning[base] = {}
+	car_tuning[base][key] = value
+	_refresh_selected(base)
+	_save_profile()
+	return true
 
 
 ## Опыт за место в заезде (place с единицы; хуже 4-го — как за 4-е).
@@ -338,13 +516,30 @@ func register_ad() -> int:
 	return AD_PAIR_REWARD
 
 
-## Сохранить копящиеся поля профиля (опыт, кошелёк, реклама), не затирая
-## остальные (имя, размер заезда, режим — у них свои сеттеры).
+## Сохранить профиль ЦЕЛИКОМ. Раньше каждый сеттер делал «load → одно поле
+## → save», и битый profile.cfg (load не OK) перезаписывался одним этим
+## полем — опыт, монеты и купленные машины пропадали. Теперь нечитаемый
+## файл откладывается в сторону (.broken), а на диск идёт полный набор.
 func _save_profile() -> void:
 	var cf := ConfigFile.new()
-	cf.load(PROFILE_PATH)
+	var err := cf.load(PROFILE_PATH)
+	if err != OK and err != ERR_FILE_NOT_FOUND:
+		var abs := ProjectSettings.globalize_path(PROFILE_PATH)
+		DirAccess.copy_absolute(abs, abs + ".broken")
+		cf = ConfigFile.new()
 	cf.set_value("profile", "xp", xp)
 	cf.set_value("profile", "money", money)
 	cf.set_value("profile", "ads_in_pair", _ads_in_pair)
 	cf.set_value("profile", "ad_pair_done_at", _ad_pair_done_at)
+	cf.set_value("profile", "player_name", player_name)
+	cf.set_value("profile", "race_size", race_size)
+	cf.set_value("profile", "game_mode", game_mode)
+	cf.set_value("profile", "owned_cars", owned_cars)
+	cf.set_value("profile", "car_colors", car_colors)
+	cf.set_value("profile", "car_upgrades", car_upgrades)
+	cf.set_value("profile", "car_tuning", car_tuning)
+	cf.set_value("profile", "car_packs", car_packs)
+	cf.set_value("profile", "selected_car",
+			CarModelLibrary.base_id(selected_car_id))
+	cf.set_value("profile", "gift_1m_claimed", _gift_1m_claimed)
 	cf.save(PROFILE_PATH)

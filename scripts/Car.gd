@@ -38,7 +38,6 @@ extends RigidBody3D
 @export_group("Бой")
 # Длительности эффектов оружия, с.
 @export var ghost_time := 2.0           # «призрак» после уничтожения
-@export var freeze_duration := 3.0      # замедление от ледышки
 @export var boost_duration := 2.5      # ускорение
 @export var slip_duration := 2.6        # занос от масляного пятна
 @export var slip_grip := 0.15           # сцепление на масле (обычное 14)
@@ -126,6 +125,14 @@ var _snap_vel := Vector3.ZERO
 var _snap_age := 0.0
 var _snap_seen := false
 var _snap_stamp := -1.0   # тик ЧАСОВ АВТОРА состояния (сервер/владелец)
+# Предыдущий снимок (протокол 18): сервер прикладывает его к текущему
+# историей в _rx_state — потерянный пакет восстанавливается из следующего.
+var _snap_prev_pos := Vector3.ZERO
+var _snap_prev_rot := Quaternion.IDENTITY
+var _snap_prev_vel := Vector3.ZERO
+var _snap_prev_stamp := -1.0
+# Модель (CarModel) — кэш ссылки, чтобы не искать узел по имени каждый кадр.
+var _model: Node3D = null
 # Мои недавние ЛОКАЛЬНЫЕ рикошеты о марионеток: instance id -> ticks_msec.
 # Приехавший следом толчок-событие (_rx_fx SHOVE) о том же контакте
 # отбрасывается — иначе при тёрке бок-о-бок машину било бы дважды (свой
@@ -182,7 +189,9 @@ var _beams: Array[SpotLight3D] = []
 var _lamps: Array[MeshInstance3D] = []
 
 var _grounded_wheels := 0
-var _can_jump := true
+# Откат прыжка, с. Таймер-поле: прежний SceneTreeTimer с лямбдой на self
+# срабатывал по уже освобождённой машине (перезапуск заезда).
+var _jump_cd := 0.0
 var _wall_align_time := 0.0     # окно доворота после касания стены, с
 var _wall_near := false         # кузов у грани ограждения (аналитически)
 var _wall_body: Node3D = null   # тело стен, с которым снято столкновение
@@ -514,8 +523,12 @@ func _build_ice_shell() -> void:
 ## Клуб — билборд с мультяшной текстурой облачка (Epic Toon FX, атлас
 ## 2×2: каждой частице достаётся случайный кадр — клубы разной формы).
 ## Случайный поворот и рост клуба со временем жизни.
+const SMOKE_TEX: Texture2D = preload("res://assets/fx/smoke_cloud_2x2.png")
+const FIRE_TEX: Texture2D = preload("res://assets/fx/fire_6x3.png")
+
+
 func _build_smoke() -> void:
-	var tex: Texture2D = load("res://assets/fx/smoke_cloud_2x2.png")
+	var tex: Texture2D = SMOKE_TEX
 	# Клуб рождается небольшим, быстро набухает и слегка дорастает.
 	var growth := Curve.new()
 	growth.add_point(Vector2(0.0, 0.4))
@@ -578,7 +591,7 @@ func _build_smoke() -> void:
 ## листается по жизни — пламя «пляшет»). Аддитивное смешивание оставлено:
 ## перекрывающиеся языки высветляются до жёлто-белого и «светятся».
 func _build_boost_flame() -> void:
-	var tex: Texture2D = load("res://assets/fx/fire_6x3.png")
+	var tex: Texture2D = FIRE_TEX
 
 	var shrink := Curve.new()
 	shrink.add_point(Vector2(0.0, 1.0))
@@ -786,6 +799,7 @@ func _physics_process(delta: float) -> void:
 			linear_velocity.z = 0.0
 		angular_velocity.y = lerpf(angular_velocity.y, 0.0, 10.0 * delta)
 	_jump_time = maxf(0.0, _jump_time - delta)
+	_jump_cd = maxf(0.0, _jump_cd - delta)
 	_bump_spin_time = maxf(0.0, _bump_spin_time - delta)
 	_protect_landing_speed(on_ground, delta)
 	if alive:
@@ -955,7 +969,10 @@ func _process(delta: float) -> void:
 	if _vis_on:
 		xf = _vis_prev.interpolate_with(
 				_vis_cur, Engine.get_physics_interpolation_fraction())
-	var model := get_node_or_null("CarModel") as Node3D
+	if _model == null or not is_instance_valid(_model) \
+			or _model.get_parent() != self:
+		_model = get_node_or_null("CarModel") as Node3D
+	var model := _model
 	if model != null:
 		if not model.top_level:
 			_vis_base = model.transform
@@ -1086,7 +1103,7 @@ func _bounce_off_cars() -> void:
 		away /= dist
 		# Контакт с машиной — честный источник боковых сил: кап боковых
 		# пинков (см. _physics_process) на это окно отключаем.
-		_ext_push_time = 0.3
+		_ext_push_time = maxf(_ext_push_time, 0.3)
 		# Пока корпуса соприкасаются — лёгкое расталкивание (7 м/с²):
 		# без него прижатые машины «слипались» и ехали вместе. Активный
 		# таран всё равно продавливает (движок даёт 15 м/с²).
@@ -1191,7 +1208,7 @@ func apply_net_shove(attacker: Car, dir: Vector3, closing: float,
 		_shove_rx[attacker.get_instance_id()] = float(Time.get_ticks_msec())
 	# Каппы те же, что у собственного рикошета: сближение ≤ 20 (толчок
 	# ≤ 8 м/с), закрутка в пределах ±3.
-	_ext_push_time = 0.3
+	_ext_push_time = maxf(_ext_push_time, 0.3)
 	apply_central_impulse(dir * clampf(closing, 0.0, 20.0) * 0.4 * mass)
 	if absf(spin) > 0.15:
 		angular_velocity.y = clampf(
@@ -1298,6 +1315,11 @@ func net_apply_snapshot(pos: Vector3, rot: Quaternion, vel: Vector3,
 	elif _snap_seen and pos.is_equal_approx(_snap_pos) \
 			and vel.is_equal_approx(_snap_vel):
 		return
+	if _snap_seen:
+		_snap_prev_pos = _snap_pos
+		_snap_prev_rot = _snap_rot
+		_snap_prev_vel = _snap_vel
+		_snap_prev_stamp = _snap_stamp
 	_snap_pos = pos
 	_snap_rot = rot
 	_snap_vel = vel
@@ -1637,6 +1659,7 @@ func net_make_local() -> void:
 	freeze = false
 	_snap_seen = false
 	_snap_stamp = -1.0
+	_snap_prev_stamp = -1.0
 	_buf.clear()
 	_play_t = -1.0
 	net_fire = false
@@ -1841,14 +1864,11 @@ func _drive(
 		apply_central_force(-right * side_speed * current_grip * mass * 0.1)
 
 		# Прыжок — фирменная механика Rock'n'Roll Racing.
-		if jumping and _can_jump:
+		if jumping and _jump_cd <= 0.0:
 			# Импульс разовый: mass * скорость (без 0.1 — это не сила за кадр).
 			apply_central_impulse(Vector3.UP * jump_impulse * mass)
 			_jump_time = 0.6
-			_can_jump = false
-			get_tree().create_timer(0.8).timeout.connect(
-				func() -> void: _can_jump = true
-			)
+			_jump_cd = 0.8
 	else:
 		_side_speed = 0.0  # в полёте колёса не скользят — дыма нет
 		# В полёте руль тоже работает: рысканье как на земле, но мягче.
@@ -1936,6 +1956,7 @@ func _wall_slide(delta: float) -> void:
 	var fwd := -global_transform.basis.z
 	fwd.y = 0.0
 	if fwd.length_squared() < 1e-6:
+		_wall_near = false
 		return
 	fwd = fwd.normalized()
 	var into_sign := signf(fwd.signed_angle_to(n, Vector3.UP))
@@ -1946,13 +1967,9 @@ func _wall_slide(delta: float) -> void:
 	# скорость), но не раньше — машина должна ВИЗУАЛЬНО КАСАТЬСЯ
 	# ограждения, когда подруливает вдоль него, а не отталкиваться от
 	# невидимой стенки в полуметре.
-	var reach := 0.0
-	var fwd_h := -global_transform.basis.z
-	fwd_h.y = 0.0
+	var reach := 1.5 * absf(fwd.dot(n))
 	var right_h := global_transform.basis.x
 	right_h.y = 0.0
-	if fwd_h.length_squared() > 1e-6:
-		reach += 1.5 * absf(fwd_h.normalized().dot(n))
 	if right_h.length_squared() > 1e-6:
 		reach += 0.85 * absf(right_h.normalized().dot(n))
 	# Полотно переменной ширины — грань ограждения берём в ТЕКУЩЕЙ точке
@@ -2155,7 +2172,6 @@ func _apply_suspension(_delta: float) -> void:
 
 		var query := PhysicsRayQueryParameters3D.create(start, end)
 		query.collision_mask = 1  # стены (слой 2) — не опора для колёс
-		query.exclude = [get_rid()]
 		var hit := space.intersect_ray(query)
 		if hit.is_empty():
 			continue
@@ -2490,6 +2506,9 @@ func _use_airstrike() -> void:
 	strike.target = target
 	strike.attacker = self
 	get_parent().add_child(strike)
+	# Клиентам — точки падения (протокол 18): копия у них больше не гадает.
+	if race != null and race.has_method("net_broadcast_airstrike"):
+		race.net_broadcast_airstrike(self, PackedVector3Array(strike._spots))
 
 
 ## Уничтожение (ракета/лазер/авиаудар): вспышка, машина тут же появляется
@@ -2876,6 +2895,21 @@ func _enemy_behind() -> bool:
 	return false
 
 
+# ---------- Улучшения ----------
+
+## Применить купленные улучшения (GameState.upgrade_multipliers): мотор —
+## разгон, колёса — сцепление и руль, спойлер — потолок скорости, выхлоп —
+## длительность ускорения. Зовётся один раз при спавне машины ИГРОКА
+## (боты ездят стоковыми). Множители — поверх текущих значений.
+func apply_upgrades(m: Dictionary) -> void:
+	engine_power *= float(m.get("accel", 1.0))
+	grip *= float(m.get("grip", 1.0))
+	steer_speed *= float(m.get("grip", 1.0))
+	steer_speed_min *= float(m.get("grip", 1.0))
+	max_speed *= float(m.get("speed", 1.0))
+	boost_duration *= float(m.get("boost", 1.0))
+
+
 # ---------- Визуал ----------
 
 ## Регистрирует пивоты колёс модели (создаёт CarModelLibrary.build).
@@ -2901,11 +2935,7 @@ func _animate_wheels(delta: float) -> void:
 	var forward := -global_transform.basis.z
 	var speed := linear_velocity.dot(forward)
 	var space := get_world_3d().direct_space_state
-	# Из луча исключаем все машины: кузов соперника рядом — не дорога,
-	# иначе колесо «вспрыгивало» на него.
-	var car_rids: Array[RID] = []
-	for node in get_tree().get_nodes_in_group("cars"):
-		car_rids.append((node as RigidBody3D).get_rid())
+	# Машины луч не ловит и так: они на слое 0b100, маска — 1 (дорога).
 	for pivot in _wheel_pivots:
 		var radius: float = pivot.get_meta("wheel_radius")
 		var sign_: float = pivot.get_meta("spin_sign")
@@ -2917,7 +2947,6 @@ func _animate_wheels(delta: float) -> void:
 		var query := PhysicsRayQueryParameters3D.create(
 				hub + Vector3.UP * 1.0, hub + Vector3.DOWN * 2.0)
 		query.collision_mask = 1  # стены — не дорога
-		query.exclude = car_rids
 		var hit := space.intersect_ray(query)
 		# След шины: в сильном заносе задние колёса чертят ленту по точке
 		# касания с дорогой (луч уже есть). Кончился занос/контакт — лента
@@ -2980,7 +3009,6 @@ func is_near_ground(max_dist := 1.4) -> bool:
 	var query := PhysicsRayQueryParameters3D.create(
 		global_position, global_position + Vector3.DOWN * max_dist)
 	query.collision_mask = 1  # стены — не «земля»
-	query.exclude = [get_rid()]
 	return not space.intersect_ray(query).is_empty()
 
 

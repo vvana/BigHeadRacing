@@ -10,9 +10,10 @@ const LAPS := 4
 # подключения ведёт бот.
 func _car_count() -> int:
 	return Net.race_size if Net.is_online() else GameState.race_size
-# Снимков состояния в секунду — с частотой физики. На машину уходит 43 байта,
-# на четыре — меньше 200, то есть ~10 КБ/с на клиента: для двух игроков это
-# ничто. А ровность движения от частоты зависит прямо: замер «насколько
+# Снимков состояния в секунду — с частотой физики. На машину уходит 49 байт
+# состояния + 44 байта истории (протокол 18): на восемь машин ~750 байт,
+# то есть ~45 КБ/с на клиента — для игры по сети немного. А ровность
+# движения от частоты зависит прямо: замер «насколько
 # пройденный за кадр путь сходится с присланной скоростью» (tools/test_net.gd)
 # даёт 5.0% при 30 снимках в секунду и 1.2% при 60 (эталон одиночной игры —
 # 0.3%). Игрок жаловался как раз на дёрганое движение, так что берём 60.
@@ -42,10 +43,6 @@ const BOTS_SHOW := 2.2
 # лобби, но догрузился уже после старта (см. _seat_joiner_at_tail): его
 # машину до этого вёл бот, и её место ему не отдаём.
 const JOIN_TAIL_GAP := 8.0
-# Полотно переменной ширины, поэтому порог вылета считается в точке машины:
-# полуширина здесь + 0.5 м (машина у самой стены отстоит от оси почти ровно
-# на полуширину, дальше — уже за ограждением).
-const OFFTRACK_MARGIN := 0.5
 const OFFTRACK_WAIT_PLAYER := 2.0
 const OFFTRACK_WAIT_AI := 1.0
 # Переворот: «верх» кузова завалился больше чем на ~70° от вертикали.
@@ -93,6 +90,12 @@ var _room_idle := 0.0               # комната: сколько секун�
 # скакала бы между ботом и стоящим на решётке новичком.
 var _late_slots := {}
 var _snap_accum := 0.0              # накопитель до следующего снимка
+# База меток тика (протокол 18). Метка едет во float32: целые точны лишь
+# до 2^24, и абсолютный номер кадра сервера, живущего сутками, через ~78 ч
+# аптайма сливал бы соседние тики в одно число — клиенты выбрасывали бы
+# снимки ботов как дубликаты. Считаем от старта сцены (она перезагружается
+# после каждого заезда).
+var _tick_base := 0
 var _net_lost := false              # клиент: связь пропала, уходим в гараж
 var _kicked := false                # клиент: сервер отказал (версии и т.п.)
 var _going_home := false            # клиент: комната молчит, едем к воротам
@@ -131,6 +134,14 @@ func net_loss_report() -> String:
 # Когда мы сами нарисовали свой лазер, не дожидаясь сервера (см.
 # _client_tick): эхо _rx_weapon_fx об этом же выстреле рисовать не надо.
 var _laser_predicted := -10.0
+# Клиент: прошлое отправленное состояние своей машины (см. _client_tick).
+var _pstate_prev := PackedFloat32Array()
+# Сервер: прошлый разосланный снимок — едет историей за текущим (_pack_state).
+var _xf_prev := PackedFloat32Array()
+# HUD: последние показанные числа — строки форматируем только при смене.
+var _hud_speed := -1
+var _hud_lap := -1
+var _hud_place := -1
 var _last_state_time := 0.0         # клиент: когда пришёл последний снимок
 # Диагностика потока снимков (см. _rx_state и tools/test_net.gd): сколько
 # снимков пришло, сумма и максимум интервалов между ними. Три сложения на
@@ -139,7 +150,6 @@ var _last_state_time := 0.0         # клиент: когда пришёл по
 var _state_seen := 0
 var _state_gap_sum := 0.0
 var _state_gap_max := 0.0
-var _state_gaps_big := 0        # сколько дыр потока длиннее 100 мс
 var _wd_last := 0                   # вачдог фризов: мс прошлого кадра физики
 # Вачдог-«между чем»: имя и мс последней пройденной точки кадра. Если между
 # двумя точками прошло >250 мс — печатаем, между какими: это делит фриз на
@@ -234,6 +244,7 @@ var _lead_flip_time := 0.0        # дебаунс смены лидерства
 
 
 func _ready() -> void:
+	_tick_base = Engine.get_physics_frames()
 	# Выделенный сервер: тот же Main, но без камеры, HUD и своей машины.
 	# Запуск: godot --headless --path . res://scenes/Main.tscn -- --server
 	if Net.wants_server() and not Net.is_online():
@@ -316,6 +327,10 @@ func _spawn_cars() -> void:
 		car.race = self
 		# На старте у каждого одно случайное оружие; дальше — боксы.
 		car.weapon = Weapons.random_weapon()
+		if is_p:
+			# Купленные улучшения выбранной машины (ЭКОНОМИКА.md, раздел 5).
+			car.apply_upgrades(GameState.upgrade_multipliers(
+					CarModelLibrary.base_id(GameState.selected_car_id)))
 		if not is_p:
 			# Лёгкий разброс характеристик, чтобы ИИ не ехали строем.
 			car.max_speed += randf_range(-1.2, 1.2)
@@ -404,7 +419,9 @@ func _set_car_model(car: Car, id: String) -> void:
 ## По сети стрелки у ВСЕХ соперников, включая ботов: бот не должен
 ## отличаться от живого игрока (просьба 01.09).
 func _attach_marker(index: int, rival := false) -> void:
-	if index < 0 or index >= _cars.size():
+	# Повторный welcome (hello идёт раз в секунду) вешал вторую стрелку, а
+	# первая, top_level, повисала в воздухе на месте последнего кадра.
+	if index < 0 or index >= _cars.size() or _cars[index].has_marker:
 		return
 	var marker := _build_player_marker(
 			Color(1.0, 0.55, 0.1) if rival else Color(0.15, 0.95, 0.25))
@@ -651,7 +668,12 @@ func _process(delta: float) -> void:
 			var m: Node3D = _rival_markers[slot]
 			m.global_position = _cars[slot].visual_origin() + Vector3.UP * bob
 	if _car and _speed_label:
-		_speed_label.text = str(int(_car.speed_kmh()))
+		# Строки HUD форматируем только при смене числа: set_text равные
+		# строки и так отсекает, а три формата в кадр делались впустую.
+		var spd := int(_car.speed_kmh())
+		if spd != _hud_speed:
+			_hud_speed = spd
+			_speed_label.text = str(spd)
 		if _car.weapon != _last_weapon:
 			_last_weapon = _car.weapon
 			if _car.weapon >= 0:
@@ -660,15 +682,19 @@ func _process(delta: float) -> void:
 			else:
 				_weapon_icon.texture = _slot_empty_tex
 				_weapon_name.text = "возьми бокс"
-		_lap_label.text = "КРУГ %d/%d" % [
-				clampi(_laps_done[_my_index()] + 1, 1, LAPS), LAPS]
-		_pos_label.text = "МЕСТО %d/%d" % [_player_place(), _cars.size()]
+		var lap := clampi(_laps_done[_my_index()] + 1, 1, LAPS)
+		if lap != _hud_lap:
+			_hud_lap = lap
+			_lap_label.text = "КРУГ %d/%d" % [lap, LAPS]
+		var place := _player_place()
+		if place != _hud_place:
+			_hud_place = place
+			_pos_label.text = "МЕСТО %d/%d" % [place, _cars.size()]
 		_tick_announcements(delta)
 		_pump_feed()
 
 	if Net.is_server():
-		# У сервера нет ни ввода, ни HUD — только автовозврат машин.
-		_check_recovery(delta)
+		# У сервера нет ни ввода, ни HUD; автовозврат машин — в _server_tick.
 		return
 
 	# Ввод опрашиваем напрямую (как езду в Car), а не через события —
@@ -1040,7 +1066,15 @@ func _setup_environment() -> void:
 ## Звёздная панорама космической трассы: тёмный сине-фиолетовый градиент,
 ## полоса «млечного пути» по диагонали, туманности и ~900 звёзд. Печётся
 ## один раз при старте заезда, зерно фиксировано.
+static var _space_sky_tex: ImageTexture = null
+
+
 func _space_sky() -> PanoramaSkyMaterial:
+	var mat := PanoramaSkyMaterial.new()
+	# Панорама детерминирована (зерно фиксировано) — печём один раз на процесс.
+	if _space_sky_tex != null:
+		mat.panorama = _space_sky_tex
+		return mat
 	const W := 1024
 	const H := 512
 	var rng := RandomNumberGenerator.new()
@@ -1050,8 +1084,9 @@ func _space_sky() -> PanoramaSkyMaterial:
 		# Вертикальный градиент: у зенита чернее, к «низу» чуть синее.
 		var t := float(py) / H
 		var base := Color(0.008 + 0.02 * t, 0.008 + 0.02 * t, 0.03 + 0.05 * t)
-		for px in W:
-			img.set_pixel(px, py, base)
+		# Строкой (fill_rect), а не по пикселю: полмиллиона set_pixel из
+		# GDScript давали секунды фриза на каждой загрузке космоса.
+		img.fill_rect(Rect2i(0, py, W, 1), base)
 	# Млечный путь: широкая полоса звёздной пыли волной через всю панораму.
 	for px in W:
 		var mid := H * 0.5 + sin(float(px) / W * TAU + 1.3) * H * 0.14
@@ -1097,8 +1132,8 @@ func _space_sky() -> PanoramaSkyMaterial:
 			img.set_pixel(x - 1, y, half)
 			img.set_pixel(x, y + 1, half)
 			img.set_pixel(x, y - 1, half)
-	var mat := PanoramaSkyMaterial.new()
-	mat.panorama = ImageTexture.create_from_image(img)
+	_space_sky_tex = ImageTexture.create_from_image(img)
+	mat.panorama = _space_sky_tex
 	return mat
 
 
@@ -1352,8 +1387,7 @@ func _on_peer_joined(_id: int, slot: int) -> void:
 	# и подсевший появлялся далеко впереди уже играющих — они друг друга
 	# даже не видели. Полумеры («сажать в хвост») тоже не годятся: гонка,
 	# в которой ты начал с чужого места и с чужим кругом, — не твоя гонка.
-	var late: bool = _net_started
-	if late:
+	if _net_started:
 		_late_slots[slot] = true
 	else:
 		_late_slots.erase(slot)
@@ -1367,8 +1401,6 @@ func _on_peer_joined(_id: int, slot: int) -> void:
 	if _net_started:
 		_rx_lobby.rpc(Net.slot_of_peer.size(), 0)
 		return
-	# Гонка ещё не началась — этот слот точно не «опоздавший».
-	_late_slots.erase(slot)
 	# Зашёл человек, пока лобби показывало ботов, — отменяем эту попытку
 	# старта: слот отдаём ему, а не боту (см. _start_with_bots).
 	if _starting:
@@ -1579,6 +1611,9 @@ func _start_with_bots() -> void:
 ## Сервер: раз в 1/SNAP_HZ рассылаем состояние всех машин.
 func _server_tick(delta: float) -> void:
 	_tick_lobby(delta)
+	# Автовозврат машин — в физике: ровный шаг, и не крутится с частотой
+	# незакапанного цикла headless-процесса, как было из _process.
+	_check_recovery(delta)
 	# Визитка в реестре заездов (Rooms): раз в секунду сообщаем, сколько
 	# у нас игроков и есть ли место новому, — по ней ворота и комнаты
 	# перенаправляют лишних игроков (_route_elsewhere).
@@ -1605,7 +1640,7 @@ func _server_tick(delta: float) -> void:
 		return
 	_snap_accum = 0.0
 	var packed := _pack_state()
-	_rx_state.rpc(packed[0], packed[1])
+	_rx_state.rpc(packed[0], packed[1], packed[2])
 
 
 ## Ожидание остальных игроков. Истекло — стартуем «по старинке»: свободные
@@ -1658,10 +1693,16 @@ func _client_tick(_delta: float) -> void:
 	# Раньше лазер отматывал на глазок 0.4 c, а снаряды не отматывались
 	# вовсе и «пролетали сквозь». Буфер теперь адаптивный (60-350 мс), так
 	# что догадка не годится — шлём измеренное.
-	_rx_pstate.rpc_id(1, PackedFloat32Array([
+	var cur := PackedFloat32Array([
 			p.x, p.y, p.z, q.x, q.y, q.z, q.w, v.x, v.y, v.z,
-			float(Engine.get_physics_frames()), _car.freeze_left(),
-			Car.net_buf_delay]))
+			float(Engine.get_physics_frames() - _tick_base), _car.freeze_left(),
+			Car.net_buf_delay])
+	# ИЗБЫТОЧНОСТЬ (протокол 18): к состоянию прикладываем ПРОШЛОЕ. Потери на
+	# канале почти все одиночные (замер 28.08), и пропавший пакет теперь
+	# восстанавливается из следующего — у сервера и, через историю снимка,
+	# у остальных не остаётся дыры в записи нашей машины.
+	_rx_pstate.rpc_id(1, cur + _pstate_prev)
+	_pstate_prev = cur
 	if not _car.controls_enabled:
 		return
 	if Input.is_action_just_pressed("fire") \
@@ -1688,9 +1729,21 @@ func _client_tick(_delta: float) -> void:
 ## в десятых секунды). Кватернион, а не базис: 4 числа вместо 9 и
 ## корректная интерполяция поворота.
 func _pack_state() -> Array:
+	var n := _cars.size()
 	var xf := PackedFloat32Array()
+	xf.resize(n * 11)
 	var flags := PackedByteArray()
-	for ci in _cars.size():
+	# ИСТОРИЯ (протокол 18): вслед за текущим состоянием каждой машины едет
+	# ПРОШЛОЕ — потерянный пакет восстанавливается из следующего, и дыра в
+	# записи клиента закрывается настоящими данными, а не гаданием. Для
+	# ботов это прошлый разосланный снимок, для марионеток — прошлое
+	# состояние владельца (см. ниже). Метка < 0 — «истории нет».
+	var hist := _xf_prev.duplicate()
+	if hist.size() != n * 11:
+		hist = PackedFloat32Array()
+		hist.resize(n * 11)
+		hist.fill(-1.0)
+	for ci in n:
 		var c: Car = _cars[ci]
 		var q := c.global_transform.basis.get_rotation_quaternion()
 		var p := c.global_position
@@ -1705,14 +1758,20 @@ func _pack_state() -> Array:
 		# пакета: у замороженной кинематики linear_velocity врёт.
 		# Боту метка — тик самого сервера: его состояния и рождаются по
 		# одному на тик.
-		var stamp := float(Engine.get_physics_frames())
+		var stamp := float(Engine.get_physics_frames() - _tick_base)
 		if c.net_role == Car.NetRole.PUPPET and c._snap_seen:
 			p = c._snap_pos
 			q = c._snap_rot
 			v = c._snap_vel
 			stamp = maxf(c._snap_stamp, 0.0)
-		xf.append_array(PackedFloat32Array([
-				p.x, p.y, p.z, q.x, q.y, q.z, q.w, v.x, v.y, v.z, stamp]))
+			# История марионетки — ПРОШЛОЕ состояние владельца, а не прошлый
+			# снимок: два пакета владельца за один наш тик раньше давали
+			# пропуск (пересылался только последний), теперь пропущенное
+			# уезжает следом.
+			if c._snap_prev_stamp >= 0.0:
+				_put_state(hist, ci, c._snap_prev_pos, c._snap_prev_rot,
+						c._snap_prev_vel, c._snap_prev_stamp)
+		_put_state(xf, ci, p, q, v, stamp)
 		flags.append(c.weapon + 1)
 		flags.append((1 if c.alive else 0) | (2 if c.is_ghost() else 0))
 		# ДЕЙСТВУЮЩИЙ эффект, а не _status_shown: тот обновляется лишь при
@@ -1730,7 +1789,25 @@ func _pack_state() -> Array:
 		# 28.08: «я еду первым, а на его экране — вторым»). У сервера все
 		# положения одного времени, поэтому места раздаёт он.
 		flags.append(clampi(_place_of(ci), 0, 255))
-	return [xf, flags]
+	_xf_prev = xf
+	return [xf, flags, hist]
+
+
+## Записать состояние машины ci в упакованный массив (11 float, см. выше).
+func _put_state(dst: PackedFloat32Array, ci: int, p: Vector3, q: Quaternion,
+		v: Vector3, stamp: float) -> void:
+	var o := ci * 11
+	dst[o] = p.x
+	dst[o + 1] = p.y
+	dst[o + 2] = p.z
+	dst[o + 3] = q.x
+	dst[o + 4] = q.y
+	dst[o + 5] = q.z
+	dst[o + 6] = q.w
+	dst[o + 7] = v.x
+	dst[o + 8] = v.y
+	dst[o + 9] = v.z
+	dst[o + 10] = stamp
 
 
 # ── клиент → сервер ──
@@ -1751,10 +1828,13 @@ func _rx_hello(car_id: String, proto: int, want_size := 4,
 		_rx_kick.rpc_id(id, "Версии игры не совпадают
 (у сервера %d, у тебя %d). Обнови игру: git pull." % [Net.PROTOCOL, proto])
 		# Рвём соединение с задержкой, чтобы сообщение успело дойти.
+		# Гость (без слота) с чужой версией тоже отключается — раньше он
+		# висел на соединении до самостоятельного выхода. Лямбда — на
+		# автолоаде Net, а не на этой сцене: её могут перезагрузить раньше.
 		get_tree().create_timer(0.5).timeout.connect(func() -> void:
-			if multiplayer.multiplayer_peer != null \
-					and Net.slot_of_peer.has(id):
-				multiplayer.multiplayer_peer.disconnect_peer(id))
+			if Net.multiplayer.multiplayer_peer != null \
+					and (Net.slot_of_peer.has(id) or Net.guests.has(id)):
+				Net.multiplayer.multiplayer_peer.disconnect_peer(id))
 		return
 	var slot: int = Net.slot_of_peer.get(id, -1)
 	# РАЗМЕР ЗАЕЗДА (4..8) задаёт ПЕРВЫЙ игрок пустого лобби: он один, гонка
@@ -1906,6 +1986,17 @@ func _rx_pstate(xf: PackedFloat32Array) -> void:
 	# поздоровался В ЭТОЙ сцене, его состояние устарело — выбрасываем.
 	if not _hello_done.has(slot):
 		return
+	# ПРОШЛОЕ состояние владельца (протокол 18, числа 14..26) — только если
+	# мы его не видели: потерянный пакет восстанавливается из следующего и
+	# уезжает историей в снимок (см. _pack_state).
+	if xf.size() >= 26 and car._snap_seen and xf[23] > car._snap_stamp \
+			and xf[23] - car._snap_stamp <= 120.0:
+		_apply_pstate(car, xf.slice(13, 26))
+	_apply_pstate(car, xf)
+
+
+## Применить одно состояние владельца (13 float, см. _client_tick).
+func _apply_pstate(car: Car, xf: PackedFloat32Array) -> void:
 	var pos := Vector3(xf[0], xf[1], xf[2])
 	var vel := Vector3(xf[7], xf[8], xf[9])
 	# Санитария клиент-авторитетных данных — сервер обязан не доверять
@@ -1913,7 +2004,7 @@ func _rx_pstate(xf: PackedFloat32Array) -> void:
 	# (за пределами мира, скорость много выше максимума машины) отравили
 	# бы марионетку и снимки ВСЕМ клиентам. Молча выбрасываем пакет.
 	if not (pos.is_finite() and vel.is_finite()) \
-			or pos.length() > 600.0 or vel.length() > 60.0:
+			or pos.length() > 600.0 or vel.length() > 90.0:
 		return
 	car.net_apply_snapshot(pos,
 			Quaternion(xf[3], xf[4], xf[5], xf[6]).normalized(), vel,
@@ -2037,8 +2128,8 @@ func _route_elsewhere(id: int, slot: int) -> bool:
 	_rx_kick.rpc_id(id, "Все заезды заняты — попробуй через минуту.")
 	# Рвём с задержкой, чтобы сообщение успело дойти (как при отказе версии).
 	get_tree().create_timer(0.5).timeout.connect(func() -> void:
-		if multiplayer.multiplayer_peer != null and Net.guests.has(id):
-			multiplayer.multiplayer_peer.disconnect_peer(id))
+		if Net.multiplayer.multiplayer_peer != null and Net.guests.has(id):
+			Net.multiplayer.multiplayer_peer.disconnect_peer(id))
 	return true
 
 
@@ -2097,6 +2188,10 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	car.freeze = false
 	car.net_role = Car.NetRole.OWNED
 	car.is_player = true
+	# Улучшения своей машины — как в оффлайне (_spawn_cars); только теперь,
+	# в момент, когда машина становится своей.
+	car.apply_upgrades(GameState.upgrade_multipliers(
+			CarModelLibrary.base_id(GameState.selected_car_id)))
 	# И ВСТАЁТ НА СВОЮ КЛЕТКУ РЕШЁТКИ. Пока мы ждали слот, она была
 	# марионеткой, и устаревший снимок (сервер мог поймать хвост _rx_pstate
 	# из сцены ПРОШЛОГО заезда — см. защиту в _rx_pstate) успевал увезти её
@@ -2131,8 +2226,6 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 		if rival == slot:
 			continue
 		_attach_marker(rival, true)
-		if _rival_markers.has(rival):
-			_rival_markers[rival].visible = true
 		if _minimap:
 			_minimap.rivals[rival] = true
 	# На карте — те же цвета: своя точка зелёная, соперники оранжевые.
@@ -2311,8 +2404,30 @@ func _rx_count(txt: String) -> void:
 ## (head-of-line blocking) — стандартная практика сетевых игр: развести
 ## высокочастотный поток и редкие надёжные события по каналам.
 @rpc("authority", "call_remote", "unreliable_ordered", 1)
-func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray) -> void:
+func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray,
+		hist := PackedFloat32Array()) -> void:
 	var now := Time.get_ticks_msec() / 1000.0
+	# Сначала ИСТОРИЯ — прошлые состояния из этого же пакета (протокол 18):
+	# только продолжение записи того же автора (метка новее последней и не
+	# дальше двух секунд). Текущее состояние ниже применяется всегда: смену
+	# автора (метка прыгнула назад) ловит net_apply_snapshot.
+	var filled := 0
+	for i in _cars.size():
+		var h := i * 11
+		if h + 10 >= hist.size():
+			break
+		var c := _cars[i]
+		var hs := hist[h + 10]
+		if c.net_role == Car.NetRole.OWNED or hs < 0.0 \
+				or hs <= c._snap_stamp or hs - c._snap_stamp > 120.0:
+			continue
+		c.net_apply_snapshot(Vector3(hist[h], hist[h + 1], hist[h + 2]),
+				Quaternion(hist[h + 3], hist[h + 4], hist[h + 5],
+						hist[h + 6]).normalized(),
+				Vector3(hist[h + 7], hist[h + 8], hist[h + 9]), hs)
+		# Закрытая дыра у машины с часами сервера — см. поправку буфера ниже.
+		if i < _slot_taken.size() and not _slot_taken[i]:
+			filled = 1
 	# Диагностика ровности потока (читает tools/test_net.gd). Считать
 	# приходы ОПРОСОМ из _physics_process нельзя: опрос идёт 60 раз в
 	# секунду, снимки — тоже, и два прихода между кадрами сливаются в один.
@@ -2344,30 +2459,25 @@ func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray) -> void:
 		# (см. Car.net_note_gap): рвёт последняя миля, и рвёт по-разному в
 		# разные минуты — фиксированные 0.35 c платили за худший случай всегда.
 		if Net.is_client():
-			Car.net_note_gap(gap)
+			# Буферу — дыра КАНАЛА: минус то, что закрыла история из этого же
+			# пакета (данные пришли, просто на пакет позже), и минус наш
+			# собственный фриз кадра (пакеты ждали в сокете, а не в пути —
+			# иначе компиляция шейдеров на 300 мс задирала буфер к потолку).
+			var own_stall := maxf(get_process_delta_time() - 1.0 / SNAP_HZ, 0.0)
+			Car.net_note_gap(maxf(gap - own_stall - filled / SNAP_HZ, 0.0))
 		# ЗАМЕР ПРИРОДЫ ПОТЕРЬ: сколько снимков подряд не дошло. Метка бота —
 		# часы сервера, поэтому разрыв меток и есть число пропавших. От этого
 		# распределения зависит, поможет ли избыточность (лечит потери) или
 		# нужен только буфер (лечит опоздания).
-		if _loss_probe:
-			var sv := -1.0
-			for i in _cars.size():
-				var lo := i * 11
-				if lo + 10 >= xf.size():
-					break
-				if i < _slot_taken.size() and not _slot_taken[i]:
-					sv = xf[lo + 10]
-					break
-			if sv >= 0.0:
-				if _loss_prev >= 0.0:
-					var miss := int(sv - _loss_prev) - 1
-					if miss > 0:
-						_loss_hist[miss] = int(_loss_hist.get(miss, 0)) + 1
-						_loss_total += miss
-					_loss_got += 1
-				_loss_prev = sv
+		if _loss_probe and srv >= 0.0:
+			if _loss_prev >= 0.0:
+				var miss := int(srv - _loss_prev) - 1
+				if miss > 0:
+					_loss_hist[miss] = int(_loss_hist.get(miss, 0)) + 1
+					_loss_total += miss
+			_loss_got += 1
+			_loss_prev = srv
 		if gap > 0.1:
-			_state_gaps_big += 1
 			var ticks := -1
 			if srv >= 0.0 and _srv_stamp_prev >= 0.0:
 				ticks = int(srv - _srv_stamp_prev)
@@ -2499,6 +2609,55 @@ func _rx_mine_fx(at: Vector3) -> void:
 	SparksFx.spawn(self, at + Vector3.UP * 0.3, 12.0)
 	FxKit.fire_burst(self, at + Vector3.UP * 0.2)
 	FxKit.scorch(self, at, 2.8)
+
+
+## Сервер: авиаудар — клиентам уезжают ТОЧКИ падения (зовёт Car._use_airstrike).
+func net_broadcast_airstrike(car: Car, spots: PackedVector3Array) -> void:
+	if not Net.is_server():
+		return
+	_rx_airstrike_fx.rpc(_cars.find(car), spots)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_airstrike_fx(idx: int, spots: PackedVector3Array) -> void:
+	if spots.is_empty():
+		return
+	var strike := Airstrike.new()
+	strike.inert = true
+	strike.track = _track
+	strike.target = _cars[idx] if idx >= 0 and idx < _cars.size() else null
+	strike.preset_spots = spots
+	add_child(strike)
+
+
+## Сервер: снаряд погас (попал / о стену) — клиентам гасить инертную копию в
+## этой точке, иначе она летела бы дальше сквозь уже поражённую машину
+## (зовёт Projectile._boom).
+func net_broadcast_proj_boom(at: Vector3, freeze: bool) -> void:
+	if not Net.is_server():
+		return
+	_rx_proj_fx.rpc(at, freeze)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_proj_fx(at: Vector3, freeze: bool) -> void:
+	if not at.is_finite():
+		return
+	# Копия отстаёт от серверного снаряда на пинг (родилась позже) — берём
+	# ближайшую живую того же вида и гасим её В ТОЧКЕ сервера.
+	var best: Projectile = null
+	var best_d := 40.0
+	for node in get_children():
+		var pr := node as Projectile
+		if pr == null or pr.freeze != freeze or not pr.inert:
+			continue
+		var d := pr.global_position.distance_to(at)
+		if d < best_d:
+			best_d = d
+			best = pr
+	if best != null:
+		best.global_position = at
+		best._boom()
 
 
 ## По НАШЕЙ машине применили оружие — физику эффекта (толчок, закрутку,
@@ -2646,7 +2805,10 @@ func _rx_car_finished(i: int, place: int) -> void:
 		while _finish_order.size() < place:
 			_finish_order.append(-1)
 		_finish_order[place - 1] = i
-	if i == _my_index() and car.net_role == Car.NetRole.OWNED:
+	# Ждущему следующего заезда (_wait_next_race) эту гонку ехал бот: ни
+	# баннера, ни опыта и монет за чужой финиш (как в _rx_finish).
+	if i == _my_index() and car.net_role == Car.NetRole.OWNED \
+			and not _wait_next_race:
 		car.controls_enabled = false
 		_show_finish(place)
 
@@ -2757,11 +2919,10 @@ func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3,
 			# Волна радиуса действия от стрелявшего — как у него самого.
 			FxKit.ring(self, pos, ScrambleWave.HIT_R, Color(0.4, 0.95, 1.0))
 		Weapons.AIRSTRIKE:
-			var strike := Airstrike.new()
-			strike.inert = true
-			strike.track = _track
-			strike.target = leader_car()
-			add_child(strike)
+			# Точки падения приезжают отдельным событием (_rx_airstrike_fx):
+			# копия, выбиравшая лидера и разброс сама, рисовала тени не там,
+			# где сервер на самом деле убивал.
+			pass
 		Weapons.BOOST:
 			FlashFx.spawn(self, pos + Vector3.UP * 0.5, 1.2,
 					Color(0.3, 0.9, 1.0))

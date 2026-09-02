@@ -9,14 +9,22 @@ const SHEET := "res://assets/fx/explosion_3x3.png"
 const FPS := 20.0  # 9 кадров ≈ 0.45 с
 
 
-static func spawn(parent: Node, pos: Vector3, radius: float, color: Color) -> void:
-	# Выделенному серверу косметика не нужна и вредна (см. FxKit._skip).
-	if FxKit._skip():
-		return
-	var fx := FlashFx.new()
+# Кадры атласа режутся ОДИН РАЗ на процесс: вспышка спавнится на каждое
+# попадание/подбор/уничтожение, и 9 AtlasTexture + SpriteFrames на каждую
+# были лишней работой и мусором для сборщика.
+static var _frames: SpriteFrames = null
+static var _frame_w := 1
+
+
+static func _sheet_frames() -> SpriteFrames:
+	if _frames != null:
+		return _frames
 	var sheet: Texture2D = load(SHEET)
+	@warning_ignore("integer_division")
 	var fw := sheet.get_width() / 3
+	@warning_ignore("integer_division")
 	var fh := sheet.get_height() / 3
+	_frame_w = fw
 	var frames := SpriteFrames.new()
 	frames.set_animation_speed("default", FPS)
 	frames.set_animation_loop("default", false)
@@ -26,7 +34,17 @@ static func spawn(parent: Node, pos: Vector3, radius: float, color: Color) -> vo
 		@warning_ignore("integer_division")
 		at.region = Rect2((i % 3) * fw, (i / 3) * fh, fw, fh)
 		frames.add_frame("default", at)
-	fx.sprite_frames = frames
+	_frames = frames
+	return frames
+
+
+static func spawn(parent: Node, pos: Vector3, radius: float, color: Color) -> void:
+	# Выделенному серверу косметика не нужна и вредна (см. FxKit._skip).
+	if FxKit._skip():
+		return
+	var fx := FlashFx.new()
+	fx.sprite_frames = _sheet_frames()
+	var fw := _frame_w
 	fx.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	fx.shaded = false
 	fx.modulate = color

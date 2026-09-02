@@ -205,6 +205,9 @@ func _on_body_entered(body: Node3D) -> void:
 	# полёта снаряда — ракетой можно бить по воротам.
 	var ball := body as SoccerBall
 	if ball != null:
+		# Ведомый мяч сначала отлипает от ведущего: иначе _drive_carried на
+		# следующем тике перезаписал бы скорость, и удар ракетой пропадал.
+		ball.release()
 		var kick := direction * 22.0
 		kick.y = 3.0
 		ball.apply_central_impulse(kick * ball.mass)
@@ -221,6 +224,12 @@ func _hit_car(car: Car) -> void:
 
 
 func _boom() -> void:
+	# Сервер: клиентам — точку гашения, чтобы их инертные копии не летели
+	# дальше сквозь уже поражённую машину (Main._rx_proj_fx).
+	if not inert and shooter != null and is_instance_valid(shooter) \
+			and shooter.race != null \
+			and shooter.race.has_method("net_broadcast_proj_boom"):
+		shooter.race.net_broadcast_proj_boom(global_position, freeze)
 	var color := Color(0.5, 0.8, 1.0) if freeze else Color(1.0, 0.7, 0.2)
 	FlashFx.spawn(get_parent(), global_position, 0.9, color)
 	if freeze:
