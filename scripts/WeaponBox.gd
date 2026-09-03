@@ -9,6 +9,11 @@ extends Area3D
 ## (PER_CAR_COOLDOWN): body_entered срабатывает только на входе, но
 ## машина, стоящая на боксе, может дёргаться на подвеске и входить-
 ## выходить каждые пару кадров — без отката она фармила бы оружие.
+## «Призрак» после взрыва боксы ПОДБИРАЕТ (03.09): призрак — лишь мигание
+## и отсутствие контактов с машинами; раньше 2 с после возврата на трассу
+## кубы проезжались насквозь («проезжаешь сквозь бонус, не собирая»).
+## И того же оружия, что уже в руках, бокс не даёт (Weapons.random_weapon
+## с исключением) — иначе подбор без смены значка выглядел как промах.
 
 const PER_CAR_COOLDOWN := 2.5
 
@@ -20,9 +25,10 @@ var _last_true := {}
 
 
 func _ready() -> void:
-	# Машины — на слое 4 (см. Car._ready), бокс ловит только их.
+	# Машины — на слое 4 (см. Car._ready), «призраки» после взрыва — на
+	# слое 8 (Car._start_ghost); бокс ловит и тех и других.
 	collision_layer = 0
-	collision_mask = 0b100
+	collision_mask = 0b1100
 	monitorable = false
 
 	var col := CollisionShape3D.new()
@@ -80,7 +86,7 @@ func _physics_process(_delta: float) -> void:
 		var car := node as Car
 		if car == null or car.net_role != Car.NetRole.PUPPET:
 			continue
-		if not car.alive or car.is_ghost():
+		if not car.alive:
 			continue
 		var id := car.get_instance_id()
 		var p := car.true_position()
@@ -121,7 +127,7 @@ func _gap_to_body(p: Vector3, f: Vector3) -> float:
 
 func _on_body(body: Node3D) -> void:
 	var car := body as Car
-	if car == null or not car.alive or car.is_ghost():
+	if car == null or not car.alive:
 		return
 	# Машины живых игроков считает _physics_process по сырым данным — иначе
 	# один проезд засчитался бы дважды (откат ниже это и так ловит, но
@@ -144,7 +150,7 @@ func _give(car: Car) -> void:
 	if car.race != null and car.race.has_method("pickup_weapon_for"):
 		car.weapon = car.race.pickup_weapon_for(car)
 	else:
-		car.weapon = Weapons.random_weapon()
+		car.weapon = Weapons.random_weapon(false, 0.0, car.weapon)
 	FlashFx.spawn(get_parent(), global_position, 0.9, Color(1.0, 0.9, 0.3))
 	SparksFx.spawn(get_parent(), global_position, 5.0)
 	FxKit.stars_burst(get_parent(), global_position + Vector3.UP * 0.4, 5)

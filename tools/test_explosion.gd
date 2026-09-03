@@ -25,7 +25,9 @@ func _physics_process(_delta: float) -> void:
 			car.linear_velocity = -car.global_transform.basis.z * 20.0
 			car.destroy()
 			_speed_after = car.linear_velocity.length()
-			var ghost_ok := car.is_ghost() and car.collision_layer == 0 \
+			# Призрак живёт на слое 8 (03.09: боксы и плиты его видят, машины
+			# — нет), слой 4 снят с обеих сторон.
+			var ghost_ok := car.is_ghost() and car.collision_layer == 0b1000 \
 					and (car.collision_mask & 0b100) == 0
 			print("destroy: v=%.2f ghost=%s слои_сняты=%s dist=%.2f" % [
 				_speed_after, car.is_ghost(), ghost_ok,

@@ -45,6 +45,16 @@ const BOTS_SHOW := 2.2
 const JOIN_TAIL_GAP := 8.0
 const OFFTRACK_WAIT_PLAYER := 2.0
 const OFFTRACK_WAIT_AI := 1.0
+# Провал ПОД полотно: центр кузова ниже оси трассы. На дороге центр стоит
+# на +0.5 м (подвеска), при полном пробое — не ниже +0.17 (днище-упор −0.12
+# над полотном +0.05); под дорогой, колёсами на обочине (GROUND_DROP 1.2),
+# кузов сидит на −0.65. Порог −0.3 с выдержкой 0.25 с: жёсткая посадка с
+# депенетрацией на пару кадров возвратом не считается.
+const UNDER_ROAD_DEPTH := 0.3
+const UNDER_ROAD_WAIT := 0.25
+# Падение: 8 м ниже оси — это пропасть (космос: пустота за бортом; классика:
+# склон за ограждением). Возвращаем сразу, таймер «вне трассы» тут ни к чему.
+const FALL_DEPTH := 8.0
 # Переворот: «верх» кузова завалился больше чем на ~70° от вертикали.
 const FLIP_DOT := 0.35
 const FLIP_WAIT := 1.5
@@ -63,6 +73,7 @@ var _last_offset: Array[float] = []
 var _grid_xf: Array[Transform3D] = []
 var _laps_done: Array[int] = []
 var _offtrack_time: Array[float] = []
+var _under_time: Array[float] = []      # сколько подряд машина ПОД полотном
 var _flip_time: Array[float] = []
 var _stall_time: Array[float] = []
 var _finished := false              # заезд окончен ЦЕЛИКОМ (все или таймаут)
@@ -118,6 +129,7 @@ var _gap_frames_prev := 0
 # Замер потерь по меткам (включают стенды): длина пропажи -> сколько раз.
 # Клиент: места, присланные сервером (протокол 13). 0 — ещё не приходило.
 var _net_place: Array[int] = []   # размер задаёт _spawn_cars
+var _net_weapon: Array[int] = []  # оружие по ПРОШЛОМУ снимку (-2 — не было)
 var _loss_probe := false
 var _loss_prev := -1.0
 var _loss_hist := {}
@@ -360,11 +372,13 @@ func _spawn_cars() -> void:
 		_progress.append(0.0)
 		_laps_done.append(0)
 		_offtrack_time.append(0.0)
+		_under_time.append(0.0)
 		_flip_time.append(0.0)
 		_stall_time.append(0.0)
 		_last_offset.append(0.0)
 		_slot_taken.append(false)
 		_net_place.append(0)
+		_net_weapon.append(-2)
 
 	_roster = ids
 	# Имена. Клиент ждёт их с сервера (_rx_names) — до тех пор пустые;
@@ -493,8 +507,18 @@ func pickup_weapon_for(car: Car) -> int:
 	var lead := _progress[0]
 	for j in _cars.size():
 		lead = maxf(lead, _progress[j])
+	# Того же, что уже в руках, не выдаём: подбор без видимой смены значка
+	# читался как «проехал сквозь бонус» (03.09).
 	return Weapons.random_weapon(
-			_place_of(i) == _cars.size(), lead - _progress[i])
+			_place_of(i) == _cars.size(), lead - _progress[i], car.weapon)
+
+
+## Вспышка подбора бокса (та же, что рисует WeaponBox._give у сервера и
+## оффлайн) — клиент зовёт её, увидев в снимке новое оружие у машины.
+func _pickup_fx(at: Vector3) -> void:
+	FlashFx.spawn(self, at, 0.9, Color(1.0, 0.9, 0.3))
+	SparksFx.spawn(self, at, 5.0)
+	FxKit.stars_burst(self, at + Vector3.UP * 0.4, 5)
 
 
 ## Модели для всех машин заезда. Оффлайн: нулевая — выбранная игроком,
@@ -755,12 +779,18 @@ func _my_index() -> int:
 ## показывал «МЕСТО 2», когда первое место уже было занято, — а потом
 ## баннер выдавал честное «МЕСТО 3 ИЗ 4». Ровно на это игрок и жаловался.
 func _place_of(idx: int) -> int:
-	# КЛИЕНТ берёт место у сервера (протокол 13). Свой счёт по прогрессу он
-	# вести не может честно: своя машина у него «сейчас», чужие — с
-	# отставанием буфера, и в плотной борьбе оба игрока видели себя первыми.
-	if Net.is_client() and idx >= 0 and idx < _net_place.size() \
-			and _net_place[idx] > 0:
-		return _net_place[idx]
+	# Место считаем ПО СВОЕЙ КАРТИНЕ — и на клиенте тоже (03.09). До этого
+	# клиент брал место у сервера (протокол 13, _net_place): у того все
+	# машины одного времени, и два игрока в плотной борьбе не видели каждый
+	# себя первым (жалоба 28.08). Но на экране клиента соперники идут с
+	# отставанием буфера (0.06-0.35 с — до 10 м на полном ходу), а своя
+	# машина — «сейчас», и серверное место СПОРИЛО С КАРТИНКОЙ: «позади
+	# меня едет машина, а показывает, что я последний» (жалоба 03.09, и
+	# она куда заметнее — видна каждому в одиночку, а не при сверке двух
+	# экранов). Игрок верит глазам, поэтому HUD согласован с тем, что он
+	# видит. Порядок ФИНИША по-прежнему серверный (_finish_order приходит
+	# в _rx_car_finished) — он же решает баннер. Серверное место в снимке
+	# остаётся (_net_place, протокол не менялся), клиент его лишь принимает.
 	var done := _finish_order.find(idx)
 	if done >= 0:
 		return done + 1
@@ -861,11 +891,18 @@ func _respawn_car(i: int) -> void:
 	# вперёд — на это и жаловались.
 	car.global_transform = _track.respawn_transform_at(car.track_offset)
 	car.reset_track_offset()
-	_last_offset[i] = car.track_offset
+	# _last_offset НЕ трогаем: следующий тик засчитает в прогресс те самые
+	# +6 м, на которые машину переставили, — она и правда там. Раньше здесь
+	# стояло `_last_offset[i] = car.track_offset`, и каждый автовозврат
+	# МОЛЧА терял 6 м прогресса (destroy() при этом их засчитывал): после
+	# двух-трёх возвратов соперник, едущий на 10-15 м позади, считался
+	# впереди — «позади меня едет машина, а показывает, что я последний»
+	# (жалоба 03.09; стенд tools/TestPlaceRace ловил расползание 6.12 м).
 	car.linear_velocity = Vector3.ZERO
 	car.angular_velocity = Vector3.ZERO
 	car.reset_speed_memory()
 	_offtrack_time[i] = 0.0
+	_under_time[i] = 0.0
 	_flip_time[i] = 0.0
 	_stall_time[i] = 0.0
 	if _warn_panel and i == _my_index():
@@ -899,6 +936,7 @@ func _check_recovery(delta: float) -> void:
 			continue
 		if not car.alive:
 			_offtrack_time[i] = 0.0
+			_under_time[i] = 0.0
 			_flip_time[i] = 0.0
 			_stall_time[i] = 0.0
 			continue
@@ -913,17 +951,32 @@ func _check_recovery(delta: float) -> void:
 		car.sync_track_offset()
 		var dist := _track.distance_from_axis_at(
 				car.global_position, car.track_offset)
-		# ПРОВАЛ ПОД ПОЛОТНО: машина в границах дороги, но ЗАМЕТНО ниже её
-		# уровня — жёсткий удар (переворот, депенетрация) продавил тонкий
-		# тримеш, и машина ездила под асфальтом. Ни одна старая проверка
-		# этого не ловила: вылет меряет расстояние В ПЛАНЕ (под дорогой
-		# оно ~0), переворот и застревание под дорогой не обязательны.
-		# Возвращаем сразу: под полотном легальной езды не бывает.
 		var road_y := _track._curve.sample_baked(car.track_offset).y
-		if dist < _track.half_width_at_offset(car.track_offset) \
-				and car.global_position.y < road_y - 1.0:
+		var below := road_y - car.global_position.y
+		# ПАДЕНИЕ: глубоко ниже оси — космос (за бортом пустота, см.
+		# TrackBuilder.SPACE_VOID_DROP), перелёт ограждения на склон.
+		# Возвращаем сразу, таймер «вне трассы» дожидаться незачем.
+		if below > FALL_DEPTH:
 			_respawn_car(i)
 			continue
+		# ПРОВАЛ ПОД ПОЛОТНО: машина в границах дороги, но ниже её уровня —
+		# жёсткий удар (переворот, депенетрация) продавил тонкий тримеш, и
+		# машина ездила под асфальтом. Ни одна старая проверка этого не
+		# ловила: вылет меряет расстояние В ПЛАНЕ (под дорогой оно ~0),
+		# переворот и застревание под дорогой не обязательны. Порог был
+		# «ниже оси на 1 м» — и НЕ СРАБАТЫВАЛ: колёсами на обочине под
+		# дорогой (GROUND_DROP 1.2) кузов сидит на −0.65 (жалоба 03.09
+		# «проваливается под дорогу и продолжает ехать под дорогой»;
+		# стенд tools/TestUnderRoad). Теперь UNDER_ROAD_DEPTH с короткой
+		# выдержкой — посадка с депенетрацией на пару кадров не в счёт.
+		if dist < _track.half_width_at_offset(car.track_offset) \
+				and below > UNDER_ROAD_DEPTH:
+			_under_time[i] += delta
+			if _under_time[i] >= UNDER_ROAD_WAIT:
+				_respawn_car(i)
+				continue
+		else:
+			_under_time[i] = 0.0
 		# Запас — у трассы: классика 0.5 м (за ним ограждение), песчаная
 		# 12 м (съезд на песок легален, возвращаем только уехавших в дюны).
 		if dist > _track.half_width_at_offset(car.track_offset) \
@@ -2526,7 +2579,19 @@ func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray,
 			# ниоткуда не берётся. Своей машины это не касается — она
 			# клиент-авторитетна, её замораживает _rx_fx.
 			c.net_set_freeze(float(flags[f + 3]) * 0.1)
-		c.weapon = int(flags[f]) - 1
+		var w := int(flags[f]) - 1
+		# ПОДБОР БОКСА виден и на клиенте (03.09): раньше оружие менялось в
+		# снимке МОЛЧА — ни вспышки, ни искр, и игрок не понимал, взял ли
+		# бонус («проезжаю сквозь бонус, не собирая»). Сравниваем с
+		# ПРОШЛЫМ СЕРВЕРНЫМ значением, а не с c.weapon: свой выстрел
+		# обнуляет weapon у нас раньше, чем узнает сервер, и его снимок на
+		# пинг «возвращал» бы оружие — вспышка была бы на каждый выстрел.
+		if i < _net_weapon.size():
+			if w >= 0 and w != _net_weapon[i] and _net_weapon[i] != -2 \
+					and _net_started and c.alive:
+				_pickup_fx(c.global_position)
+			_net_weapon[i] = w
+		c.weapon = w
 		var kind := int(flags[f + 2]) - 2
 		if kind >= 0:
 			c.show_effect_icon(kind, 0.25)

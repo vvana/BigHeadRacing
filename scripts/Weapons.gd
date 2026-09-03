@@ -50,11 +50,16 @@ const ICONS := {
 ##   (они бьют назад, а сзади никого нет);
 ## - behind_gap: отставание от лидера, м — сильно отставшему чаще выпадает
 ##   ускорение: вес растёт с 30 м отставания и к 110 м достигает ×3.
+## - exclude: вид, который НЕ выдавать (то, что уже в руках: подбор бокса
+##   без смены значка читался как «проехал сквозь бонус», 03.09).
 ## Без аргументов — равновероятно (старт заезда, стенды).
-static func random_weapon(is_last := false, behind_gap := 0.0) -> int:
+static func random_weapon(is_last := false, behind_gap := 0.0,
+		exclude := -1) -> int:
 	var weights: Array[float] = []
 	weights.resize(COUNT)
 	weights.fill(1.0)
+	if exclude >= 0 and exclude < COUNT:
+		weights[exclude] = 0.0
 	if is_last:
 		weights[MINE] = 0.5
 		weights[OIL] = 0.5
@@ -64,11 +69,15 @@ static func random_weapon(is_last := false, behind_gap := 0.0) -> int:
 	for w in weights:
 		total += w
 	var roll := randf() * total
+	var last := COUNT - 1
 	for kind in COUNT:
+		if weights[kind] <= 0.0:
+			continue
+		last = kind
 		roll -= weights[kind]
 		if roll <= 0.0:
 			return kind
-	return COUNT - 1  # страховка от накопленной погрешности float
+	return last  # страховка от накопленной погрешности float
 
 
 static func display_name(kind: int) -> String:

@@ -19,7 +19,9 @@ var _next_boost := {}
 func _ready() -> void:
 	# Машины — на слое 4 (см. Car._ready), плита ловит только их.
 	collision_layer = 0
-	collision_mask = 0b100
+	# Машины (слой 4) и «призраки» после взрыва (слой 8): плита — бонус,
+	# призрак её подбирает (03.09).
+	collision_mask = 0b1100
 	monitorable = false
 
 	var col := CollisionShape3D.new()
@@ -83,7 +85,7 @@ func _on_body(body: Node3D) -> void:
 	if not body.has_method("apply_boost"):
 		return
 	var car = body
-	if not car.alive or car.is_ghost():
+	if not car.alive:
 		return
 	var id := car.get_instance_id()
 	var now := Time.get_ticks_msec() / 1000.0
