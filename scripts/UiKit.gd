@@ -106,7 +106,7 @@ static func plate_label(parent: Control, txt: String, font_size: int,
 ## при нажатии. Текст ставит вызывающий (цвет — text_on(kind)).
 static func style_button(btn: Button, kind: String, font_size: int) -> void:
 	var tex: Texture2D = load(DIR + "plate_%s_s.png" % kind)
-	for state in ["normal", "hover", "pressed"]:
+	for state in ["normal", "hover", "pressed", "disabled"]:
 		var st := StyleBoxTexture.new()
 		st.texture = tex
 		st.set_texture_margin_all(20.0)
@@ -114,12 +114,17 @@ static func style_button(btn: Button, kind: String, font_size: int) -> void:
 			st.modulate_color = Color(1.12, 1.12, 1.12)
 		elif state == "pressed":
 			st.modulate_color = Color(0.78, 0.78, 0.78)
+		elif state == "disabled":
+			# Выключенная — выцветшая, как ржавая табличка DISABLED референса.
+			st.modulate_color = Color(0.62, 0.63, 0.64)
 		btn.add_theme_stylebox_override(state, st)
 	btn.add_theme_font_override("font", font())
 	btn.add_theme_font_size_override("font_size", font_size)
 	var col := text_on(kind)
 	for state in ["font_color", "font_hover_color", "font_pressed_color"]:
 		btn.add_theme_color_override(state, col)
+	btn.add_theme_color_override("font_disabled_color",
+			Color(col.r, col.g, col.b, 0.6))
 	if col == Color.WHITE:
 		btn.add_theme_constant_override("outline_size", 5)
 		btn.add_theme_color_override("font_outline_color", INK)

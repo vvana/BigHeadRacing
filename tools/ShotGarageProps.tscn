@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_shotgarageprops"]
+
+[ext_resource type="Script" path="res://tools/shot_garage_props.gd" id="1_shotgarageprops"]
+
+[node name="ShotGarageProps" type="Node3D"]
+script = ExtResource("1_shotgarageprops")

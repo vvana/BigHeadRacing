@@ -1111,9 +1111,13 @@ func respawn_transform(world_pos: Vector3) -> Transform3D:
 ## (closest_offset_near), а глобальный поиск по позиции улетевшей за
 ## ограждение машины мог указать на чужой виток и выкинуть её через
 ## пол-трассы вперёд.
-func respawn_transform_at(off: float) -> Transform3D:
+## lead — насколько ВПЕРЁД от отметки ставить машину. Автовозврату нужны
+## 6 м (чтобы не вернуть машину в ту же ловушку, где она застряла), а
+## появлению после взрыва — 0: уничтоженная машина должна появиться ТАМ
+## ЖЕ, где её уничтожили, а не «немного впереди» (жалоба 03.09).
+func respawn_transform_at(off: float, lead := 6.0) -> Transform3D:
 	var length := _curve.get_baked_length()
-	var offset := fposmod(off + 6.0, length)
+	var offset := fposmod(off + lead, length)
 	var pos := _curve.sample_baked(offset)
 	var ahead := _curve.sample_baked(fposmod(offset + 3.0, length))
 	var basis := Basis.looking_at((ahead - pos).normalized())

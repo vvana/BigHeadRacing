@@ -79,6 +79,7 @@ class Focus extends Node3D:
 
 
 func _ready() -> void:
+	Music.play_race()
 	_setup_environment()
 	_arena = SoccerArena.new()
 	_arena.name = "Arena"
@@ -140,9 +141,7 @@ func _spawn_cars() -> void:
 		car.name = "Car%d" % i
 		car.race = self        # авиаудар (leader_car) и анонсы попаданий
 		car.weapon = -1        # стартуем без оружия — оно из бонусов
-		if i == 0:
-			car.apply_upgrades(GameState.upgrade_multipliers(
-					CarModelLibrary.base_id(GameState.selected_car_id)))
+		# Тюнинг косметический — характеристики игрока стоковые (03.09).
 		if i != 0:
 			car.soccer_brain = self
 			car.max_speed += randf_range(-1.0, 1.0)
@@ -369,6 +368,10 @@ func _respawn_car(i: int) -> void:
 func _check_recovery(delta: float) -> void:
 	for i in _cars.size():
 		var car := _cars[i]
+		# Пауза появления после взрыва: машины нет, возвращать нечего.
+		if car.is_respawning():
+			_flip_time[i] = 0.0
+			continue
 		var pos := car.global_position
 		var out: bool = pos.y < -2.0 \
 				or absf(pos.x) > SoccerArena.HALF_LEN + SoccerArena.GOAL_DEPTH + 10.0 \

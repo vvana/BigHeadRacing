@@ -38,6 +38,7 @@ extends RigidBody3D
 @export_group("Бой")
 # Длительности эффектов оружия, с.
 @export var ghost_time := 2.0           # «призрак» после уничтожения
+@export var respawn_delay := 0.5        # пауза между взрывом и появлением
 @export var boost_duration := 2.5      # ускорение
 @export var slip_duration := 2.6        # занос от масляного пятна
 @export var slip_grip := 0.15           # сцепление на масле (обычное 14)
@@ -78,6 +79,12 @@ var _ghost_time := 0.0          # после уничтожения: не тро
 # уничтоженный соперник не мигал вовсе и выглядел как ни в чём не бывало
 # едущий (жалоба 31.08).
 var _ghost_age := 0.0
+# Пауза между взрывом и появлением (respawn_delay): машину не видно, физика
+# выключена, ни во что не упирается. Куда её поставить, решено ещё в
+# destroy() — _respawn_xf (то самое место, где уничтожили).
+var _respawn_wait := 0.0
+var _respawn_xf := Transform3D.IDENTITY
+var _respawn_own := false       # ставить машину сами (не марионетка)
 var _freeze_time := 0.0         # замедление от ледышки (дебаф заразен)
 var _boost_time := 0.0          # ускорение
 var _slip_time := 0.0           # занос от масляного пятна
@@ -734,6 +741,12 @@ func _physics_process(delta: float) -> void:
 		# правильное решение это встроенная интерполяция физики Godot 4.4+.
 		_follow_snapshot(delta)
 		return
+	# Пауза перед появлением: тело заморожено и спрятано, ни подвеска, ни
+	# управление, ни клампы ему сейчас не нужны — тикают только таймеры
+	# (в них же и обратный отсчёт появления).
+	if _respawn_wait > 0.0:
+		_tick_effects(delta)
+		return
 	# Кап «депенетрации» от марионетки. Чужая машина по сети — замороженное
 	# кинематическое тело, которое ТЕЛЕПОРТИРУЕТСЯ к снимкам; шагнув в наш
 	# кузов (особенно на рывке канала), решатель выдавливает нас диким
@@ -908,6 +921,10 @@ func _physics_process(delta: float) -> void:
 
 ## Таймеры эффектов оружия: заморозка, ускорение, занос, «призрак».
 func _tick_effects(delta: float) -> void:
+	if _respawn_wait > 0.0:
+		_respawn_wait -= delta
+		if _respawn_wait <= 0.0:
+			_finish_respawn_wait()
 	_freeze_time = maxf(0.0, _freeze_time - delta)
 	# Таймер значка эффекта живёт ЗДЕСЬ, а не в _tick_status_icon: на
 	# выделенном сервере спрайта-значка нет, _tick_status_icon выходит сразу,
@@ -984,7 +1001,10 @@ func _process(delta: float) -> void:
 		_headlights.global_transform = xf
 	_animate_wheels(delta)
 	_tick_status_icon(delta)
-	if _ghost_time > 0.0:
+	if _respawn_wait > 0.0:
+		# Машины ещё нет: взрыв был, появление впереди.
+		visible = false
+	elif _ghost_time > 0.0:
 		# Три моргания за время призрака: полпериода погашен — полпериода
 		# виден (последний отрезок всегда «виден» — не застрять невидимым).
 		# Считаем по ПРОЖИТОМУ времени (_ghost_age), а не по остатку: у
@@ -2205,8 +2225,19 @@ func _apply_suspension(_delta: float) -> void:
 
 # ---------- Бой ----------
 
+## «Призрак» — и пока машины нет вовсе (пауза перед появлением), и мигание
+## после него: обе фазы неуязвимы и ни для кого не мишень, поэтому все
+## проверки оружия и контактов спрашивают одно это.
 func is_ghost() -> bool:
-	return _ghost_time > 0.0
+	return _ghost_time > 0.0 or _respawn_wait > 0.0
+
+
+## Машина сейчас «в паузе появления» — её нет на трассе. Автовозврат
+## (Main._check_recovery, Soccer._check_recovery) в это время молчит:
+## замороженное тело он принял бы за упавшее или застрявшее и переставил
+## бы его мимо места, где машину уничтожили.
+func is_respawning() -> bool:
+	return _respawn_wait > 0.0
 
 
 ## Сообщить менеджеру гонки «по этой машине применили оружие» — для ленты
@@ -2511,10 +2542,14 @@ func _use_airstrike() -> void:
 		race.net_broadcast_airstrike(self, PackedVector3Array(strike._spots))
 
 
-## Уничтожение (ракета/лазер/авиаудар): вспышка, машина тут же появляется
-## на трассе с нулевой скоростью и на ghost_time становится «призраком» —
-## мигает, не взаимодействует с другими машинами, но может ехать и
-## набирать скорость. Потом всё как раньше.
+## Уничтожение (ракета/лазер/авиаудар): вспышка, машина исчезает, через
+## respawn_delay появляется ТАМ ЖЕ, где её уничтожили, с нулевой скоростью
+## и на ghost_time становится «призраком» — мигает, не взаимодействует с
+## другими машинами, но может ехать и набирать скорость. Потом всё как
+## раньше.
+## 03.09: появление было МГНОВЕННЫМ и на 6 м впереди места взрыва («машинки
+## появляются немного впереди») — обе половины лечатся здесь: место берём
+## с нулевым выносом, а между взрывом и появлением держим паузу.
 func destroy() -> void:
 	if not alive or is_ghost():
 		return
@@ -2527,11 +2562,19 @@ func destroy() -> void:
 			and race.has_method("net_broadcast_destroy"):
 		race.net_broadcast_destroy(self)
 	_boom_fx(global_position)
+	# Куда машина вернётся через паузу. Отметка СВОЯ (по непрерывности):
+	# уничтоженную у ограждения машину глобальный поиск мог вернуть на
+	# чужой виток кольца. Вынос вперёд НУЛЕВОЙ — появление ровно там, где
+	# уничтожили.
 	if track:
-		# Отметка СВОЯ (по непрерывности): уничтоженную у ограждения машину
-		# глобальный поиск мог вернуть на чужой виток кольца.
-		global_transform = track.respawn_transform_at(track_offset)
-		reset_track_offset()
+		_respawn_xf = track.respawn_transform_at(track_offset, 0.0)
+	else:
+		# Футбол: трассы нет, поднимаем машину на колёса на месте взрыва.
+		var fwd := -global_transform.basis.z
+		fwd.y = 0.0
+		var basis := Basis.IDENTITY if fwd.length_squared() < 1e-6 \
+				else Basis.looking_at(fwd.normalized())
+		_respawn_xf = Transform3D(basis, global_position + Vector3.UP * 0.3)
 	linear_velocity = Vector3.ZERO
 	angular_velocity = Vector3.ZERO
 	reset_speed_memory()
@@ -2539,13 +2582,51 @@ func destroy() -> void:
 	_slip_time = 0.0
 	_boost_time = 0.0
 	_scramble_time = 0.0
-	# Свой лазер гаснет: машину переставило к месту появления, и добивать
-	# соперников «хвостом» луча с новой точки было бы нечестно.
+	# Свой лазер гаснет: машина уходит с трассы до появления, и добивать
+	# соперников «хвостом» луча было бы нечестно.
 	_laser_left = 0.0
-	_start_ghost()
+	_begin_respawn_wait()
 	var _wd := Time.get_ticks_msec() - _wd0
 	if _wd > 100:
 		print("[slow] destroy() занял %d мс" % _wd)
+
+
+## Пауза между взрывом и появлением: машины не видно, физика выключена,
+## столкновений нет вовсе (слой и маска сняты) — она не мешает другим и не
+## считается ни мишенью, ни препятствием (is_ghost на паузе тоже true).
+## Марионетку по сети ведут снимки: ей только прячем картинку, тело не
+## трогаем (оно и так заморожено), а поставит её владелец у себя.
+func _begin_respawn_wait() -> void:
+	_respawn_wait = maxf(respawn_delay, 0.01)
+	visible = false
+	if net_role == NetRole.PUPPET:
+		return
+	_respawn_own = true
+	freeze = true
+	collision_layer = 0
+	collision_mask = 0
+
+
+## Пауза кончилась — машина появляется на сохранённом месте и начинает
+## мигать «призраком» (неуязвимость отсчитывается ОТ ПОЯВЛЕНИЯ, а не от
+## взрыва: иначе полсекунды её съедали бы).
+func _finish_respawn_wait() -> void:
+	_respawn_wait = 0.0
+	visible = true
+	if not _respawn_own:
+		return
+	_respawn_own = false
+	freeze = false
+	global_transform = _respawn_xf
+	linear_velocity = Vector3.ZERO
+	angular_velocity = Vector3.ZERO
+	reset_speed_memory()
+	if track:
+		reset_track_offset()
+	# Появление — это телепорт: пару положений для интерполяции гасим,
+	# иначе модель протащило бы через полтрассы (см. net_visual_reset).
+	net_visual_reset()
+	_start_ghost()
 
 
 ## Взрыв машины — одной строкой (зовут destroy и сетевая копия события).
@@ -2628,6 +2709,9 @@ func _end_ghost() -> void:
 ## мигание неуязвимости.
 func net_show_destroy() -> void:
 	_boom_fx(visual_origin())
+	# Пауза появления — и на чужих экранах: без неё соперник полсекунды
+	# стоял бы на месте взрыва, а потом прыгал (снимки-то идут всегда).
+	_begin_respawn_wait()
 	net_set_ghost(true)
 
 
@@ -2901,18 +2985,10 @@ func _enemy_behind() -> bool:
 
 
 # ---------- Улучшения ----------
-
-## Применить купленные улучшения (GameState.upgrade_multipliers): мотор —
-## разгон, колёса — сцепление и руль, спойлер — потолок скорости, выхлоп —
-## длительность ускорения. Зовётся один раз при спавне машины ИГРОКА
-## (боты ездят стоковыми). Множители — поверх текущих значений.
-func apply_upgrades(m: Dictionary) -> void:
-	engine_power *= float(m.get("accel", 1.0))
-	grip *= float(m.get("grip", 1.0))
-	steer_speed *= float(m.get("grip", 1.0))
-	steer_speed_min *= float(m.get("grip", 1.0))
-	max_speed *= float(m.get("speed", 1.0))
-	boost_duration *= float(m.get("boost", 1.0))
+# Их БОЛЬШЕ НЕТ (03.09): тюнинг в гараже — чистая косметика, машина
+# игрока едет на стоковых характеристиках, как боты и соперники по сети
+# (был apply_upgrades с множителями от GameState.upgrade_multipliers).
+# Улучшать можно будет только оружие и бонусы — ЭКОНОМИКА.md, раздел 7.
 
 
 # ---------- Визуал ----------

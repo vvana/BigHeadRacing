@@ -16,6 +16,7 @@ config/features=PackedStringArray("4.3", "Forward Plus")
 InputSetup="*res://scripts/InputSetup.gd"
 GameState="*res://scripts/GameState.gd"
 Net="*res://scripts/Net.gd"
+Music="*res://scripts/Music.gd"
 
 [display]
 

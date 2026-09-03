@@ -1,7 +1,14 @@
 extends Node3D
-## Экран выбора машины: слева тачка крутится на подиуме, справа — сетка
-## миниатюр всех машин (рендерятся в текстуры один раз, кэш в GameState).
-## Управление: ←→ / A D — листать, ↑↓ — по рядам сетки, мышь — клик по
+## ГАРАЖ — главный экран игры. Слева машина стоит в освещённом боксе
+## (тянешь мышью или пальцем — поворачивается), справа — эмалевая доска
+## «АВТОПАРК» с миниатюрами всех машин. Сверху полка табличек: «ГАРАЖ»,
+## уровень с полосой опыта, кошелёк, «+500 ЗА РЕКЛАМУ», имя игрока.
+## Снизу слева — имя машины, ряд красок, «РЕЖИМ», «СТАРТ», «ТЮНИНГ».
+## Стиль — эмалевые таблички с заклёпками и аварийными лентами по
+## референсам в корне проекта (UiKit). Адреса сервера на экране НЕТ:
+## «СТАРТ» стучится на адрес из Net (по умолчанию VDS), не ответил —
+## тихо едем оффлайн с ботами.
+## Управление: ←→ / A D — листать, ↑↓ — по рядам доски, мышь — клик по
 ## ячейке (повторный клик по выбранной — старт), Enter/Space — в гонку.
 
 ## Человеческие названия машин (БАЗОВЫЙ id → имя на экране).
@@ -19,58 +26,89 @@ const DISPLAY_NAMES := {
 	"ac5": "Пикап", "ac6": "Монстр", "ac7": "Маслкар", "ac8": "Кирпич",
 }
 
-## Названия цветов-скинов для подсказок.
-const COLOR_NAMES := {
-	"black": "чёрный", "blue": "синий", "gray": "серый",
-	"green": "зелёный", "lightblue": "голубой", "purple": "фиолетовый",
-	"red": "красный", "sand": "песочный", "white": "белый",
-	"yellow": "жёлтый",
-	"orange": "оранжевый", "turquoise": "бирюзовый", "cyan": "циан",
-	"pink": "розовый", "brown": "коричневый", "cream": "кремовый",
-	"grey": "серый",
-}
-## Цвет квадратика-образца (приблизительный тон краски палитры).
-const SWATCH_COLORS := {
-	"black": Color(0.12, 0.12, 0.13), "blue": Color(0.13, 0.3, 0.62),
-	"gray": Color(0.55, 0.57, 0.6), "green": Color(0.24, 0.5, 0.26),
-	"lightblue": Color(0.42, 0.7, 0.85), "purple": Color(0.48, 0.26, 0.62),
-	"red": Color(0.73, 0.16, 0.17), "sand": Color(0.8, 0.71, 0.5),
-	"white": Color(0.93, 0.93, 0.93), "yellow": Color(0.92, 0.77, 0.13),
-}
-
 const GRID_COLUMNS := 5
 const THUMB_SIZE := Vector2(104, 78)
 
+## Сколько радиан поворота подиума даёт один пиксель протяжки.
+const DRAG_SPEED := 0.008
+
+## Раскладка экрана (базовое окно 1280×720, растяжка canvas_items).
+const TOP_Y := 18          # верхняя полка табличек (ярлык торчит выше на 8)
+const TOP_H := 80
+const BOARD_X := 684       # левая кромка доски «АВТОПАРК»
+const BOARD_Y := 110
+const BOARD_W := 580
+const BOARD_H := 594
+## Нижний ряд кнопок. Табличка-стайлбокс несёт поля 20 px сверху и снизу,
+## и кнопка НЕ может быть ниже «40 + строка шрифта» (у Russo One 26 px —
+## около 74): при 56 «СТАРТ» вырастал сам и уезжал за нижний край окна
+## (снимок 03.09). Держим ряд 74 px — с запасом под метрики любой машины.
+const ROW_H := 74
+const ROW_Y := -12 - ROW_H
+## Левая колонка (имя машины, краски, нижний ряд кнопок, подсказка) —
+## один Control шириной COL_W. Пока подменю закрыты, машина стоит по
+## центру экрана и колонка центрирована (COL_X_CENTER); открыли
+## «АВТОПАРК» или «ТЮНИНГ» — колонка и камера (h_offset → CAM_H_OPEN)
+## съезжают влево, освобождая правую половину под доску.
+const COL_W := 656
+const COL_X_CENTER := 312.0    # 640 − COL_W/2
+const COL_X_OPEN := 12.0
+const CAM_H_OPEN := 1.59
+const SLIDE_TIME := 0.35
+const UI_DIR := "res://assets/ui/garage/"
+
+## Показ ролика на Яндекс Играх. Результат складываем в window.bhrAd и
+## опрашиваем из _process (JavaScriptBridge не умеет ждать промис).
+const AD_JS_SHOW := """
+window.bhrAd = {state: 'showing', rewarded: false};
+try {
+	window.ysdk.adv.showRewardedVideo({callbacks: {
+		onRewarded: function() { window.bhrAd.rewarded = true; },
+		onClose: function() { window.bhrAd.state = 'closed'; },
+		onError: function(e) { window.bhrAd.state = 'error'; }
+	}});
+} catch (e) { window.bhrAd.state = 'error'; }
+"""
+
 var _index := 0
 var _turntable: Node3D
+var _dragging := false            # тянут машину на подиуме (мышь/палец)
 var _model: Node3D
 var _name_label: Label
 var _count_label: Label
 var _buttons: Array[Button] = []
-var _host_edit: LineEdit          # адрес сетевого сервера
-var _net_status: Label
-var _size_label: Label            # число участников заезда (4..8)
-var _size_panel: Control          # панель «УЧАСТНИКОВ» (в футболе всегда 8)
-var _size_buttons: Array[Button] = []
 var _mode_button: Button          # переключатель ГОНКА/ФУТБОЛ
 var _canvas: CanvasLayer          # слой HUD (нужен окну ввода имени)
-var _name_btn: Button             # «ИМЯ: …» под строкой уровня
+var _name_btn: Button             # «ИМЯ: …» на верхней полке
 var _name_dialog: Control         # модальное окно ввода имени (null — нет)
 var _name_edit: LineEdit
 var _scroll: ScrollContainer
 var _style_normal: StyleBoxFlat
+var _style_hover: StyleBoxFlat
 var _style_selected: StyleBoxFlat
 var _ui_font: FontFile  # Russo One — индустриальный, с кириллицей
-var _xp_label: Label              # строка «УРОВЕНЬ · ОПЫТ · МОНЕТЫ»
+var _level_label: Label           # «УРОВЕНЬ 10» на жёлтой табличке
+var _xp_sub: Label                # «895 / 1000» рядом
+var _xp_bar: ProgressBar          # полоса опыта внутри уровня
+var _coins_label: Label           # число монет на белой табличке
+var _coin_flash: Label            # «+500» взлетает над кошельком
+var _ad_btn: Button               # «+500 ЗА РЕКЛАМУ» / «ЧЕРЕЗ 9:59»
+var _ad_showing := false          # ролик идёт (ждём результата платформы)
+var _ad_tick := 0.0               # таймер обновления кнопки рекламы
+var _connecting := false          # «СТАРТ» уже нажат, ждём сервер
 var _start_btn: Button            # «СТАРТ» (у купленной машины)
 var _buy_btn: Button              # «КУПИТЬ · цена» (у закрытой машины)
-var _color_btns: Array[Button] = []   # ряд квадратиков-скинов
-var _color_panel: Control         # подложка ряда скинов
-var _grid_locks: Array[Label] = []    # значки «N ур.» на ячейках сетки
+var _grid_locks: Array[Label] = []    # ярлыки «N ур.» на ячейках доски
 var _buy_flash := 0               # поколение вспышки «НЕ ХВАТАЕТ МОНЕТ»
-var _tuning: TuningPanel          # панель улучшений/косметики (поверх сетки)
-var _tuning_btn: Button           # «ТЮНИНГ» (у купленной машины)
-var _grid_panel: PanelContainer   # подложка сетки (прячется под панелью)
+var _tuning: TuningPanel          # панель косметики (на месте доски)
+var _tuning_btn: Button           # «ТЮНИНГ» (у купленной аркадной машины)
+var _board_btn: Button            # «АВТОПАРК» — открыть доску миниатюр
+var _grid_panel: Control          # доска «АВТОПАРК» (скрыта, пока не открыли)
+var _column: Control              # левая колонка HUD (см. COL_*)
+var _arrows: Array[TextureButton] = []   # стрелки листания (прячутся с доской)
+var _cam: Camera3D
+var _panel_open := false          # открыта доска или тюнинг (машина слева)
+var _ui_tween: Tween              # съезд колонки и камеры
 
 
 ## Полный id скина машины из сетки: база + её текущий цвет/комплектация.
@@ -81,7 +119,9 @@ func _full_id(i: int) -> String:
 func _ready() -> void:
 	_index = maxi(0, CarModelLibrary.CAR_IDS.find(
 			CarModelLibrary.base_id(GameState.selected_car_id)))
+	Music.play_menu()
 	_setup_environment()
+	_setup_garage()
 	_setup_podium()
 	_setup_hud()
 	_set_index(_index)
@@ -99,15 +139,28 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
-	_turntable.rotation.y += delta * 0.9
+	# Кнопка рекламы живёт по часам (обратный отсчёт) и ждёт результат
+	# ролика от платформы — обновляем дважды в секунду, всегда.
+	_ad_tick -= delta
+	if _ad_tick <= 0.0:
+		_ad_tick = 0.5
+		_refresh_ad_btn()
+		if _ad_showing and OS.has_feature("web"):
+			_poll_web_ad()
+	# Подиум сам не крутится — только рукой (см. _unhandled_input).
 	# Открыто окно ввода имени — клавиши достаются ему, а не выбору машины
 	# (иначе Enter в поле имени тут же запускал бы гонку).
-	if _name_dialog != null:
+	if _name_dialog != null or _ad_showing:
 		return
 	# Открыта панель тюнинга — стрелки ей не мешают; Esc закрывает.
 	if _tuning != null and _tuning.visible:
 		if Input.is_action_just_pressed("ui_cancel"):
 			_tuning.close()
+		return
+	# Esc закрывает и доску «АВТОПАРК».
+	if _grid_panel != null and _grid_panel.visible \
+			and Input.is_action_just_pressed("ui_cancel"):
+		_close_board()
 		return
 
 	var total := CarModelLibrary.CAR_IDS.size()
@@ -125,14 +178,42 @@ func _process(delta: float) -> void:
 		_start_race()
 
 
+## Вращение машины на подиуме мышью или пальцем: тянем по горизонтали —
+## подиум поворачивается, отпустили — стоит. Сюда события доходят только
+## если их не забрал HUD (кнопки, доска миниатюр), то есть крутить можно
+## за свободное место вокруг машины. Касания приходят как мышь (штатная
+## эмуляция Godot, input_devices/pointing/emulate_mouse_from_touch),
+## поэтому отдельной ветки для тачскрина не нужно.
+func _unhandled_input(event: InputEvent) -> void:
+	if _name_dialog != null or _ad_showing:
+		return
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_LEFT:
+			_dragging = mb.pressed
+	elif event is InputEventMouseMotion and _dragging:
+		_turntable.rotation.y += (event as InputEventMouseMotion).relative.x \
+				* DRAG_SPEED
+
+
+## Куда стучится «СТАРТ»: [адрес, порт]. Адрес — из Net (сохранённый в
+## net.cfg, по умолчанию VDS), порт — ДОМАШНИЙ, а не текущий: после
+## перенаправления в комнату Net.port равен порту КОМНАТЫ, а комнаты
+## смертны (поймано у живого игрока 28.08). Поля адреса на экране больше
+## нет (просьба 03.09) — игроку это знать незачем.
+func _net_target() -> Array:
+	var port: int = Net.home_port if Net.home_port > 0 else Net.PORT
+	return [Net.host.strip_edges(), port]
+
+
 ## «СТАРТ» — единственная кнопка запуска: гонка идёт ПО СЕТИ (адрес из
-## поля, по умолчанию VDS). Сервер не ответил / нет адреса — тихо стартуем
+## Net, по умолчанию VDS). Сервер не ответил / нет адреса — тихо стартуем
 ## оффлайн с ботами: они и так подписаны человеческими никами и от живых
 ## игроков неотличимы, игрок просто едет. Футбол сетевого протокола пока
 ## не имеет — сразу оффлайн.
 func _start_race() -> void:
-	if _name_dialog != null:
-		return   # сначала имя — окно модальное
+	if _name_dialog != null or _connecting or _ad_showing:
+		return   # сначала имя — окно модальное; либо уже стучимся
 	var base: String = CarModelLibrary.CAR_IDS[_index]
 	if not GameState.car_owned(base):
 		return   # закрытая машина — сперва купить (кнопка «КУПИТЬ»)
@@ -142,27 +223,19 @@ func _start_race() -> void:
 		# Футбол: своя арена, трасса не нужна.
 		get_tree().change_scene_to_file("res://scenes/Soccer.tscn")
 		return
-	var text := _host_edit.text.strip_edges() if _host_edit else ""
-	var addr := text
-	var port := Net.PORT
-	# Порт можно дописать через двоеточие: 1.2.3.4:9977. Режем ПОСЛЕДНЕЕ
-	# двоеточие — в IPv6-адресе их много.
-	var colon := text.rfind(":")
-	if colon > 0:
-		addr = text.substr(0, colon)
-		port = int(text.substr(colon + 1))
-		if port <= 0:
-			port = Net.PORT
-	if addr.is_empty():
+	var target := _net_target()
+	if String(target[0]).is_empty():
 		_start_offline()
 		return
 	# Свою сцену строим сразу под желаемый размер: если мы окажемся первым
 	# игроком лобби, сервер примет его и перестройка не понадобится; если
 	# заезд уже другого размера — сервер продиктует свой (_rx_track).
 	Net.race_size = GameState.race_size
-	if _net_status:
-		_net_status.text = "Подключение…"
-	if Net.join_server(addr, port):
+	_connecting = true
+	if _start_btn:
+		_start_btn.disabled = true
+		_start_btn.text = "ПОДКЛЮЧЕНИЕ…"
+	if Net.join_server(target[0], target[1]):
 		_watch_connect_timeout()
 	else:
 		_start_offline()
@@ -175,36 +248,76 @@ func _start_offline() -> void:
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
 
 
-## Переключатель режима игры (ГОНКА / ФУТБОЛ) — над панелью «УЧАСТНИКОВ».
-## Футбол: всегда 8 машин 4 на 4, поэтому выбор числа участников гаснет.
-func _build_mode_ui(canvas: Node) -> void:
-	var panel := UiKit.plate(canvas, "steel", Vector2.ZERO, Vector2(150, 70))
-	panel.anchor_left = 0.0
-	panel.anchor_right = 0.0
-	panel.anchor_top = 1.0
-	panel.anchor_bottom = 1.0
-	panel.offset_left = 20
-	panel.offset_right = 170
-	panel.offset_top = -200
-	panel.offset_bottom = -130
+## ENet сам по себе может молчать очень долго, поэтому ограничиваем
+## ожидание вручную: не ответил за CONNECT_TIMEOUT — рвём и тихо стартуем
+## оффлайн с ботами (для игрока разницы нет — ники у ботов человеческие).
+func _watch_connect_timeout() -> void:
+	await get_tree().create_timer(Net.CONNECT_TIMEOUT).timeout
+	if not is_inside_tree() or not Net.is_client():
+		return
+	var peer := multiplayer.multiplayer_peer
+	if peer != null and peer.get_connection_status() \
+			== MultiplayerPeer.CONNECTION_CONNECTED:
+		return
+	_start_offline()
 
-	var title := Label.new()
-	title.text = "РЕЖИМ"
-	if _ui_font:
-		title.add_theme_font_override("font", _ui_font)
-	title.add_theme_font_size_override("font_size", 14)
-	title.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))
-	title.position = Vector2(0, 6)
-	title.size = Vector2(150, 20)
+
+func _on_joined() -> void:
+	# По сети вид трассы диктует сервер (_rx_track): строим классику, а
+	# если сервер выбрал другую — Main перезагрузит сцену с нужной.
+	GameState.track_kind = ""
+	get_tree().change_scene_to_file("res://scenes/Main.tscn")
+
+
+func _on_join_failed(reason: String) -> void:
+	# Сервер отказал или оборвался на этапе подключения — не мучаем игрока
+	# сообщениями, просто едем оффлайн с ботами (причина — в лог).
+	print("Сеть недоступна (", reason, ") — оффлайн-заезд")
+	_start_offline()
+
+
+## Сигналы сети: гонка начнётся, когда сервер подтвердит соединение
+## (Net.joined), а не ответит — оффлайн с ботами.
+func _build_net_ui() -> void:
+	Net.joined.connect(_on_joined)
+	Net.join_failed.connect(_on_join_failed)
+
+
+# ---- Раскладка: помощники ----
+
+## Прибить контрол к углу окна абсолютными пикселями (окно 1280×720
+## растягивается целиком, так что пиксели базового кадра точны).
+## from_bottom — координата y отсчитывается от нижней кромки (отрицательная).
+func _place(c: Control, x: float, y: float, w: float, h: float,
+		from_bottom := false) -> void:
+	c.anchor_left = 0.0
+	c.anchor_right = 0.0
+	c.anchor_top = 1.0 if from_bottom else 0.0
+	c.anchor_bottom = c.anchor_top
+	c.offset_left = x
+	c.offset_right = x + w
+	c.offset_top = y
+	c.offset_bottom = y + h
+
+
+## Переключатель режима игры (ГОНКА / ФУТБОЛ) — стальная табличка слева
+## от «СТАРТ». Числа участников больше не выбирают: в заезде всегда 8
+## машин (GameState.race_size), в футболе — те же 8, 4 на 4.
+func _build_mode_ui(col: Control) -> void:
+	var panel := UiKit.plate(col, "steel", Vector2.ZERO, Vector2(140, ROW_H))
+	_place(panel, 0, ROW_Y, 140, ROW_H, true)
+
+	var title := UiKit.label(panel, "РЕЖИМ", 12, Color(1, 1, 1, 0.7))
+	title.position = Vector2(0, 8)
+	title.size = Vector2(140, 16)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	panel.add_child(title)
 
-	# Кнопка того же плоского стиля, что −/+ (UiKit.style_button мелкой
-	# кнопке навязывает рост и заклёпки — см. _mini_button).
+	# Кнопка плоского стиля (UiKit.style_button мелкой кнопке навязывает
+	# рост и заклёпки — см. _mini_button).
 	_mode_button = _mini_button("ГОНКА")
-	_mode_button.add_theme_font_size_override("font_size", 18)
-	_mode_button.position = Vector2(12, 24)
-	_mode_button.size = Vector2(126, 38)
+	_mode_button.add_theme_font_size_override("font_size", 17)
+	_mode_button.position = Vector2(12, 28)
+	_mode_button.size = Vector2(116, 34)
 	_mode_button.pressed.connect(_toggle_mode)
 	panel.add_child(_mode_button)
 
@@ -217,80 +330,14 @@ func _toggle_mode() -> void:
 	_apply_mode_ui()
 
 
-## Обновить подписи под текущий режим: текст кнопки и доступность выбора
-## числа участников (в футболе состав фиксированный — 4 на 4).
+## Обновить подпись кнопки под текущий режим.
 func _apply_mode_ui() -> void:
-	var soccer := GameState.game_mode == GameState.MODE_SOCCER
 	if _mode_button:
-		_mode_button.text = "ФУТБОЛ" if soccer else "ГОНКА"
-	if _size_panel:
-		_size_panel.modulate = Color(1, 1, 1, 0.45) if soccer else Color.WHITE
-	for b in _size_buttons:
-		b.disabled = soccer
-	if _size_label:
-		_size_label.text = "8" if soccer else str(GameState.race_size)
+		_mode_button.text = "ФУТБОЛ" \
+				if GameState.game_mode == GameState.MODE_SOCCER else "ГОНКА"
 
 
-## Выбор числа участников заезда (4..8) — стальная табличка в левом нижнем
-## углу, рядом со «СТАРТ». Действует и оффлайн (игрок + N−1 ботов), и по
-## сети: размер лобби задаёт ПЕРВЫЙ подключившийся игрок (Main._rx_hello),
-## остальные приезжают в заезд его размера. Выбор хранится в профиле.
-func _build_race_size_ui(canvas: Node) -> void:
-	var panel := UiKit.plate(canvas, "steel", Vector2.ZERO, Vector2(150, 70))
-	panel.anchor_left = 0.0
-	panel.anchor_right = 0.0
-	panel.anchor_top = 1.0
-	panel.anchor_bottom = 1.0
-	panel.offset_left = 20
-	panel.offset_right = 170
-	panel.offset_top = -122
-	panel.offset_bottom = -52
-	_size_panel = panel
-
-	var title := Label.new()
-	title.text = "УЧАСТНИКОВ"
-	if _ui_font:
-		title.add_theme_font_override("font", _ui_font)
-	title.add_theme_font_size_override("font_size", 14)
-	title.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))
-	title.position = Vector2(0, 6)
-	title.size = Vector2(150, 20)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	panel.add_child(title)
-
-	_size_label = Label.new()
-	_size_label.text = str(GameState.race_size)
-	if _ui_font:
-		_size_label.add_theme_font_override("font", _ui_font)
-	_size_label.add_theme_font_size_override("font_size", 28)
-	_size_label.add_theme_color_override("font_color", UiKit.YELLOW)
-	_size_label.add_theme_constant_override("outline_size", 5)
-	_size_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	# Ровно полоса МЕЖДУ кнопками (50..100) и ОДНА линия с ними (y и
-	# высота совпадают с кнопками): дважды подгонялось «на глазок» и
-	# дважды оказывалось криво — теперь кнопки держат заданный размер
-	# (см. _flatten_button), и все три бокса просто одинаковые.
-	_size_label.position = Vector2(50, 24)
-	_size_label.size = Vector2(50, 38)
-	_size_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_size_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	panel.add_child(_size_label)
-
-	var minus := _mini_button("–")
-	minus.position = Vector2(12, 24)
-	minus.size = Vector2(38, 38)
-	minus.pressed.connect(func() -> void: _change_race_size(-1))
-	panel.add_child(minus)
-
-	var plus := _mini_button("+")
-	plus.position = Vector2(100, 24)
-	plus.size = Vector2(38, 38)
-	plus.pressed.connect(func() -> void: _change_race_size(1))
-	panel.add_child(plus)
-	_size_buttons = [minus, plus]
-
-
-## Маленькая плоская кнопка −/+. НЕ UiKit.style_button, и это выстрадано:
+## Маленькая плоская кнопка. НЕ UiKit.style_button, и это выстрадано:
 ## 1) стайлбокс-табличка несёт поля 20 px с каждой стороны, и минимальный
 ##    размер кнопки выходит «поля + метрики шрифта» — она перерастает
 ##    заданный size, причём НАСКОЛЬКО — зависит от машины (масштаб окна
@@ -336,7 +383,7 @@ func _open_name_dialog(first: bool) -> void:
 	if _name_dialog != null:
 		return
 	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.6)
+	dim.color = Color(0, 0, 0, 0.5)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP   # клики вниз не пропускаем
 	_canvas.add_child(dim)
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -352,29 +399,16 @@ func _open_name_dialog(first: bool) -> void:
 	plate.offset_top = -110
 	plate.offset_bottom = 110
 
-	var title := Label.new()
-	title.text = "КАК ТЕБЯ ЗОВУТ?"
-	if _ui_font:
-		title.add_theme_font_override("font", _ui_font)
-	title.add_theme_font_size_override("font_size", 26)
-	title.add_theme_color_override("font_color", Color.WHITE)
-	title.add_theme_constant_override("outline_size", 6)
-	title.add_theme_color_override("font_outline_color", UiKit.INK)
+	var title := UiKit.label(plate, "КАК ТЕБЯ ЗОВУТ?", 26, Color.WHITE, 6)
 	title.position = Vector2(0, 16)
 	title.size = Vector2(460, 34)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	plate.add_child(title)
 
-	var hint := Label.new()
-	hint.text = "Под этим именем тебя увидят другие игроки"
-	if _ui_font:
-		hint.add_theme_font_override("font", _ui_font)
-	hint.add_theme_font_size_override("font_size", 14)
-	hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
+	var hint := UiKit.label(plate, "Под этим именем тебя увидят другие игроки",
+			14, Color(1, 1, 1, 0.7))
 	hint.position = Vector2(0, 54)
 	hint.size = Vector2(460, 22)
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	plate.add_child(hint)
 
 	_name_edit = LineEdit.new()
 	_name_edit.text = GameState.player_name
@@ -429,105 +463,147 @@ func _close_name_dialog() -> void:
 	_refresh_name_btn()
 
 
-func _change_race_size(dir: int) -> void:
-	if GameState.game_mode == GameState.MODE_SOCCER:
-		return   # в футболе состав фиксированный: 4 на 4
-	GameState.set_race_size(GameState.race_size + dir)
-	if _size_label:
-		_size_label.text = str(GameState.race_size)
+# ---- Реклама с вознаграждением ----
+# Учёт — в GameState (ЭКОНОМИКА.md, раздел 1): пара роликов → +500 монет,
+# после пары 10 минут отдыха. Ролики показывает платформа (Яндекс Игры,
+# ysdk.adv.showRewardedVideo); вне web-сборки — заглушка с отсчётом, чтобы
+# сценарий можно было прогнать руками и стендом TestAdButton.
+
+func _build_ad_ui(canvas: Node, x: float, w: float) -> void:
+	_ad_btn = Button.new()
+	UiKit.style_button(_ad_btn, "teal", 15)
+	_ad_btn.icon = load(UI_DIR + "play.png")
+	_ad_btn.icon_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_ad_btn.add_theme_constant_override("icon_max_width", 26)
+	_ad_btn.add_theme_constant_override("h_separation", 8)
+	_ad_btn.tooltip_text = "Досмотри два ролика подряд — +%d монет.\n" \
+			% GameState.AD_PAIR_REWARD + "Потом 10 минут отдыха."
+	_ad_btn.pressed.connect(_ad_pressed)
+	_place(_ad_btn, x, TOP_Y, w, TOP_H)
+	canvas.add_child(_ad_btn)
+	_refresh_ad_btn()
 
 
-## Сетевая строка гаража: статус подключения и поле адреса сервера.
-## Отдельной кнопки «ПО СЕТИ» больше нет — по сети везёт сама «СТАРТ»
-## (см. _start_race); гонка начнётся, когда сервер подтвердит соединение
-## (сигнал Net.joined), а не ответит — оффлайн с ботами.
-func _build_net_ui(canvas: Node) -> void:
-	_net_status = Label.new()
-	_net_status.text = ""
-	if _ui_font:
-		_net_status.add_theme_font_override("font", _ui_font)
-	_net_status.add_theme_font_size_override("font_size", 18)
-	_net_status.add_theme_constant_override("outline_size", 5)
-	_net_status.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	_net_status.add_theme_color_override("font_color", UiKit.YELLOW)
-	canvas.add_child(_net_status)
-	# Панель жмётся к левой половине экрана: справа от 685 px начинается
-	# сетка машин, и на анкере 0.75 кнопка уезжала ПОД неё — в кадре её
-	# было не видно вовсе (поймано скриншот-стендом ScreenshotSelect).
-	_net_status.anchor_left = 0.0
-	_net_status.anchor_right = 0.0
-	_net_status.anchor_top = 1.0
-	_net_status.anchor_bottom = 1.0
-	_net_status.offset_left = 450
-	_net_status.offset_right = 690
-	_net_status.offset_top = -196
-	_net_status.offset_bottom = -172
-	_net_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-
-	_host_edit = LineEdit.new()
-	# В поле — ДОМАШНИЙ порт, а не Net.port: тот после перенаправления в
-	# комнату (_rx_redirect) равен порту КОМНАТЫ, и игрок, вернувшись в
-	# гараж и нажав «ПО СЕТИ», сохранял его себе в net.cfg как постоянный —
-	# комната смертна, и дальше вечное «Сервер не ответил за 5 с» (поймано
-	# у живого игрока 28.08: в поле оказалось :9978, на экране обрезано до
-	# «:99»). Стандартный порт не показываем вовсе — меньше мусора в поле.
-	_host_edit.text = Net.host if Net.home_port == Net.PORT \
-			else "%s:%d" % [Net.host, Net.home_port]
-	_host_edit.placeholder_text = "адрес[:порт]"
-	_host_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
-	if _ui_font:
-		_host_edit.add_theme_font_override("font", _ui_font)
-	_host_edit.add_theme_font_size_override("font_size", 20)
-	# Стальная рамка вместо системной серой.
-	var edit_sb := UiKit.steel_box(6, 0.95)
-	edit_sb.set_content_margin_all(6)
-	for state in ["normal", "focus"]:
-		_host_edit.add_theme_stylebox_override(state, edit_sb)
-	_host_edit.add_theme_color_override("font_color", Color.WHITE)
-	_host_edit.add_theme_color_override("caret_color", UiKit.YELLOW)
-	_host_edit.anchor_left = 0.0
-	_host_edit.anchor_right = 0.0
-	_host_edit.anchor_top = 1.0
-	_host_edit.anchor_bottom = 1.0
-	# Ширина как у кнопки ниже: в 200 px «адрес:порт» не влезал, и хвост
-	# порта ОБРЕЗАЛСЯ на экране («:9978» выглядел как «:99») — игрок не мог
-	# увидеть, куда на самом деле стучится игра.
-	_host_edit.offset_left = 450
-	_host_edit.offset_right = 690
-	_host_edit.offset_top = -166
-	_host_edit.offset_bottom = -130
-	canvas.add_child(_host_edit)
-
-	Net.joined.connect(_on_joined)
-	Net.join_failed.connect(_on_join_failed)
-
-
-## ENet сам по себе может молчать очень долго, поэтому ограничиваем
-## ожидание вручную: не ответил за CONNECT_TIMEOUT — рвём и тихо стартуем
-## оффлайн с ботами (для игрока разницы нет — ники у ботов человеческие).
-func _watch_connect_timeout() -> void:
-	await get_tree().create_timer(Net.CONNECT_TIMEOUT).timeout
-	if not is_inside_tree() or not Net.is_client():
+## Подпись и доступность кнопки по состоянию учёта.
+func _refresh_ad_btn() -> void:
+	if _ad_btn == null:
 		return
-	var peer := multiplayer.multiplayer_peer
-	if peer != null and peer.get_connection_status() 			== MultiplayerPeer.CONNECTION_CONNECTED:
+	if _ad_showing:
+		_ad_btn.disabled = true
+		_ad_btn.text = "ИДЁТ РОЛИК…"
 		return
-	_start_offline()
+	if GameState.ad_available():
+		_ad_btn.disabled = false
+		if GameState.ad_pair_progress() == 0:
+			_ad_btn.text = "+%d ЗА РЕКЛАМУ" % GameState.AD_PAIR_REWARD
+		else:
+			_ad_btn.text = "ЕЩЁ РОЛИК · +%d" % GameState.AD_PAIR_REWARD
+		return
+	var left := int(ceil(GameState.ad_cooldown_left()))
+	_ad_btn.disabled = true
+	_ad_btn.text = "ЧЕРЕЗ %d:%02d" % [left / 60, left % 60]
 
 
-func _on_joined() -> void:
-	# По сети вид трассы диктует сервер (_rx_track): строим классику, а
-	# если сервер выбрал другую — Main перезагрузит сцену с нужной.
-	GameState.track_kind = ""
-	get_tree().change_scene_to_file("res://scenes/Main.tscn")
+func _ad_pressed() -> void:
+	if _ad_showing or not GameState.ad_available():
+		return
+	_ad_showing = true
+	_dragging = false
+	_set_sound_muted(true)   # платформа требует тишины на время ролика
+	_refresh_ad_btn()
+	if OS.has_feature("web"):
+		JavaScriptBridge.eval(AD_JS_SHOW)
+	else:
+		_simulate_ad()
 
 
-func _on_join_failed(reason: String) -> void:
-	# Сервер отказал или оборвался на этапе подключения — не мучаем игрока
-	# сообщениями, просто едем оффлайн с ботами (причина — в лог).
-	print("Сеть недоступна (", reason, ") — оффлайн-заезд")
-	_start_offline()
+## Результат ролика от платформы (window.bhrAd, см. AD_JS_SHOW).
+func _poll_web_ad() -> void:
+	var v: Variant = JavaScriptBridge.eval(
+			"JSON.stringify(window.bhrAd || {state: 'error'})", true)
+	if v == null:
+		return
+	var d: Variant = JSON.parse_string(str(v))
+	if d is Dictionary and String(d.get("state", "showing")) != "showing":
+		_ad_finished(bool(d.get("rewarded", false)))
 
+
+## Заглушка ролика вне web-сборки: стальная табличка с отсчётом 3-2-1,
+## после — как досмотренный. Чтобы механику можно было пощупать в
+## настольной сборке; на Яндекс Играх сюда не заходим.
+func _simulate_ad() -> void:
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.55)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	_canvas.add_child(dim)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var plate := UiKit.plate(dim, "steel", Vector2.ZERO, Vector2(460, 200))
+	plate.anchor_left = 0.5
+	plate.anchor_right = 0.5
+	plate.anchor_top = 0.5
+	plate.anchor_bottom = 0.5
+	plate.offset_left = -230
+	plate.offset_right = 230
+	plate.offset_top = -100
+	plate.offset_bottom = 100
+	var title := UiKit.label(plate, "РЕКЛАМА", 26, Color.WHITE, 6)
+	title.position = Vector2(0, 16)
+	title.size = Vector2(460, 34)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var sub := UiKit.label(plate, "Ролик %d из %d · на Яндекс Играх здесь идёт видео"
+			% [GameState.ad_pair_progress() + 1, GameState.AD_PAIR_SIZE],
+			14, Color(1, 1, 1, 0.7))
+	sub.position = Vector2(0, 54)
+	sub.size = Vector2(460, 22)
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var count := UiKit.label(plate, "3", 56, UiKit.YELLOW, 8)
+	count.position = Vector2(0, 88)
+	count.size = Vector2(460, 80)
+	count.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	for s in [3, 2, 1]:
+		count.text = str(s)
+		await get_tree().create_timer(1.0).timeout
+		if not is_inside_tree():
+			return
+	dim.queue_free()
+	_ad_finished(true)
+
+
+## Ролик закрыт. rewarded — досмотрен до конца (награда — только за
+## второй ролик пары, GameState.register_ad).
+func _ad_finished(rewarded: bool) -> void:
+	_ad_showing = false
+	_set_sound_muted(false)
+	if rewarded:
+		var got: int = GameState.register_ad()
+		_refresh_money_label()
+		if got > 0:
+			_flash_coins("+%s" % _fmt_money(got))
+	_refresh_ad_btn()
+
+
+func _set_sound_muted(muted: bool) -> void:
+	AudioServer.set_bus_mute(AudioServer.get_bus_index("Master"), muted)
+
+
+## «+500» взлетает над кошельком и тает.
+func _flash_coins(txt: String) -> void:
+	if _coin_flash == null:
+		return
+	_coin_flash.text = txt
+	_coin_flash.visible = true
+	_coin_flash.modulate = Color.WHITE
+	_coin_flash.position.y = 22
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(_coin_flash, "position:y", -26.0, 1.3) \
+			.set_ease(Tween.EASE_OUT)
+	tw.tween_property(_coin_flash, "modulate:a", 0.0, 1.3) \
+			.set_ease(Tween.EASE_IN)
+	tw.chain().tween_callback(func() -> void: _coin_flash.visible = false)
+
+
+# ---- Подиум и доска ----
 
 func _set_index(i: int) -> void:
 	var prev := _index
@@ -535,28 +611,33 @@ func _set_index(i: int) -> void:
 	if _model:
 		_model.queue_free()
 	var base: String = CarModelLibrary.CAR_IDS[_index]
-	_model = CarModelLibrary.build(_full_id(_index), 3.2, 0.02)
+	# На подиуме — машина С ПРИМЕРКОЙ из панели тюнинга (некупленные
+	# детали надеты только здесь; профиль и миниатюра — без них).
+	var id := _full_id(_index)
+	if _tuning != null and _tuning.visible and _tuning.base() == base \
+			and _tuning.has_preview():
+		id = _tuning.preview_id()
+	_model = CarModelLibrary.build(id, 3.2, 0.02)
 	if _model:
 		_turntable.add_child(_model)
 	var owned: bool = GameState.car_owned(base)
 	_name_label.text = DISPLAY_NAMES.get(base, base)
 	_name_label.add_theme_color_override("font_color",
-			Color.WHITE if owned else Color(1, 1, 1, 0.45))
+			Color.WHITE if owned else Color(1, 1, 1, 0.5))
 	_count_label.text = "%d / %d" % [_index + 1, CarModelLibrary.CAR_IDS.size()]
 	# Закрытая машина стоит на подиуме «тенью» — видно, но не наша.
 	if _model and not owned:
 		_dim_model(_model)
 	_refresh_lock_ui()
-	_refresh_swatches()
 	# Панель тюнинга открыта — перевести на новую машину (чужая — закрыть).
 	if _tuning != null and _tuning.visible:
 		if owned:
 			_tuning.open(base)
 		else:
 			_tuning.close()
-	# Подсветка ячейки в сетке.
+	# Подсветка ячейки на доске.
 	if _buttons.size() > prev:
-		_apply_style(_buttons[prev], _style_normal)
+		_apply_style(_buttons[prev], _style_normal, _style_hover)
 	if _buttons.size() > _index:
 		_apply_style(_buttons[_index], _style_selected)
 		_scroll.ensure_control_visible(_buttons[_index])
@@ -568,8 +649,8 @@ func _dim_model(model: Node) -> void:
 		if child is MeshInstance3D:
 			var mi := child as MeshInstance3D
 			var dim := StandardMaterial3D.new()
-			dim.albedo_color = Color(0.1, 0.1, 0.12)
-			dim.roughness = 0.9
+			dim.albedo_color = Color(0.17, 0.17, 0.2)
+			dim.roughness = 0.85
 			mi.material_override = dim
 		_dim_model(child)
 
@@ -581,6 +662,8 @@ func _refresh_lock_ui() -> void:
 	var owned: bool = GameState.car_owned(base)
 	if _start_btn:
 		_start_btn.visible = owned
+	# Тюнинг — у любой купленной машины: краски теперь только там (03.09),
+	# у аркадных конструкторов ещё детали и наклейки.
 	if _tuning_btn:
 		_tuning_btn.visible = owned
 	if _buy_btn == null:
@@ -626,21 +709,30 @@ func _buy_pressed() -> void:
 		_buy_btn.text = old
 
 
+## Уровень, полоса опыта и кошелёк на верхней полке.
 func _refresh_money_label() -> void:
-	if _xp_label == null:
-		return
 	var info: Vector3i = GameState.level_info()
-	_xp_label.text = "УРОВЕНЬ %d  ·  ОПЫТ %d / %d  ·  МОНЕТЫ %d" \
-			% [info.x, info.y, info.z, GameState.money]
+	if _level_label:
+		_level_label.text = "УРОВЕНЬ %d" % info.x
+	if _xp_sub:
+		_xp_sub.text = "%d / %d" % [info.y, info.z]
+	if _xp_bar:
+		_xp_bar.max_value = info.z
+		_xp_bar.value = info.y
+	if _coins_label:
+		_coins_label.text = _fmt_money(GameState.money)
 
 
-## Значки «N ур.» и затемнение на закрытых ячейках сетки.
+## Ярлыки «N ур.» и серые силуэты на закрытых ячейках доски.
 func _refresh_grid_locks() -> void:
 	for i in _buttons.size():
 		var base: String = CarModelLibrary.CAR_IDS[i]
 		var owned: bool = GameState.car_owned(base)
-		_buttons[i].modulate = Color.WHITE if owned \
-				else Color(0.5, 0.5, 0.55)
+		# Не modulate (он красил бы и ярлык): серый только силуэт машины.
+		var icon_col := Color.WHITE if owned else Color(0.42, 0.42, 0.47, 0.8)
+		for st in ["icon_normal_color", "icon_hover_color",
+				"icon_pressed_color", "icon_focus_color"]:
+			_buttons[i].add_theme_color_override(st, icon_col)
 		if i < _grid_locks.size():
 			_grid_locks[i].visible = not owned
 		_buttons[i].tooltip_text = DISPLAY_NAMES.get(base, base) if owned \
@@ -650,80 +742,7 @@ func _refresh_grid_locks() -> void:
 						_fmt_money(GameState.car_price(base))]
 
 
-# ---- Скины: ряд цветов под подиумом ----
-
-## Ряд квадратиков-красок (10 у советских, 12 у аркадных — лишние
-## прячутся); для машин без скинов прячется целиком. Цвет и подсказки
-## каждой кнопке ставит _refresh_swatches по текущей машине.
-func _build_color_ui(canvas: Node) -> void:
-	var panel := Control.new()
-	panel.anchor_left = 0.25
-	panel.anchor_right = 0.25
-	panel.anchor_top = 1.0
-	panel.anchor_bottom = 1.0
-	panel.offset_left = -214
-	panel.offset_right = 214
-	panel.offset_top = -254
-	panel.offset_bottom = -222
-	canvas.add_child(panel)
-	_color_panel = panel
-	var count := maxi(CarModelLibrary.SOVIET_COLORS.size(),
-			CarModelLibrary.ARCADE_COLORS.size())
-	for k in count:
-		var b := Button.new()
-		b.custom_minimum_size = Vector2(30, 30)
-		b.size = Vector2(30, 30)
-		b.focus_mode = Control.FOCUS_NONE
-		b.pressed.connect(func() -> void: _on_color_pressed(b))
-		panel.add_child(b)
-		_color_btns.append(b)
-
-
-## Раскрасить ряд под текущую машину и подсветить выбранный цвет (жёлтая
-## рамка). Ряд центрируется по числу цветов.
-func _refresh_swatches() -> void:
-	var base: String = CarModelLibrary.CAR_IDS[_index]
-	if _color_panel == null:
-		return
-	var colors := CarModelLibrary.colors_for(base)
-	_color_panel.visible = not colors.is_empty()
-	if not _color_panel.visible:
-		return
-	var current: String = GameState.color_of(base)
-	var x0 := (428 - (colors.size() * 36 - 6)) * 0.5
-	for k in _color_btns.size():
-		var b := _color_btns[k]
-		b.visible = k < colors.size()
-		if not b.visible:
-			continue
-		var color: String = colors[k]
-		b.position = Vector2(x0 + k * 36, 0)
-		b.set_meta("color", color)
-		b.tooltip_text = String(COLOR_NAMES.get(color, color)).capitalize()
-		var sb := StyleBoxFlat.new()
-		if CarModelLibrary.is_arcade(base):
-			sb.bg_color = (CarModelLibrary.ARCADE_PAINTS[color] as Array)[1]
-		else:
-			sb.bg_color = SWATCH_COLORS.get(color, Color.MAGENTA)
-		sb.set_corner_radius_all(6)
-		if color == current:
-			sb.set_border_width_all(3)
-			sb.border_color = UiKit.YELLOW
-		else:
-			sb.set_border_width_all(1)
-			sb.border_color = Color(0, 0, 0, 0.5)
-		for state in ["normal", "hover", "pressed", "focus"]:
-			b.add_theme_stylebox_override(state, sb)
-
-
-func _on_color_pressed(btn: Button) -> void:
-	var base: String = CarModelLibrary.CAR_IDS[_index]
-	GameState.set_car_color(base, str(btn.get_meta("color", "")))
-	_set_index(_index)      # перестроить подиум в новом цвете
-	_update_thumb(_index)   # и миниатюру в сетке
-
-
-# ---- Тюнинг: улучшения и косметика ----
+# ---- Тюнинг: косметика ----
 
 func _open_tuning() -> void:
 	var base: String = CarModelLibrary.CAR_IDS[_index]
@@ -731,6 +750,7 @@ func _open_tuning() -> void:
 		return
 	_grid_panel.visible = false
 	_tuning.open(base)
+	_set_panel_open(true)
 
 
 ## Панель что-то купила/переставила: кошелёк, подиум, миниатюра.
@@ -740,8 +760,46 @@ func _on_tuning_changed() -> void:
 	_update_thumb(_index)
 
 
+## Закрыли тюнинг — машина возвращается в центр (доска не показывается:
+## её открывают отдельной кнопкой).
 func _on_tuning_closed() -> void:
+	_set_panel_open(false)
+	_set_index(_index)   # примерка сброшена — подиум без неё
+
+
+# ---- Подменю: доска «АВТОПАРК» и съезд машины влево ----
+
+func _open_board() -> void:
+	if _tuning != null and _tuning.visible:
+		_tuning.visible = false   # без closed — иначе машина метнётся в центр
 	_grid_panel.visible = true
+	if _buttons.size() > _index:
+		_scroll.ensure_control_visible(_buttons[_index])
+	_set_panel_open(true)
+
+
+func _close_board() -> void:
+	_grid_panel.visible = false
+	_set_panel_open(false)
+
+
+## Подменю открыто — машина и левая колонка уезжают влево, стрелки
+## листания прячутся (просьба 03.09); закрыто — всё обратно, машина по
+## центру. Съезд плавный: камера через h_offset (сдвигает её вбок),
+## колонка — через offset_left/right.
+func _set_panel_open(open: bool) -> void:
+	_panel_open = open
+	for a in _arrows:
+		a.visible = not open
+	if _ui_tween:
+		_ui_tween.kill()
+	_ui_tween = create_tween().set_parallel(true) \
+			.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+	var col_x := COL_X_OPEN if open else COL_X_CENTER
+	_ui_tween.tween_property(_column, "offset_left", col_x, SLIDE_TIME)
+	_ui_tween.tween_property(_column, "offset_right", col_x + COL_W, SLIDE_TIME)
+	_ui_tween.tween_property(_cam, "h_offset",
+			CAM_H_OPEN if open else 0.0, SLIDE_TIME)
 
 
 ## Перерисовать миниатюру одной машины (после смены цвета): из кэша /
@@ -875,39 +933,205 @@ func _make_thumb_viewport() -> Dictionary:
 	return {"vp": vp, "holder": holder}
 
 
+# ---- Бокс: свет, стены, пол ----
+
 func _setup_environment() -> void:
 	var env := WorldEnvironment.new()
 	var e := Environment.new()
 	e.background_mode = Environment.BG_COLOR
-	e.background_color = Color(0.07, 0.06, 0.1)  # тёмный «гараж»
+	e.background_color = Color(0.64, 0.60, 0.55)   # тёплый бетон за стеной
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	e.ambient_light_color = Color(0.5, 0.5, 0.6)
-	e.ambient_light_energy = 0.6
+	e.ambient_light_color = Color(0.80, 0.76, 0.70)
+	e.ambient_light_energy = 0.55
 	env.environment = e
 	add_child(env)
 
+	# Свет приглушён (просьба 03.09 «поменьше света»): бокс освещён, но
+	# не залит — тени и объём читаются, стены не выбелены.
+	# Ключевой свет — тёплая лампа бокса, с тенями.
 	var key := DirectionalLight3D.new()
-	key.rotation_degrees = Vector3(-50, -35, 0)
-	key.light_energy = 1.3
+	key.rotation_degrees = Vector3(-48, -32, 0)
+	key.light_energy = 0.9
+	key.light_color = Color(1.0, 0.95, 0.88)
 	key.shadow_enabled = true
 	add_child(key)
 
-	var rim := DirectionalLight3D.new()
-	rim.rotation_degrees = Vector3(-30, 140, 0)
-	rim.light_energy = 0.5
-	rim.light_color = Color(0.7, 0.8, 1.0)
-	add_child(rim)
+	# Заполняющий — холодный, с окна напротив.
+	var fill := DirectionalLight3D.new()
+	fill.rotation_degrees = Vector3(-28, 145, 0)
+	fill.light_energy = 0.3
+	fill.light_color = Color(0.82, 0.88, 1.0)
+	add_child(fill)
+
+	# Лампа над подиумом — пятно света на машине и пол вокруг.
+	var lamp := SpotLight3D.new()
+	lamp.position = Vector3(0, 5.5, 1.0)
+	lamp.rotation_degrees = Vector3(-90, 0, 0)
+	lamp.spot_angle = 42
+	lamp.spot_range = 9
+	lamp.light_energy = 1.4
+	lamp.light_color = Color(1.0, 0.94, 0.82)
+	add_child(lamp)
 
 	var cam := Camera3D.new()
-	cam.position = Vector3(0, 2.0, 4.6)
-	cam.rotation_degrees = Vector3(-14, 0, 0)
-	cam.fov = 50
-	# Сетка занимает правые ~600px из 1280 → видимая зона 0..680,
-	# её центр = 0.266 ширины экрана. Сдвиг кадра: (0.5-0.266) от ширины
-	# фрустума на дистанции до подиума (~4.8 м) ≈ 1.85 м.
-	cam.h_offset = 1.85
+	# ДЛИННЫЙ ОБЪЕКТИВ. Раньше было 50° с 4.6 м, и машина стояла у самого
+	# края кадра (h_offset физически сдвигает камеру вбок, см. ниже) —
+	# широкоугольная кромка «заваливала» кузов: машина выглядела стоящей
+	# косо, хотя на подиуме она ровно. 24° с 9 м дают тот же размер в
+	# кадре почти без перспективных искажений.
+	cam.position = Vector3(0, 2.5, 9.0)
+	# −12.5°, а не −11.5: под подиумом теперь три ряда табличек, машину
+	# поднимаем в кадре на ~30 px, чтобы колёса не прятались за именем.
+	cam.rotation_degrees = Vector3(-12.5, 0, 0)
+	cam.fov = 24
+	# Пока подменю закрыты, машина стоит по центру (h_offset 0). Открыли
+	# доску — она занимает правые ~600px из 1280 → видимая зона 0..680,
+	# её центр = 0.266 ширины экрана. h_offset двигает камеру вправо, и
+	# машина уходит влево ровно настолько: h = 0.468·tan(fov_h/2)·дистанция,
+	# при 16:9 tan(fov_h/2) = tan(12°)·16/9 = 0.378 → CAM_H_OPEN = 1.59
+	# (см. _set_panel_open).
+	cam.h_offset = 0.0
 	add_child(cam)
 	cam.make_current()
+	_cam = cam
+
+
+## Материал с тайлом текстуры.
+func _tex_mat(file: String, uv: Vector3, tint := Color.WHITE,
+		rough := 0.85) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_texture = load(UI_DIR + file)
+	m.albedo_color = tint
+	m.uv1_scale = uv
+	m.roughness = rough
+	return m
+
+
+func _plain_mat(color: Color, metallic := 0.0, rough := 0.7) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = color
+	m.metallic = metallic
+	m.roughness = rough
+	return m
+
+
+func _plane(size: Vector2, pos: Vector3, mat: Material,
+		orient := PlaneMesh.FACE_Y, yaw := 0.0) -> MeshInstance3D:
+	var mesh := PlaneMesh.new()
+	mesh.size = size
+	mesh.orientation = orient
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = mat
+	mi.position = pos
+	mi.rotation.y = yaw
+	add_child(mi)
+	return mi
+
+
+func _box(size: Vector3, pos: Vector3, mat: Material) -> MeshInstance3D:
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = mat
+	mi.position = pos
+	add_child(mi)
+	return mi
+
+
+## Бокс гаража вокруг подиума: бетонный пол, оранжевый рифлёный лист
+## с аварийной лентой под машиной, светлая рифлёная стена с воротами и
+## немного реквизита у стены. Камера смотрит чуть вниз (горизонт у
+## верхней кромки кадра), поэтому стена закрывает весь верх, пол — низ;
+## видимая полоса по x при z≈−6 — от −4 до +2 м (h_offset сдвигает камеру
+## вправо), реквизит стоит в ней.
+func _setup_garage() -> void:
+	const FLOOR_Y := -0.36   # низ подиума −0.35
+	_plane(Vector2(48, 48), Vector3(0, FLOOR_Y, 0),
+			_tex_mat("concrete.png", Vector3(12, 12, 1), Color(0.70, 0.69, 0.67)))
+	# Оранжевый лист под подиумом (референс A_seamless_tileable_texture_1);
+	# чуть приглушён, чтобы не спорил с машиной.
+	_plane(Vector2(7.6, 9.6), Vector3(0, FLOOR_Y + 0.006, -0.4),
+			_tex_mat("diamond_orange.jpg", Vector3(2.5, 3.2, 1),
+					Color(0.80, 0.80, 0.80), 0.6))
+	# Аварийная лента по периметру листа: полосы 45° → тайл 4:1 растянут
+	# на ленту шириной 0.3, то есть 1.2 м на повтор.
+	var hz := _tex_mat("hazard.png", Vector3(1, 1, 1), Color(0.95, 0.95, 0.95))
+	for side in [[Vector2(7.6, 0.3), Vector3(0, 0, 4.4), 0.0],
+			[Vector2(7.6, 0.3), Vector3(0, 0, -5.2), 0.0],
+			[Vector2(9.6, 0.3), Vector3(3.8, 0, -0.4), PI / 2],
+			[Vector2(9.6, 0.3), Vector3(-3.8, 0, -0.4), PI / 2]]:
+		var sz: Vector2 = side[0]
+		var m := hz.duplicate() as StandardMaterial3D
+		m.uv1_scale = Vector3(sz.x / 1.2, 1, 1)
+		var p: Vector3 = side[1]
+		_plane(sz, Vector3(p.x, FLOOR_Y + 0.012, p.z), m,
+				PlaneMesh.FACE_Y, side[2])
+
+	# Задняя стена — светлые рифлёные панели, у пола аварийная лента.
+	const WALL_Z := -7.6
+	_plane(Vector2(40, 6.0), Vector3(0, FLOOR_Y + 3.0, WALL_Z),
+			_tex_mat("wall_panels.png", Vector3(10, 1, 1), Color(1, 1, 1)),
+			PlaneMesh.FACE_Z)
+	var base_hz := hz.duplicate() as StandardMaterial3D
+	base_hz.uv1_scale = Vector3(40 / 1.4, 1, 1)
+	_plane(Vector2(40, 0.35), Vector3(0, FLOOR_Y + 0.175, WALL_Z + 0.02),
+			base_hz, PlaneMesh.FACE_Z)
+	# Ворота: стальная рама и бирюзовое полотно из тех же панелей. Узкие —
+	# 3.6 м: широкие (5.5) закрывали всю видимую стену, панелей не было
+	# видно вовсе.
+	_plane(Vector2(4.0, 4.4), Vector3(-0.6, FLOOR_Y + 2.2, WALL_Z + 0.03),
+			_plain_mat(Color(0.30, 0.32, 0.36), 0.5, 0.5), PlaneMesh.FACE_Z)
+	_plane(Vector2(3.6, 4.1), Vector3(-0.6, FLOOR_Y + 2.05, WALL_Z + 0.05),
+			_tex_mat("wall_panels.png", Vector3(1, 1.4, 1),
+					Color(0.22, 0.90, 0.82), 0.55), PlaneMesh.FACE_Z)
+
+	# Реквизит у стены. Из готовых лоуполи-паков (пайплайн TrackDecor: FBX
+	# + текстуры по имени материала; модели взяты из Unity-проекта cars,
+	# просьба 03.09): стопки шин и красный блок — Cartoon Tracks, бак-
+	# мусорка и прожектор — ithappy, вентилятор — Palmov (сундук с замком
+	# убран по просьбе 03.09). Правая
+	# половина (x > 2) видна только пока машина в центре — доска её
+	# закрывает. Бочки и шкафы — свои примитивы (чистые яркие цвета).
+	var decor := TrackDecor.new()
+	add_child(decor)
+	decor._spawn(TrackDecor.CDIR + "prop_tyre_4x8.FBX",
+			Vector3(-2.9, FLOOR_Y, -5.6), Vector3.BACK, 0.85, true)
+	decor._spawn(TrackDecor.CDIR + "prop_tyre_1x1_B.FBX",
+			Vector3(-1.5, FLOOR_Y, -4.8), Vector3.BACK, 1.0, true)
+	decor._spawn(TrackDecor.CDIR + "prop_plastic_block.FBX",
+			Vector3(-4.6, FLOOR_Y, -2.6), Vector3(1, 0, 0.3), 1.0, true)
+	decor._spawn(TrackDecor.CITY_DIR + "trash_can_a.fbx",
+			Vector3(4.7, FLOOR_Y, -6.4), Vector3.BACK, 1.0, true)
+	decor._spawn(TrackDecor.CITY_DIR + "spotlight_a.fbx",
+			Vector3(3.3, FLOOR_Y, -5.0), Vector3(-1, 0, 1), 0.36, true)
+	var fan := decor._spawn(TrackDecor.PDIR + "exhaust_fan.fbx",
+			Vector3(4.0, FLOOR_Y + 3.9, WALL_Z + 0.3), Vector3.BACK, 1.1, true)
+	if fan:
+		fan.rotation.x = PI / 2   # лежал плашмя — вешаем на стену
+	for barrel in [[Vector3(-1.8, 0, -6.6), UiKit.ORANGE],
+			[Vector3(-1.0, 0, -6.9), UiKit.YELLOW]]:
+		var c := CylinderMesh.new()
+		c.top_radius = 0.34
+		c.bottom_radius = 0.34
+		c.height = 0.95
+		var mi := MeshInstance3D.new()
+		mi.mesh = c
+		mi.material_override = _plain_mat(barrel[1], 0.25, 0.45)
+		var p: Vector3 = barrel[0]
+		mi.position = Vector3(p.x, FLOOR_Y + 0.475, p.z)
+		add_child(mi)
+	# Шкаф целиком в кадре (при x=−3.9 и ширине 1.5 его резала левая кромка —
+	# торчал красный кусок).
+	_box(Vector3(1.2, 1.8, 0.6), Vector3(-3.3, FLOOR_Y + 0.9, -7.1),
+			_plain_mat(Color(0.80, 0.22, 0.17), 0.3, 0.45))
+	_box(Vector3(1.24, 0.06, 0.64), Vector3(-3.3, FLOOR_Y + 1.2, -7.1),
+			_plain_mat(Color(0.25, 0.27, 0.3), 0.5, 0.5))
+	_box(Vector3(1.24, 0.06, 0.64), Vector3(-3.3, FLOOR_Y + 0.6, -7.1),
+			_plain_mat(Color(0.25, 0.27, 0.3), 0.5, 0.5))
+	_box(Vector3(1.0, 2.2, 0.6), Vector3(1.6, FLOOR_Y + 1.1, -7.2),
+			_plain_mat(Color(0.20, 0.72, 0.66), 0.3, 0.5))
 
 
 func _setup_podium() -> void:
@@ -918,256 +1142,270 @@ func _setup_podium() -> void:
 	mesh.height = 0.35
 	podium.mesh = mesh
 	podium.position.y = -0.175
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.16, 0.16, 0.2)
-	mat.metallic = 0.6
-	mat.roughness = 0.35
-	podium.material_override = mat
+	# Стальной рифлёный лист (tools/gen_podium_tex.py): тайл по UV
+	# цилиндра, лёгкий металлик — читается как поворотный круг, а не
+	# крашеный диск (03.09, просьба «подходящая текстура»).
+	var pm := _tex_mat("podium_plate.png", Vector3(6, 6, 1),
+			Color(0.9, 0.9, 0.93), 0.45)
+	pm.metallic = 0.55
+	pm.metallic_specular = 0.6
+	podium.material_override = pm
 	add_child(podium)
 
 	_turntable = Node3D.new()
 	_turntable.name = "TurnTable"
+	# Стартовая поза — три четверти спереди-слева: подиум больше сам не
+	# крутится, и «как машина встала, такой её и увидят». В нуле камера
+	# смотрела бы ровно в корму (перёд модели — по -Z).
+	_turntable.rotation.y = PI - 0.55
 	add_child(_turntable)
 
+
+# ---- HUD ----
 
 func _setup_hud() -> void:
 	var canvas := CanvasLayer.new()
 	add_child(canvas)
 	_canvas = canvas
 	_ui_font = UiKit.font()
-
-	# Заголовок — белая эмалевая табличка с чернильным текстом и
-	# аварийной лентой по нижней кромке («гаражный» стиль).
-	var banner := UiKit.plate(canvas, "white", Vector2.ZERO,
-			Vector2(420, 92), false)
-	banner.anchor_left = 0.25
-	banner.anchor_right = 0.25
-	banner.offset_left = -210
-	banner.offset_right = 210
-	banner.offset_top = 14
-	banner.offset_bottom = 106
-	UiKit.hazard(banner, Vector2(14, 92 - 22), Vector2(420 - 28, 12), 0.95)
-	var title := Label.new()
-	title.text = "ВЫБОР МАШИНЫ"
-	if _ui_font:
-		title.add_theme_font_override("font", _ui_font)
-	title.add_theme_font_size_override("font_size", 28)
-	title.add_theme_color_override("font_color", UiKit.INK)
-	banner.add_child(title)
-	# and_offsets: обычный set_anchors_preset сохранил бы крошечный размер.
-	title.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	title.offset_bottom = -10
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-
-	# Уровень, опыт и кошелёк профиля — жёлтая строка под заголовком.
-	# Опыт и монеты даются на финише (GameState); уровни открывают машины
-	# и оружие для покупки за монеты — сетка и цены в ЭКОНОМИКА.md.
-	var xp_label := Label.new()
-	_xp_label = xp_label
-	_refresh_money_label()
-	if _ui_font:
-		xp_label.add_theme_font_override("font", _ui_font)
-	xp_label.add_theme_font_size_override("font_size", 15)
-	xp_label.add_theme_color_override("font_color", UiKit.YELLOW)
-	xp_label.add_theme_constant_override("outline_size", 5)
-	xp_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	xp_label.anchor_left = 0.25
-	xp_label.anchor_right = 0.25
-	xp_label.offset_left = -210
-	xp_label.offset_right = 210
-	xp_label.offset_top = 112
-	xp_label.offset_bottom = 138
-	xp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	canvas.add_child(xp_label)
-
-	# Имя игрока — строкой под уровнем; клик открывает окно смены имени.
-	_name_btn = _mini_button("")
-	_name_btn.add_theme_font_size_override("font_size", 16)
-	_name_btn.anchor_left = 0.25
-	_name_btn.anchor_right = 0.25
-	_name_btn.offset_left = -110
-	_name_btn.offset_right = 110
-	_name_btn.offset_top = 144
-	_name_btn.offset_bottom = 174
-	_name_btn.pressed.connect(func() -> void: _open_name_dialog(false))
-	canvas.add_child(_name_btn)
-	_refresh_name_btn()
-
-	# Имя машины — на стальной табличке.
-	var name_panel := UiKit.plate(canvas, "steel", Vector2.ZERO,
-			Vector2(380, 70))
-	name_panel.anchor_left = 0.25
-	name_panel.anchor_right = 0.25
-	name_panel.anchor_top = 1.0
-	name_panel.anchor_bottom = 1.0
-	name_panel.offset_left = -190
-	name_panel.offset_right = 190
-	name_panel.offset_top = -216
-	name_panel.offset_bottom = -146
-	_name_label = Label.new()
-	if _ui_font:
-		_name_label.add_theme_font_override("font", _ui_font)
-	_name_label.add_theme_font_size_override("font_size", 30)
-	_name_label.add_theme_constant_override("outline_size", 6)
-	_name_label.add_theme_color_override("font_outline_color", UiKit.INK)
-	name_panel.add_child(_name_label)
-	_name_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-
-	_count_label = Label.new()
-	if _ui_font:
-		_count_label.add_theme_font_override("font", _ui_font)
-	_count_label.add_theme_font_size_override("font_size", 16)
-	_count_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	_count_label.anchor_right = 0.5
-	_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_count_label.position.y = -144
-	_count_label.modulate = Color(1, 1, 1, 0.7)
-	canvas.add_child(_count_label)
-
-	# Стрелки листания по бокам подиума — оранжевые таблички.
-	_make_arrow(canvas, "res://assets/ui/garage/arrow_l.png", 0.06,
-			func() -> void: _set_index(
-					(_index - 1 + CarModelLibrary.CAR_IDS.size())
-					% CarModelLibrary.CAR_IDS.size()))
-	_make_arrow(canvas, "res://assets/ui/garage/arrow_r.png", 0.44,
-			func() -> void: _set_index(
-					(_index + 1) % CarModelLibrary.CAR_IDS.size()))
-
-	# Кнопка «СТАРТ» — оранжевая эмалевая табличка (как START референса).
-	var start_btn := Button.new()
-	start_btn.text = "СТАРТ"
-	UiKit.style_button(start_btn, "orange", 30)
-	start_btn.anchor_left = 0.25
-	start_btn.anchor_right = 0.25
-	start_btn.anchor_top = 1.0
-	start_btn.anchor_bottom = 1.0
-	start_btn.offset_left = -130
-	start_btn.offset_right = 130
-	start_btn.offset_top = -122
-	start_btn.offset_bottom = -52
-	start_btn.pressed.connect(_start_race)
-	canvas.add_child(start_btn)
-	_start_btn = start_btn
-
-	# «КУПИТЬ · цена» — на месте «СТАРТ», видна только у закрытой машины.
-	var buy_btn := Button.new()
-	UiKit.style_button(buy_btn, "orange", 22)
-	buy_btn.anchor_left = 0.25
-	buy_btn.anchor_right = 0.25
-	buy_btn.anchor_top = 1.0
-	buy_btn.anchor_bottom = 1.0
-	buy_btn.offset_left = -130
-	buy_btn.offset_right = 130
-	buy_btn.offset_top = -122
-	buy_btn.offset_bottom = -52
-	buy_btn.visible = false
-	buy_btn.pressed.connect(_buy_pressed)
-	canvas.add_child(buy_btn)
-	_buy_btn = buy_btn
-
-	# «ТЮНИНГ» — справа от «СТАРТ», только у своей машины: улучшения
-	# (4 слота × 3 ступени) и косметика аркадных конструкторов.
-	var tune_btn := Button.new()
-	tune_btn.text = "ТЮНИНГ"
-	UiKit.style_button(tune_btn, "teal", 17)
-	tune_btn.anchor_left = 0.25
-	tune_btn.anchor_right = 0.25
-	tune_btn.anchor_top = 1.0
-	tune_btn.anchor_bottom = 1.0
-	tune_btn.offset_left = 138
-	tune_btn.offset_right = 240
-	tune_btn.offset_top = -112
-	tune_btn.offset_bottom = -62
-	tune_btn.pressed.connect(_open_tuning)
-	canvas.add_child(tune_btn)
-	_tuning_btn = tune_btn
-
-	_build_color_ui(canvas)
-	_build_race_size_ui(canvas)
-	_build_mode_ui(canvas)
-	_build_net_ui(canvas)
+	# Левая колонка — во всю высоту окна, чтобы _place(..., from_bottom)
+	# внутри неё считал от нижней кромки; сама событий мыши не ест —
+	# за свободное место вокруг машины её крутят.
+	_column = Control.new()
+	_column.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_column.anchor_top = 0.0
+	_column.anchor_bottom = 1.0
+	_column.offset_top = 0
+	_column.offset_bottom = 0
+	_column.offset_left = COL_X_CENTER
+	_column.offset_right = COL_X_CENTER + COL_W
+	canvas.add_child(_column)
+	_build_top_shelf(canvas)
+	_build_podium_ui(canvas, _column)
+	_build_mode_ui(_column)
 	_apply_mode_ui()
-
-	var help := Label.new()
-	help.text = "←→↑↓ / AD — выбор  |  клик — выбрать, ещё раз — старт  |  Enter — в гонку"
-	if _ui_font:
-		help.add_theme_font_override("font", _ui_font)
-	help.add_theme_font_size_override("font_size", 15)
-	help.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	help.anchor_right = 0.5
-	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	help.position.y = -36
-	help.modulate = Color(1, 1, 1, 0.7)
-	canvas.add_child(help)
-
+	_build_net_ui()
 	_setup_grid(canvas)
 
 
-## Мультяшная кнопка-стрелка листания (позиция — доля ширины экрана).
-func _make_arrow(canvas: CanvasLayer, tex_path: String, anchor_x: float,
+## Верхняя полка табличек: «ГАРАЖ», уровень с полосой опыта, кошелёк,
+## «+500 ЗА РЕКЛАМУ», имя игрока. Все — мелкие эмалевые таблички одной
+## высоты (крупная девятислайс-табличка с полями 40 в 80 px не влезает).
+func _build_top_shelf(canvas: Node) -> void:
+	# Заголовок — белая эмаль, аварийная лента по низу, сверху наискось
+	# приклеен жёлтый ярлык с названием игры.
+	var title_plate := UiKit.plate(canvas, "white", Vector2.ZERO,
+			Vector2(320, TOP_H))
+	_place(title_plate, 16, TOP_Y, 320, TOP_H)
+	UiKit.hazard(title_plate, Vector2(12, TOP_H - 18), Vector2(320 - 24, 9), 0.95)
+	var title := UiKit.plate_label(title_plate, "ГАРАЖ", 34, UiKit.INK)
+	title.offset_top = 4
+	title.offset_bottom = -12
+	var tag := Panel.new()
+	var tag_sb := StyleBoxFlat.new()
+	tag_sb.bg_color = UiKit.YELLOW
+	tag_sb.set_corner_radius_all(4)
+	tag_sb.set_border_width_all(2)
+	tag_sb.border_color = UiKit.INK
+	tag.add_theme_stylebox_override("panel", tag_sb)
+	# Ярлык приподнят на 7 px и повёрнут на −0.045 рад: правый край
+	# поднимается ещё на 8 — итого до кромки окна остаётся 3 px.
+	tag.position = Vector2(12, -7)
+	tag.size = Vector2(176, 26)
+	tag.rotation = -0.045
+	tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	title_plate.add_child(tag)
+	UiKit.plate_label(tag, "BIG HEAD RACING", 13, UiKit.INK)
+
+	# Уровень — жёлтая табличка с полосой опыта. Опыт и монеты даются на
+	# финише (GameState); уровни открывают машины и оружие — ЭКОНОМИКА.md.
+	var lvl := UiKit.plate(canvas, "yellow", Vector2.ZERO, Vector2(240, TOP_H))
+	_place(lvl, 352, TOP_Y, 240, TOP_H)
+	_level_label = UiKit.label(lvl, "", 18, UiKit.INK)
+	_level_label.position = Vector2(20, 14)
+	_level_label.size = Vector2(200, 24)
+	_xp_sub = UiKit.label(lvl, "", 12, Color(UiKit.INK.r, UiKit.INK.g, UiKit.INK.b, 0.75))
+	_xp_sub.position = Vector2(20, 18)
+	_xp_sub.size = Vector2(200, 20)
+	_xp_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_xp_bar = ProgressBar.new()
+	_xp_bar.show_percentage = false
+	_xp_bar.position = Vector2(20, 46)
+	_xp_bar.size = Vector2(200, 14)
+	_xp_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var track := StyleBoxFlat.new()
+	track.bg_color = Color(UiKit.INK.r, UiKit.INK.g, UiKit.INK.b, 0.22)
+	track.set_corner_radius_all(5)
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = UiKit.INK
+	fill.set_corner_radius_all(5)
+	_xp_bar.add_theme_stylebox_override("background", track)
+	_xp_bar.add_theme_stylebox_override("fill", fill)
+	lvl.add_child(_xp_bar)
+
+	# Кошелёк — белая табличка, гайка-монета и число.
+	var wallet := UiKit.plate(canvas, "white", Vector2.ZERO, Vector2(200, TOP_H))
+	_place(wallet, 608, TOP_Y, 200, TOP_H)
+	var coin := TextureRect.new()
+	coin.texture = load(UI_DIR + "coin.png")
+	coin.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	coin.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	coin.position = Vector2(18, (TOP_H - 40) * 0.5)
+	coin.size = Vector2(40, 40)
+	coin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	wallet.add_child(coin)
+	_coins_label = UiKit.label(wallet, "", 24, UiKit.INK)
+	_coins_label.position = Vector2(66, 0)
+	_coins_label.size = Vector2(118, TOP_H)
+	_coins_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_coin_flash = UiKit.label(wallet, "", 20, UiKit.TEAL, 4)
+	_coin_flash.position = Vector2(66, 22)
+	_coin_flash.size = Vector2(118, 30)
+	_coin_flash.visible = false
+	_refresh_money_label()
+
+	_build_ad_ui(canvas, 824, 210)
+
+	# Имя игрока — стальная табличка; клик открывает окно смены имени.
+	_name_btn = Button.new()
+	UiKit.style_button(_name_btn, "steel", 16)
+	_name_btn.clip_text = true
+	_name_btn.pressed.connect(func() -> void: _open_name_dialog(false))
+	_place(_name_btn, 1050, TOP_Y, 214, TOP_H)
+	canvas.add_child(_name_btn)
+	_refresh_name_btn()
+
+	var help := UiKit.label(_column, "←→ / AD — листать  ·  Enter — в гонку"
+			+ "  ·  Esc — закрыть подменю", 13, Color(1, 1, 1, 0.9), 4)
+	_place(help, 0, TOP_Y + TOP_H + 6, COL_W, 20)
+	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+
+
+## Низ левой колонки (координаты — внутри колонки, см. COL_*): имя
+## машины, ряд «РЕЖИМ» / «СТАРТ» / «АВТОПАРК» / «ТЮНИНГ». Стрелки
+## листания — на самом холсте по бокам машины, стоящей в центре: они
+## живут только пока подменю закрыты.
+func _build_podium_ui(canvas: Node, col: Control) -> void:
+	var name_panel := UiKit.plate(col, "steel", Vector2.ZERO, Vector2(420, 54))
+	_place(name_panel, (COL_W - 420) * 0.5, ROW_Y - 66, 420, 54, true)
+	_name_label = UiKit.plate_label(name_panel, "", 26, Color.WHITE, 6)
+
+	# Стрелки листания по бокам машины — оранжевые таблички.
+	_make_arrow(canvas, UI_DIR + "arrow_l.png", 226,
+			func() -> void: _set_index(
+					(_index - 1 + CarModelLibrary.CAR_IDS.size())
+					% CarModelLibrary.CAR_IDS.size()))
+	_make_arrow(canvas, UI_DIR + "arrow_r.png", 978,
+			func() -> void: _set_index(
+					(_index + 1) % CarModelLibrary.CAR_IDS.size()))
+
+	# «СТАРТ» — красная эмаль, единственная главная кнопка экрана.
+	_start_btn = Button.new()
+	_start_btn.text = "СТАРТ"
+	UiKit.style_button(_start_btn, "red", 24)
+	_place(_start_btn, 152, ROW_Y, 240, ROW_H, true)
+	_start_btn.pressed.connect(_start_race)
+	col.add_child(_start_btn)
+
+	# «КУПИТЬ · цена» — на месте «СТАРТ», видна только у закрытой машины.
+	_buy_btn = Button.new()
+	UiKit.style_button(_buy_btn, "orange", 18)
+	_place(_buy_btn, 152, ROW_Y, 240, ROW_H, true)
+	_buy_btn.visible = false
+	_buy_btn.pressed.connect(_buy_pressed)
+	col.add_child(_buy_btn)
+
+	# «АВТОПАРК» — жёлтая эмаль: открыть доску миниатюр всех машин.
+	_board_btn = Button.new()
+	_board_btn.text = "АВТОПАРК"
+	UiKit.style_button(_board_btn, "yellow", 15)
+	_place(_board_btn, 404, ROW_Y, 120, ROW_H, true)
+	_board_btn.pressed.connect(_open_board)
+	col.add_child(_board_btn)
+
+	# «ТЮНИНГ» — у своей машины: краски (у всех), у аркадных
+	# конструкторов ещё детали кузова и наклейки. Ничего, кроме внешнего
+	# вида, тюнинг не меняет.
+	_tuning_btn = Button.new()
+	_tuning_btn.text = "ТЮНИНГ"
+	UiKit.style_button(_tuning_btn, "teal", 15)
+	_place(_tuning_btn, 536, ROW_Y, 120, ROW_H, true)
+	_tuning_btn.pressed.connect(_open_tuning)
+	col.add_child(_tuning_btn)
+
+
+## Мультяшная кнопка-стрелка листания (x — левая кромка в px, по
+## вертикали — середина окна).
+func _make_arrow(canvas: CanvasLayer, tex_path: String, x: float,
 		on_press: Callable) -> void:
 	var btn := TextureButton.new()
 	btn.texture_normal = load(tex_path)
 	btn.ignore_texture_size = true
 	btn.stretch_mode = TextureButton.STRETCH_KEEP_ASPECT_CENTERED
 	btn.focus_mode = Control.FOCUS_NONE
-	btn.anchor_left = anchor_x
-	btn.anchor_right = anchor_x
 	btn.anchor_top = 0.5
 	btn.anchor_bottom = 0.5
-	btn.offset_left = 0
-	btn.offset_right = 76
+	btn.offset_left = x
+	btn.offset_right = x + 76
 	btn.offset_top = -38
 	btn.offset_bottom = 38
-	btn.modulate = Color(1, 1, 1, 0.92)
+	btn.modulate = Color(1, 1, 1, 0.94)
 	btn.pressed.connect(on_press)
 	btn.button_down.connect(func() -> void: btn.modulate = Color(0.75, 0.75, 0.75))
-	btn.button_up.connect(func() -> void: btn.modulate = Color(1, 1, 1, 0.92))
+	btn.button_up.connect(func() -> void: btn.modulate = Color(1, 1, 1, 0.94))
 	canvas.add_child(btn)
+	_arrows.append(btn)
 
 
-## Правая половина: прокручиваемая сетка миниатюр всех машин.
+## Правая половина: доска «АВТОПАРК» — белая эмаль с аварийной лентой,
+## внутри прокручиваемая сетка миниатюр всех машин.
 func _setup_grid(canvas: CanvasLayer) -> void:
-	_style_normal = UiKit.steel_box()
-	_style_selected = UiKit.steel_box()
-	_style_selected.bg_color = Color(0.30, 0.27, 0.14, 0.95)
+	_style_normal = StyleBoxFlat.new()
+	_style_normal.bg_color = Color(0.84, 0.80, 0.72)
+	_style_normal.set_corner_radius_all(6)
+	_style_normal.set_border_width_all(1)
+	_style_normal.border_color = Color(UiKit.INK.r, UiKit.INK.g, UiKit.INK.b, 0.35)
+	_style_hover = _style_normal.duplicate() as StyleBoxFlat
+	_style_hover.bg_color = Color(0.92, 0.89, 0.82)
+	_style_selected = _style_normal.duplicate() as StyleBoxFlat
+	_style_selected.bg_color = UiKit.YELLOW
 	_style_selected.set_border_width_all(3)
-	_style_selected.border_color = UiKit.YELLOW
+	_style_selected.border_color = UiKit.INK
 
-	var panel := PanelContainer.new()
-	var panel_style := StyleBoxFlat.new()
-	panel_style.bg_color = Color(UiKit.INK.r, UiKit.INK.g, UiKit.INK.b, 0.88)
-	panel_style.set_corner_radius_all(10)
-	panel_style.set_content_margin_all(10)
-	panel_style.set_border_width_all(1)
-	panel_style.border_color = Color(UiKit.RIM.r, UiKit.RIM.g,
-			UiKit.RIM.b, 0.45)
-	panel.add_theme_stylebox_override("panel", panel_style)
-	panel.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
-	panel.offset_left = -600
-	panel.offset_top = 20
-	panel.offset_bottom = -20
-	panel.offset_right = -16
-	canvas.add_child(panel)
-	_grid_panel = panel
+	var board := UiKit.plate(canvas, "white", Vector2.ZERO,
+			Vector2(BOARD_W, BOARD_H), false)
+	_place(board, BOARD_X, BOARD_Y, BOARD_W, BOARD_H)
+	board.visible = false   # открывается кнопкой «АВТОПАРК»
+	_grid_panel = board
+	# Заголовок отступает от заклёпок (у крупной таблички они в 24 px от угла).
+	var head := UiKit.label(board, "АВТОПАРК", 20, UiKit.INK)
+	head.position = Vector2(44, 12)
+	head.size = Vector2(300, 26)
+	_count_label = UiKit.label(board, "", 15,
+			Color(UiKit.INK.r, UiKit.INK.g, UiKit.INK.b, 0.7))
+	_count_label.position = Vector2(260, 15)
+	_count_label.size = Vector2(BOARD_W - 260 - 176, 22)
+	_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	var close_btn := _mini_button("ЗАКРЫТЬ")
+	close_btn.add_theme_font_size_override("font_size", 14)
+	close_btn.position = Vector2(BOARD_W - 44 - 120, 9)
+	close_btn.size = Vector2(120, 32)
+	close_btn.pressed.connect(_close_board)
+	board.add_child(close_btn)
+	UiKit.hazard(board, Vector2(14, BOARD_H - 22), Vector2(BOARD_W - 28, 10), 0.95)
 
-	# Панель тюнинга — на месте сетки, пока открыта.
+	# Панель тюнинга — на месте доски, пока открыта.
 	_tuning = TuningPanel.new()
-	_tuning.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
-	_tuning.offset_left = -600
-	_tuning.offset_top = 20
-	_tuning.offset_bottom = -20
-	_tuning.offset_right = -16
+	_place(_tuning, BOARD_X, BOARD_Y, BOARD_W, BOARD_H)
 	_tuning.changed.connect(_on_tuning_changed)
 	_tuning.closed.connect(_on_tuning_closed)
 	canvas.add_child(_tuning)
 
 	_scroll = ScrollContainer.new()
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	panel.add_child(_scroll)
+	_scroll.position = Vector2(18, 46)
+	_scroll.size = Vector2(BOARD_W - 36, BOARD_H - 46 - 30)
+	board.add_child(_scroll)
 
 	var grid := GridContainer.new()
 	grid.columns = GRID_COLUMNS
@@ -1176,38 +1414,39 @@ func _setup_grid(canvas: CanvasLayer) -> void:
 	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_scroll.add_child(grid)
 
+	var tag_sb := StyleBoxFlat.new()
+	tag_sb.bg_color = UiKit.YELLOW
+	tag_sb.set_corner_radius_all(4)
+	tag_sb.content_margin_left = 5
+	tag_sb.content_margin_right = 5
 	for i in CarModelLibrary.CAR_IDS.size():
 		var btn := Button.new()
 		btn.custom_minimum_size = THUMB_SIZE
 		btn.expand_icon = true
 		btn.focus_mode = Control.FOCUS_NONE
-		_apply_style(btn, _style_normal)
+		_apply_style(btn, _style_normal, _style_hover)
 		btn.pressed.connect(_on_cell_pressed.bind(i))
 		grid.add_child(btn)
 		_buttons.append(btn)
-		# Значок «с N уровня» на закрытой ячейке (текст ставит
-		# _refresh_grid_locks — он же красит и тултипы).
-		var lock := Label.new()
-		lock.text = "%d ур." % GameState.car_unlock_level(
-				CarModelLibrary.CAR_IDS[i])
-		if _ui_font:
-			lock.add_theme_font_override("font", _ui_font)
-		lock.add_theme_font_size_override("font_size", 13)
-		lock.add_theme_color_override("font_color", UiKit.YELLOW)
-		lock.add_theme_constant_override("outline_size", 4)
-		lock.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+		# Жёлтый ярлык «с N уровня» на закрытой ячейке (видимость ставит
+		# _refresh_grid_locks — он же красит силуэты и тултипы).
+		var lock := UiKit.label(btn, "%d ур." % GameState.car_unlock_level(
+				CarModelLibrary.CAR_IDS[i]), 11, UiKit.INK)
+		lock.add_theme_stylebox_override("normal", tag_sb)
 		lock.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-		lock.offset_left = -52
-		lock.offset_top = -22
-		lock.offset_right = -6
-		lock.offset_bottom = -4
-		lock.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		lock.offset_left = -56
+		lock.offset_top = -24
+		lock.offset_right = -5
+		lock.offset_bottom = -5
+		lock.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		lock.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		lock.visible = false
-		btn.add_child(lock)
 		_grid_locks.append(lock)
 	_refresh_grid_locks()
 
 
-func _apply_style(btn: Button, style: StyleBoxFlat) -> void:
-	for state in ["normal", "hover", "pressed", "focus"]:
+func _apply_style(btn: Button, style: StyleBoxFlat,
+		hover: StyleBoxFlat = null) -> void:
+	for state in ["normal", "pressed", "focus"]:
 		btn.add_theme_stylebox_override(state, style)
+	btn.add_theme_stylebox_override("hover", hover if hover else style)

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_shotcrosstuning"]
+
+[ext_resource type="Script" path="res://tools/shot_cross_tuning.gd" id="1_shotcross"]
+
+[node name="ShotCrossTuning" type="Node3D"]
+script = ExtResource("1_shotcross")

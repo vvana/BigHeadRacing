@@ -52,34 +52,38 @@ const CAR_UNLOCKS := {
 var owned_cars: Array = []   # купленные базы (стартовые тут не хранятся)
 var car_colors := {}         # база → выбранный цвет скина
 
-# ---- Улучшения машин: 4 слота × 3 ступени (ЭКОНОМИКА.md, раздел 5) ----
-# Каждая машина — четыре слота: мотор (разгон), колёса (сцепление и руль),
-# спойлер (потолок скорости), выхлоп (длительность ускорения). В каждом
-# слоте три ступени; ступень открывается уровнем игрока и покупается за
-# процент от цены машины (у стартовых — от условной FREE_CAR_BASE_PRICE).
-# У аркадных конструкторов ступень ещё и ОТКРЫВАЕТ детали на кузов: по
-# три варианта на ступень (CarModelLibrary.part_tier); у остальных машин
-# ступени — только характеристики.
+# ---- Тюнинг машин: 4 слота × 3 ступени (ЭКОНОМИКА.md, раздел 5) ----
+# ВАЖНО (03.09): тюнинг — ЧИСТАЯ КОСМЕТИКА, на характеристики машины он
+# НЕ влияет. Улучшать характеристики можно будет только оружию и бонусам
+# (ЭКОНОМИКА.md, раздел 7) — иначе прокачанный игрок в сетевом заезде
+# заведомо быстрее новичка. Детали на кузов (мотор, колёса, спойлер,
+# выхлоп) есть только у аркадных конструкторов и с 03.09 (вечер)
+# покупаются ПОШТУЧНО (try_buy_item): цена по ярусу детали
+# (CarModelLibrary.part_tier: I — №1–3, II — №4–6, III — №7–10), ярус
+# открывается уровнем. У остальных машин — только бесплатные цвета.
 const UPGRADE_SLOTS: Array[String] = ["engine", "wheel", "spoiler", "exhaust"]
-const UPGRADE_STEPS := 3
-const UPGRADE_PRICE_PCT: Array[float] = [0.04, 0.06, 0.08]   # ступени I, II, III
-const UPGRADE_LEVELS: Array[int] = [2, 6, 12]                # с какого уровня
+const UPGRADE_STEPS := 3        # ступени старых профилей (перенос, _migrate_items)
+const PART_PRICE_PCT: Array[float] = [0.015, 0.02, 0.025]   # ярус I, II, III
+const PART_LEVELS: Array[int] = [2, 6, 12]                  # с какого уровня
+const STICKER_PRICE_PCT := 0.02   # наклейка или полоса, за штуку
+const STICKER_MIN := 30
+const METAL_PRICE_PCT := 0.035    # металлик одного цвета (все 3 оттенка)
+const METAL_MIN := 50
 const FREE_CAR_BASE_PRICE := 1000
-## Прибавка одной ступени к характеристике слота (множитель 1 + k·ступень).
-const UPGRADE_EFFECT := {
-	"engine": 0.04, "wheel": 0.04, "spoiler": 0.02, "exhaust": 0.10,
-}
 
-# ---- Косметика аркадных машин (раздел 7а): пакеты на машину ----
-# «Наклейки» открывают все 10 наклеек и двойную полосу, «Металлик» —
-# металлик-версию всех 36 красок. Сами краски (12 цветов × 3 оттенка)
-# бесплатны, как цвета советских машин.
-const PACK_STICKERS := "stickers"
-const PACK_METALLIC := "metallic"
-const PACK_PCT := {PACK_STICKERS: 0.20, PACK_METALLIC: 0.40}
-const PACK_MIN := {PACK_STICKERS: 300, PACK_METALLIC: 600}
+# ---- Косметика аркадных машин (раздел 7а) ----
+# С 03.09 (вечер) всё поштучно (car_items): детали, наклейки, полоса и
+# металлик — каждый ЦВЕТ металлика отдельно («metal:<цвет>», покрывает
+# три его оттенка). Пакеты «Наклейки» и «Металлик» больше не продаются
+# (PACK_PCT пуст), купленные раньше переносятся в поштучное владение
+# (_migrate_items). Обычные краски (12 цветов × 3 оттенка) бесплатны.
+const PACK_STICKERS := "stickers"   # только для переноса старых профилей
+const PACK_METALLIC := "metallic"   # только для переноса старых профилей
+const PACK_PCT := {}
+const PACK_MIN := {}
 
-var car_upgrades := {}   # база → {слот: ступень 0..3}
+var car_upgrades := {}   # база → {слот: ступень 0..3} — старые профили, перенос
+var car_items := {}      # база → {«слот:номер» | «sticker:N» | «line»: true}
 var car_tuning := {}     # аркадная база → комплектация (ключи ARCADE_DEFAULT)
 var car_packs := {}      # база → {пакет: true}
 
@@ -93,13 +97,17 @@ var track_kind := ""
 ## Генерируются один раз за запуск игры.
 var car_thumbs := {}
 
-## Сколько машин в заезде хочет игрок (выбор в гараже, 4..8). Оффлайн —
-## это игрок + (race_size−1) ботов; по сети желание уезжает в hello, и
-## размер заезда решает сервер (Net.race_size): его задаёт ПЕРВЫЙ игрок
-## пустого лобби, остальные приезжают в заезд такого размера.
+## Сколько машин в заезде. С 03.09 выбора в гараже нет — ВСЕГДА 8
+## (полное поле, как в оригинале); значение и в профиле не хранится,
+## чтобы старые профили с четвёркой не остались без возможности сменить
+## его. Оффлайн — это игрок + (race_size−1) ботов; по сети желание
+## уезжает в hello, и размер заезда решает сервер (Net.race_size): его
+## задаёт ПЕРВЫЙ игрок пустого лобби, остальные приезжают в заезд такого
+## размера. Диапазон и set_race_size оставлены: ими пользуются стенды
+## (tools/test_race_size.gd) и сетевой код.
 const RACE_SIZE_MIN := 4
 const RACE_SIZE_MAX := 8
-var race_size := 4:
+var race_size := RACE_SIZE_MAX:
 	set(v):
 		race_size = clampi(v, RACE_SIZE_MIN, RACE_SIZE_MAX)
 
@@ -167,7 +175,6 @@ func _ready() -> void:
 		_ads_in_pair = int(cf.get_value("profile", "ads_in_pair", 0))
 		_ad_pair_done_at = float(cf.get_value("profile",
 				"ad_pair_done_at", 0.0))
-		race_size = int(cf.get_value("profile", "race_size", 4))
 		game_mode = str(cf.get_value("profile", "game_mode", MODE_RACE))
 		player_name = sanitize_name(str(cf.get_value("profile",
 				"player_name", "")))
@@ -184,6 +191,10 @@ func _ready() -> void:
 		var packs: Variant = cf.get_value("profile", "car_packs", {})
 		if packs is Dictionary:
 			car_packs = packs
+		var items: Variant = cf.get_value("profile", "car_items", {})
+		if items is Dictionary:
+			car_items = items
+		_migrate_items()
 		sel = str(cf.get_value("profile", "selected_car", ""))
 		_gift_1m_claimed = bool(cf.get_value("profile", "gift_1m_claimed", false))
 	# Восстановить выбор машины; пропавшая/некупленная база → стартовая.
@@ -229,10 +240,9 @@ func platform_name() -> String:
 	return sanitize_name(str(v)) if v != null else ""
 
 
-## Запомнить выбранное число участников (переживает перезапуск игры).
+## Задать число участников заезда (в профиле не хранится — см. race_size).
 func set_race_size(n: int) -> void:
 	race_size = n
-	_save_profile()
 
 
 ## Запомнить выбранный режим игры (гонка/футбол).
@@ -318,11 +328,12 @@ func set_car_color(base: String, color: String) -> void:
 	_save_profile()
 
 
-## Полный id скина машины с её текущим цветом / комплектацией.
+## Полный id скина машины с её текущим цветом / комплектацией
+## (аркадные и советские — с деталями, прочие — база).
 func full_id(base: String) -> String:
-	if CarModelLibrary.is_arcade(base):
-		return CarModelLibrary.arcade_id(base, tuning_of(base))
-	return CarModelLibrary.skin_id(base, color_of(base))
+	var cfg := tuning_of(base)
+	cfg["color"] = color_of(base)
+	return CarModelLibrary.tuned_id(base, cfg)
 
 
 ## Выбрать машину (база): selected_car_id собирается с её текущим цветом
@@ -346,51 +357,133 @@ func price_base(base: String) -> int:
 	return car_price(base) if CAR_UNLOCKS.has(base) else FREE_CAR_BASE_PRICE
 
 
-## Купленная ступень слота (0..UPGRADE_STEPS).
-func upgrade_level(base: String, slot: String) -> int:
-	var ups: Dictionary = car_upgrades.get(base, {})
-	return clampi(int(ups.get(slot, 0)), 0, UPGRADE_STEPS)
+# ---- Косметика поштучно: детали кузова, наклейки, полоса (03.09) ----
+# Каждый элемент покупается ОТДЕЛЬНО (просьба 03.09: «не несколько за
+# раз»). Ключ элемента: «слот:номер» для детали (engine:4, wheel:5),
+# «sticker:N» для наклейки, «line» для двойной полосы. Купленное лежит в
+# car_items[база][ключ] = true. Металлик остаётся одним элементом-пакетом
+# (car_packs), краски бесплатны.
+
+## Разобрать ключ элемента: [вид, слот, номер]; вид — "part" | "sticker"
+## | "line" | "metal" (слот — цвет) | "" (ключ не про эту игру).
+static func item_parts(key: String) -> Array:
+	if key == "line":
+		return ["line", "", 0]
+	var slot := key.get_slice(":", 0)
+	if key.count(":") != 1:
+		return ["", "", 0]
+	if slot == "metal":
+		var color := key.get_slice(":", 1)
+		return ["metal", color, 0] if CarModelLibrary.ARCADE_COLORS.has(color) \
+				else ["", "", 0]
+	var idx := int(key.get_slice(":", 1))
+	if idx <= 0 or idx > CarModelLibrary.PART_COUNT:
+		return ["", "", 0]
+	if slot == "sticker":
+		return ["sticker", "", idx]
+	if UPGRADE_SLOTS.has(slot) and CarModelLibrary.part_tier(slot, idx) > 0:
+		return ["part", slot, idx]
+	return ["", "", 0]
 
 
-## Цена СЛЕДУЮЩЕЙ ступени слота (0 — всё куплено). Округлена до десятков.
-func upgrade_price(base: String, slot: String) -> int:
-	var lv := upgrade_level(base, slot)
-	if lv >= UPGRADE_STEPS:
-		return 0
-	return maxi(10, int(round(price_base(base) * UPGRADE_PRICE_PCT[lv] / 10.0)) * 10)
+func item_owned(base: String, key: String) -> bool:
+	var items: Dictionary = car_items.get(base, {})
+	return bool(items.get(key, false))
 
 
-## Уровень игрока, нужный для следующей ступени слота.
-func upgrade_unlock_level(base: String, slot: String) -> int:
-	var lv := upgrade_level(base, slot)
-	return UPGRADE_LEVELS[mini(lv, UPGRADE_STEPS - 1)]
+## Цена элемента: деталь — процент от цены машины по ярусу (I/II/III —
+## PART_PRICE_PCT), наклейка и полоса — STICKER_PRICE_PCT. Округление до
+## десятков; 0 — ключ не продаётся (сток).
+func item_price(base: String, key: String) -> int:
+	var p := item_parts(key)
+	match String(p[0]):
+		"part":
+			var tier: int = CarModelLibrary.part_tier(p[1], p[2])
+			return maxi(10, int(round(price_base(base)
+					* PART_PRICE_PCT[tier - 1] / 10.0)) * 10)
+		"sticker", "line":
+			return maxi(STICKER_MIN, int(round(price_base(base)
+					* STICKER_PRICE_PCT / 10.0)) * 10)
+		"metal":
+			return maxi(METAL_MIN, int(round(price_base(base)
+					* METAL_PRICE_PCT / 10.0)) * 10)
+	return 0
 
 
-## Купить следующую ступень слота: нужна своя машина, уровень и монеты.
-func try_buy_upgrade(base: String, slot: String) -> bool:
-	if not car_owned(base) or not UPGRADE_SLOTS.has(slot):
+## Уровень игрока, с которого элемент продаётся: детали — по ярусу
+## (PART_LEVELS), наклейки и полоса — с первого.
+func item_unlock_level(base: String, key: String) -> int:
+	var p := item_parts(key)
+	if String(p[0]) == "part":
+		return PART_LEVELS[CarModelLibrary.part_tier(p[1], p[2]) - 1]
+	return 1
+
+
+## Купить элемент: своя машина со слотами (аркадная или советская —
+## CarModelLibrary.has_parts; у советских деталь должна быть из её
+## набора slot_options, наклейки/полоса/металлик — только у аркадных),
+## уровень, монеты, ещё не куплен. Порядок свободный — ярус II можно
+## брать без яруса I.
+func try_buy_item(base: String, key: String) -> bool:
+	if not car_owned(base) or not CarModelLibrary.has_parts(base):
 		return false
-	var lv := upgrade_level(base, slot)
-	if lv >= UPGRADE_STEPS or level_info().x < upgrade_unlock_level(base, slot):
+	var p := item_parts(key)
+	if String(p[0]) == "" or item_owned(base, key):
 		return false
-	if not try_spend(upgrade_price(base, slot)):
+	if String(p[0]) == "part":
+		if not CarModelLibrary.slot_options(base, p[1]).has(int(p[2])):
+			return false
+	elif not CarModelLibrary.is_arcade(base):
 		return false
-	if not car_upgrades.has(base):
-		car_upgrades[base] = {}
-	car_upgrades[base][slot] = lv + 1
+	if level_info().x < item_unlock_level(base, key):
+		return false
+	if not try_spend(item_price(base, key)):
+		return false
+	if not car_items.has(base):
+		car_items[base] = {}
+	car_items[base][key] = true
 	_save_profile()
 	return true
 
 
-## Множители характеристик по купленным ступеням (Car.apply_upgrades):
-## accel — мотор, grip — колёса, speed — спойлер, boost — выхлоп.
-func upgrade_multipliers(base: String) -> Dictionary:
-	return {
-		"accel": 1.0 + UPGRADE_EFFECT["engine"] * upgrade_level(base, "engine"),
-		"grip": 1.0 + UPGRADE_EFFECT["wheel"] * upgrade_level(base, "wheel"),
-		"speed": 1.0 + UPGRADE_EFFECT["spoiler"] * upgrade_level(base, "spoiler"),
-		"boost": 1.0 + UPGRADE_EFFECT["exhaust"] * upgrade_level(base, "exhaust"),
-	}
+## Сколько элементов слота/наклеек куплено (для подписей панели).
+func items_owned_count(base: String, prefix: String) -> int:
+	var n := 0
+	for key in car_items.get(base, {}):
+		if String(key).begins_with(prefix):
+			n += 1
+	return n
+
+
+## Перенос профилей до 03.09: ступень слота N открывала детали ярусов
+## 1..N, пакет «Наклейки» — все наклейки и полосу. Переводим в поштучное
+## владение, чтобы купленное не пропало; старые ключи в профиле остаются
+## (перенос повторяется при каждом запуске — он идемпотентен).
+func _migrate_items() -> void:
+	for base in car_upgrades:
+		var ups: Variant = car_upgrades[base]
+		if not ups is Dictionary:
+			continue
+		for slot in ups:
+			var lv := clampi(int(ups[slot]), 0, UPGRADE_STEPS)
+			for idx in range(1, CarModelLibrary.PART_COUNT + 1):
+				var tier := CarModelLibrary.part_tier(str(slot), idx)
+				if tier >= 1 and tier <= lv:
+					_grant_item(base, "%s:%d" % [slot, idx])
+	for base in car_packs:
+		if pack_owned(base, PACK_STICKERS):
+			for idx in range(1, CarModelLibrary.PART_COUNT + 1):
+				_grant_item(base, "sticker:%d" % idx)
+			_grant_item(base, "line")
+		if pack_owned(base, PACK_METALLIC):
+			for color in CarModelLibrary.ARCADE_COLORS:
+				_grant_item(base, "metal:%s" % color)
+
+
+func _grant_item(base: String, key: String) -> void:
+	if not car_items.has(base):
+		car_items[base] = {}
+	car_items[base][key] = true
 
 
 # ---- Косметика: пакеты и комплектация аркадных машин ----
@@ -418,41 +511,54 @@ func try_buy_pack(base: String, pack: String) -> bool:
 	return true
 
 
-## Комплектация аркадной машины (копия; пропущенное — сток, цвет — по
-## умолчанию для этой базы).
+## Комплектация машины (копия; пропущенное — сток: у аркадных колёса №1,
+## у советских родные; цвет — по умолчанию для этой базы).
 func tuning_of(base: String) -> Dictionary:
-	var cfg: Dictionary = CarModelLibrary.ARCADE_DEFAULT.duplicate()
-	cfg["color"] = CarModelLibrary.default_color(base)
+	var cfg: Dictionary = CarModelLibrary.default_cfg(base)
 	var saved: Dictionary = car_tuning.get(base, {})
 	for k in saved:
 		cfg[k] = saved[k]
 	return cfg
 
 
-## Можно ли поставить value в ключ key комплектации: деталь — куплена ли
-## её ступень, наклейки/полоса — пакет наклеек, металлик — пакет металлика;
-## цвет и оттенок свободны.
+## Можно ли поставить value в ключ key комплектации: деталь, наклейка и
+## полоса — куплен ли именно этот элемент (сток и «ничего» свободны;
+## у советских деталь ещё и из набора машины), металлик — куплен ли
+## металлик ТЕКУЩЕГО цвета; цвет, оттенок, цвет деталей (pcolor) и
+## полосы (lcolor) свободны.
 func tuning_allowed(base: String, key: String, value: Variant) -> bool:
 	match key:
 		"color": return CarModelLibrary.ARCADE_COLORS.has(str(value))
+		"pcolor", "lcolor":
+			return str(value).is_empty() or CarModelLibrary.is_paint_spec(str(value))
 		"shade": return int(value) >= 1 and int(value) <= 3
-		"glitter": return int(value) == 0 or pack_owned(base, PACK_METALLIC)
-		"sticker", "line":
-			return int(value) == 0 or pack_owned(base, PACK_STICKERS)
+		"glitter":
+			return int(value) == 0 \
+					or item_owned(base, "metal:%s" % str(tuning_of(base)["color"]))
+		"sticker":
+			return int(value) == 0 or item_owned(base, "sticker:%d" % int(value))
+		"line":
+			return int(value) == 0 or item_owned(base, "line")
 		"wheel", "engine", "spoiler", "exhaust":
-			return CarModelLibrary.part_tier(key, int(value)) \
-					<= upgrade_level(base, key)
+			if not CarModelLibrary.slot_options(base, key).has(int(value)):
+				return false
+			return CarModelLibrary.part_tier(key, int(value)) == 0 \
+					or item_owned(base, "%s:%d" % [key, int(value)])
 	return false
 
 
 ## Поставить деталь/краску/наклейку (проверяет права, см. tuning_allowed);
 ## если машина выбрана — обновляет и выбор. Переживает перезапуск.
 func set_tuning(base: String, key: String, value: Variant) -> bool:
-	if not CarModelLibrary.is_arcade(base) or not tuning_allowed(base, key, value):
+	if not CarModelLibrary.has_parts(base) or not tuning_allowed(base, key, value):
 		return false
 	if not car_tuning.has(base):
 		car_tuning[base] = {}
 	car_tuning[base][key] = value
+	# Перекрасили в цвет, чей металлик не куплен, — металлик гаснет.
+	if key == "color" and int(tuning_of(base)["glitter"]) == 1 \
+			and not item_owned(base, "metal:%s" % str(value)):
+		car_tuning[base]["glitter"] = 0
 	_refresh_selected(base)
 	_save_profile()
 	return true
@@ -500,6 +606,13 @@ func ad_cooldown_left() -> float:
 	return AD_COOLDOWN - passed
 
 
+## Сколько роликов текущей пары уже досмотрено (0 — пара целая). Кнопке
+## в гараже: «+500 за рекламу» против «ещё ролик · +500».
+func ad_pair_progress() -> int:
+	ad_cooldown_left()   # вышел кулдаун — сам обнуляет счётчик пары
+	return _ads_in_pair
+
+
 ## Ролик ДОСМОТРЕН (звать после onRewarded платформы). Возвращает
 ## начисленные монеты: 0 за первый ролик пары, AD_PAIR_REWARD за второй
 ## (награда даётся именно за пару). Вне окна доступности — 0 и без учёта.
@@ -532,11 +645,11 @@ func _save_profile() -> void:
 	cf.set_value("profile", "ads_in_pair", _ads_in_pair)
 	cf.set_value("profile", "ad_pair_done_at", _ad_pair_done_at)
 	cf.set_value("profile", "player_name", player_name)
-	cf.set_value("profile", "race_size", race_size)
 	cf.set_value("profile", "game_mode", game_mode)
 	cf.set_value("profile", "owned_cars", owned_cars)
 	cf.set_value("profile", "car_colors", car_colors)
 	cf.set_value("profile", "car_upgrades", car_upgrades)
+	cf.set_value("profile", "car_items", car_items)
 	cf.set_value("profile", "car_tuning", car_tuning)
 	cf.set_value("profile", "car_packs", car_packs)
 	cf.set_value("profile", "selected_car",

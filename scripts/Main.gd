@@ -272,6 +272,7 @@ func _ready() -> void:
 		if not Net.start_server():
 			get_tree().quit(1)
 			return
+	Music.play_race()
 	_track_kind = _pick_track_kind()
 	_setup_environment()
 
@@ -348,10 +349,8 @@ func _spawn_cars() -> void:
 		car.race = self
 		# На старте у каждого одно случайное оружие; дальше — боксы.
 		car.weapon = Weapons.random_weapon()
-		if is_p:
-			# Купленные улучшения выбранной машины (ЭКОНОМИКА.md, раздел 5).
-			car.apply_upgrades(GameState.upgrade_multipliers(
-					CarModelLibrary.base_id(GameState.selected_car_id)))
+		# Характеристики машины игрока НЕ трогаем: тюнинг косметический,
+		# все едут на стоке (03.09, см. Car «Улучшения»).
 		if not is_p:
 			# Лёгкий разброс характеристик, чтобы ИИ не ехали строем.
 			car.max_speed += randf_range(-1.2, 1.2)
@@ -885,6 +884,11 @@ func _finish_race() -> void:
 func _respawn_car(i: int) -> void:
 	var _wd0 := Time.get_ticks_msec()
 	var car := _cars[i]
+	# Машина сейчас в паузе появления после взрыва — её и так вернут (на
+	# место взрыва). Ручное R в эту секунду переставило бы замороженное
+	# тело, а появление всё равно случилось бы у места взрыва.
+	if car.is_respawning():
+		return
 	# От СВОЕЙ отметки (ведётся по непрерывности), а не от ближайшей точки
 	# оси: улетевшая за ограждение машина бывает ближе к чужому витку
 	# кольца, и тогда возврат «на трассу» выбрасывал её через пол-трассы
@@ -934,7 +938,11 @@ func _check_recovery(delta: float) -> void:
 		if car.global_position.length() > 600.0:
 			_respawn_car(i)
 			continue
-		if not car.alive:
+		# Пауза появления после взрыва (Car._begin_respawn_wait): машины
+		# сейчас нет — замороженное тело у места взрыва автовозврат принял
+		# бы за упавшее или застрявшее и переставил бы её мимо места, куда
+		# она должна вернуться сама.
+		if not car.alive or car.is_respawning():
 			_offtrack_time[i] = 0.0
 			_under_time[i] = 0.0
 			_flip_time[i] = 0.0
@@ -2252,10 +2260,6 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	car.freeze = false
 	car.net_role = Car.NetRole.OWNED
 	car.is_player = true
-	# Улучшения своей машины — как в оффлайне (_spawn_cars); только теперь,
-	# в момент, когда машина становится своей.
-	car.apply_upgrades(GameState.upgrade_multipliers(
-			CarModelLibrary.base_id(GameState.selected_car_id)))
 	# И ВСТАЁТ НА СВОЮ КЛЕТКУ РЕШЁТКИ. Пока мы ждали слот, она была
 	# марионеткой, и устаревший снимок (сервер мог поймать хвост _rx_pstate
 	# из сцены ПРОШЛОГО заезда — см. защиту в _rx_pstate) успевал увезти её

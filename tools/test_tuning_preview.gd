@@ -1,0 +1,114 @@
+extends Node3D
+## Стенд примерки в панели тюнинга (03.09.2026, вечер): клик по
+## некупленной детали НЕ покупает — надевает на подиум; «КУПИТЬ» покупает
+## всё примеренное разом; закрытие панели примерку снимает. Профиль НЕ
+## трогается: покупки идут в памяти, в конце профиль восстанавливается
+## из копии. Запуск (headless):
+##   godot --headless --path . res://tools/TestTuningPreview.tscn
+## Вердикт — строка «TestTuningPreview TEST: PASS|FAIL».
+
+var _frame := 0
+var _select: Node
+var _failed := 0
+var _checks := 0
+var _saved: Dictionary = {}
+
+
+func _ready() -> void:
+	# Снимок профиля — вернуть в конце (GameState пишет profile.cfg при
+	# каждой покупке).
+	for k in ["money", "xp", "owned_cars", "car_items", "car_tuning",
+			"car_colors", "selected_car_id"]:
+		var v: Variant = GameState.get(k)
+		_saved[k] = v.duplicate(true) if v is Dictionary or v is Array else v
+	GameState.money = 5000
+	GameState.xp = 2400   # ~10 уровень: ярусы I и II
+	GameState.car_items["vz01"] = {}
+	GameState.car_tuning["vz01"] = {}
+	GameState.car_colors["vz01"] = "red"
+	GameState.selected_car_id = GameState.full_id("vz01")
+	_select = (load("res://scenes/CarSelect.tscn") as PackedScene).instantiate()
+	add_child(_select)
+
+
+func _ok(cond: bool, what: String) -> void:
+	_checks += 1
+	if not cond:
+		_failed += 1
+		print("FAIL ", what)
+	else:
+		print("ok   ", what)
+
+
+func _podium_has(node_name: String) -> bool:
+	var model: Node = _select.get("_model")
+	return model != null and model.has_node(node_name)
+
+
+func _physics_process(_d: float) -> void:
+	_frame += 1
+	if _frame == 30:
+		_select.call("_open_tuning")
+	if _frame != 40:
+		return
+	var panel: TuningPanel = _select.get("_tuning")
+	var engine: int = CarModelLibrary.slot_options("vz01", "engine")[1]
+	var wheel: int = CarModelLibrary.slot_options("vz01", "wheel")[1]
+	var money0: int = GameState.money
+	_ok(panel.visible and panel.base() == "vz01", "панель открыта на Копейке")
+	_ok(not _podium_has("Engine"), "на подиуме сток")
+
+	# Примерка: деньги и профиль целы, подиум с мотором и дисками.
+	panel._try_on("engine", engine)
+	panel._try_on("wheel", wheel)
+	_ok(panel.has_preview() and GameState.money == money0,
+			"примерка не списала монет")
+	_ok(int(GameState.tuning_of("vz01")["engine"]) == 0
+			and not GameState.item_owned("vz01", "engine:%d" % engine),
+			"профиль без мотора")
+	_ok(panel.preview_id() == "vz01_red-w%d-e%d" % [wheel, engine],
+			"preview_id: %s" % panel.preview_id())
+	_ok(_podium_has("Engine"), "на подиуме примеренный мотор")
+	_ok(GameState.full_id("vz01") == "vz01_red", "полный id без примерки")
+	# Повторный клик — снять с примерки.
+	panel._try_on("wheel", wheel)
+	_ok(not panel._preview.has("wheel") and panel._preview.has("engine"),
+			"второй клик снял диски, мотор остался")
+
+	# Покупка всего примеренного: списано, поставлено, примерка пуста.
+	var price: int = GameState.item_price("vz01", "engine:%d" % engine)
+	var buy := Button.new()
+	panel._buy_preview(buy)
+	_ok(GameState.money == money0 - price, "списано %d" % price)
+	_ok(GameState.item_owned("vz01", "engine:%d" % engine)
+			and int(GameState.tuning_of("vz01")["engine"]) == engine,
+			"мотор куплен и стоит")
+	_ok(not panel.has_preview(), "примерка пуста после покупки")
+	_ok(GameState.full_id("vz01") == "vz01_red-e%d" % engine,
+			"полный id с мотором: %s" % GameState.full_id("vz01"))
+
+	# Не хватает монет — ничего не куплено, примерка осталась.
+	GameState.money = 0
+	panel._try_on("wheel", wheel)
+	panel._buy_preview(buy)
+	_ok(panel.has_preview() and not GameState.item_owned("vz01", "wheel:%d" % wheel),
+			"без монет покупки нет, примерка осталась")
+	_ok(buy.text == "НЕ ХВАТАЕТ МОНЕТ", "кнопка мигнула: %s" % buy.text)
+
+	# Закрыли панель — примерка снята, подиум по профилю.
+	panel.close()
+	_ok(not panel.has_preview() and _podium_has("Engine")
+			and not _podium_has("WheelPivot_wheel_fl/Wheel"),
+			"после закрытия: мотор (куплен) есть, примеренных дисков нет")
+
+	# Цвет деталей — бесплатно и сразу.
+	_ok(GameState.set_tuning("vz01", "pcolor", "cyan2")
+			and GameState.full_id("vz01").ends_with("-pcyan2"), "цвет деталей в id")
+
+	# Вернуть профиль.
+	for k in _saved:
+		GameState.set(k, _saved[k])
+	GameState._save_profile()
+	print("TestTuningPreview TEST: %s (%d/%d)" % [
+			"PASS" if _failed == 0 else "FAIL", _checks - _failed, _checks])
+	get_tree().quit(0 if _failed == 0 else 1)
