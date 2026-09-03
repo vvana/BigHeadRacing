@@ -6808,3 +6808,15 @@ tools/test_shop.gd, tools/test_tuning_preview.gd + TestTuningPreview.tscn
 (новый), tools/shots/{cross_tuning,cross_tuning_back,tuning_soviet,
 tuning_soviet_preview,tuning_preview,carselect,parts_sheet,cat_*}.png,
 README.md, ЭКОНОМИКА.md (разделы 5, 7а, 8, 9), PROGRESS.md.
+
+## dist пересобран под тюнинг советских (2026-09-03, поздний вечер, продолжение)
+Задание: «пересобирай dist». `--import` → `--export-debug "Windows
+Desktop"` — прошло с ПЕРВОЙ попытки (код 0). exe 84.1 МБ (без
+изменений), pck 59.7 → 78.6 МБ (музыка 4 mp3, текстуры гаража, новый
+реквизит, podium_plate). Из СОБРАННОГО exe: test_shop 53/53,
+test_car_build 309/309, TestTuningPreview 16/16, TestSelectPrefill —
+PASS. **VDS НЕ обновлён** (не просили; протокол прежний, сервер визуал
+не собирает — срочности нет, но советский id с деталями у второго
+игрока на старом exe будет боксом: раздать новые dist/BigHeadRacing.exe
++ .pck). Не закоммичено.
+**Файлы:** dist/BigHeadRacing.exe, dist/BigHeadRacing.pck, PROGRESS.md.
