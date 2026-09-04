@@ -1223,11 +1223,38 @@ func _setup_hud() -> void:
 	_column.offset_right = COL_X_CENTER + COL_W
 	canvas.add_child(_column)
 	_build_top_shelf(canvas)
+	_build_test_badge(canvas)
 	_build_podium_ui(canvas, _column)
 	_build_mode_ui(_column)
 	_apply_mode_ui()
 	_build_net_ui()
 	_setup_grid(canvas)
+
+
+## Красная плашка поверх гаража, когда игра поднята на ТЕСТОВОМ профиле
+## (стенд, снимок, автотест — см. GameState._pick_profile_path). Такой
+## гараж всегда пуст: 1 уровень, миллион монет, ни одной купленной
+## машины. 04.09 игрок трижды принимал окно стенда за пропавший
+## прогресс — теперь на нём написано, что это стенд и где лежит его файл.
+func _build_test_badge(canvas: Node) -> void:
+	if not GameState.is_test_profile():
+		return
+	var badge := UiKit.plate(canvas, "red", Vector2.ZERO, Vector2(560, 44))
+	_place(badge, 16, TOP_Y + TOP_H + 8, 560, 44)
+	# Плашка ничего не ловит мышью: под ней крутят подиум протяжкой
+	# (TestSpin ловил именно это — табличка съедала перетаскивание).
+	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var txt := UiKit.plate_label(badge,
+			"СТЕНД · ТЕСТОВЫЙ ПРОФИЛЬ · ВАШ ПРОГРЕСС ЦЕЛ", 17,
+			UiKit.text_on("red"))
+	txt.offset_top = 2
+	txt.offset_bottom = -20
+	var sub := UiKit.label(badge, GameState.PROFILE_TEST_PATH, 11,
+			Color(1, 1, 1, 0.85))
+	sub.position = Vector2(0, 24)
+	sub.size = Vector2(560, 16)
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	DisplayServer.window_set_title("Big Head Racing — СТЕНД (тестовый профиль)")
 
 
 ## Верхняя полка табличек: «ГАРАЖ», уровень с полосой опыта, кошелёк,

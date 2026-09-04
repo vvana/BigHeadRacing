@@ -227,6 +227,19 @@ func _ready() -> void:
 		_gift_1m_claimed = true
 		money += GIFT_1M_AMOUNT
 		_save_profile()
+	# Строка в лог с ПЕРВОЙ секунды запуска: какой файл прочитан и что в
+	# нём было. 04.09 игрок трижды сообщал «прогресс исчез» — без этой
+	# строки каждый раз приходилось гадать по времени записи файлов.
+	print("[profile] %s%s: уровень %d (xp %d), монет %d, машин %d, имя «%s»"
+			% [PROFILE_PATH, "  ← ТЕСТОВЫЙ (стенд)" if is_test_profile() else "",
+			level_info().x, xp, money, owned_cars.size(), display_name()])
+
+
+## Профиль стенда, а не игрока: гараж и заезд поднимаются на пустышке
+## (см. _pick_profile_path). Гараж рисует по этому флагу красную плашку,
+## чтобы пустой гараж стенда не принимали за пропавший прогресс.
+func is_test_profile() -> bool:
+	return PROFILE_PATH == PROFILE_TEST_PATH
 
 
 ## Общая чистка имени: пробелы по краям и повторные внутри, длина NAME_MAX.
@@ -702,6 +715,22 @@ func _save_profile() -> void:
 		var abs := ProjectSettings.globalize_path(PROFILE_PATH)
 		DirAccess.copy_absolute(abs, abs + ".broken")
 		cf = ConfigFile.new()
+	elif err == OK and not is_test_profile():
+		# Страховка (04.09): прежнее содержимое боевого профиля уходит в
+		# profile.cfg.bak_auto ПЕРЕД каждой записью. А если на диске опыта
+		# БОЛЬШЕ, чем у нас в памяти, — мы вот-вот затрём чужой (более
+		# полный) прогресс: кладём несгораемую копию .bak_rescue и кричим
+		# в лог. Само сохранение идёт как шло: угадывать за игрока нельзя.
+		var abs := ProjectSettings.globalize_path(PROFILE_PATH)
+		DirAccess.copy_absolute(abs, abs + ".bak_auto")
+		var disk_xp := int(cf.get_value("profile", "xp", 0))
+		if disk_xp > xp:
+			var rescue := abs + ".bak_rescue"
+			if not FileAccess.file_exists(rescue):
+				DirAccess.copy_absolute(abs, rescue)
+			push_warning("[profile] запись поверх БОЛЕЕ ПОЛНОГО профиля: "
+					+ "на диске xp %d, у нас %d — копия в %s"
+					% [disk_xp, xp, rescue])
 	cf.set_value("profile", "xp", xp)
 	cf.set_value("profile", "money", money)
 	cf.set_value("profile", "ads_in_pair", _ads_in_pair)
