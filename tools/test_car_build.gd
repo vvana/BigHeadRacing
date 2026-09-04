@@ -23,6 +23,7 @@ func _init() -> void:
 	_check_arcade_ids()
 	_check_soviet_parts()
 	_check_soviet_ids()
+	_check_underglow()
 	print("RESULT: %d/%d ok" % [_total - _failed, _total])
 	quit(1 if _failed > 0 else 0)
 
@@ -129,12 +130,68 @@ func _check_soviet_ids() -> void:
 			and CarModelLibrary.slot_options("fastback", "engine").is_empty() \
 			and CarModelLibrary.slot_options("vz01", "wheel")[0] == 0 \
 			and CarModelLibrary.slot_options("ac1", "wheel")[0] == 1
+	# Эффекты (04.09): дым "-m<цвет>" и неон "-n<цвет>" у любой машины,
+	# включая Unity без слотов (у них это единственный хвост id).
+	var fcfg := CarModelLibrary.default_cfg("vz01")
+	fcfg["smoke"] = "cyan"
+	fcfg["neon"] = "pink"
+	var fid := CarModelLibrary.tuned_id("vz01", fcfg)
+	var fback := CarModelLibrary.parse_cfg(fid)
+	ok = ok and fid == "vz01_red-mcyan-npink" and fback["smoke"] == "cyan" \
+			and fback["neon"] == "pink" and fback["wheel"] == 0
+	ok = ok and CarModelLibrary.tuned_id("fastback",
+			CarModelLibrary.default_cfg("fastback")) == "fastback"
+	var ucfg := CarModelLibrary.default_cfg("fastback")
+	ucfg["neon"] = "blue"
+	var uid := CarModelLibrary.tuned_id("fastback", ucfg)
+	var uback := CarModelLibrary.parse_cfg(uid)
+	ok = ok and uid == "fastback-nblue" and CarModelLibrary.base_id(uid) == "fastback" \
+			and uback["neon"] == "blue" and uback["smoke"] == ""
+	var badfx := CarModelLibrary.parse_cfg("vz01_red-mzzz-n7-q")
+	ok = ok and badfx["smoke"] == "" and badfx["neon"] == ""
+	var afx := CarModelLibrary.arcade_parse(CarModelLibrary.arcade_id("ac2",
+			{"smoke": "red", "neon": "green"}))
+	ok = ok and afx["smoke"] == "red" and afx["neon"] == "green"
+	if not ok:
+		print("FAIL эффекты в id: %s → %s / %s → %s / bad=%s / afx=%s" % [
+				fid, fback, uid, uback, badfx, afx])
 	if ok:
 		print("ok   советский id: %s → %s" % [id, back])
 	else:
 		print("FAIL советский id: stock=%s id=%s back=%s bad=%s aid=%s" % [
 				stock, id, back, bad, aid])
 		_failed += 1
+
+
+## Неон под днищем (04.09): у модели с "-n<цвет>" — узел Underglow
+## (квад Glow + NeonLight) в ОСЯХ МАШИНЫ (держатель гасит поворот и
+## масштаб модели); без неона узла нет. Дым модель не меняет.
+func _check_underglow() -> void:
+	for id in ["vz01_red-nblue", "fastback-ncyan",
+			"ac1-red2-g0-w1-e0-s0-x0-k0-l0-mred-npink"]:
+		_total += 1
+		var model := CarModelLibrary.build(id)
+		var glow: Node3D = model.get_node_or_null("Underglow") if model else null
+		var ok := glow != null and glow.has_node("Glow") and glow.has_node("NeonLight")
+		if ok:
+			var xf: Transform3D = model.transform * glow.transform
+			ok = xf.origin.length() < 0.01 and xf.basis.is_equal_approx(Basis.IDENTITY)
+		if ok:
+			print("ok   неон %s" % id)
+		else:
+			print("FAIL неон %s: узла Underglow нет или он не в осях машины" % id)
+			_failed += 1
+		if model:
+			model.free()
+	_total += 1
+	var plain := CarModelLibrary.build("vz01_red-mred")
+	if plain == null or plain.has_node("Underglow"):
+		print("FAIL без неона: модель не собралась или узел Underglow лишний")
+		_failed += 1
+	else:
+		print("ok   без неона узла Underglow нет")
+	if plain:
+		plain.free()
 
 
 func _check(full_id: String, soviet: bool, verbose: bool) -> void:
@@ -173,6 +230,7 @@ func _check_arcade(base: String) -> void:
 	_check_cfg(base, {}, 5, true)
 	_check_cfg(base, {"wheel": n + 1, "engine": n, "spoiler": n,
 			"exhaust": n, "sticker": n, "line": 1, "glitter": 1}, 8, true)
+	_check_cfg(base, {"neon": "red", "smoke": "blue"}, 6, false)   # +Underglow
 	if n != 1:
 		return
 	for i in range(1, CarModelLibrary.PART_COUNT + 1):

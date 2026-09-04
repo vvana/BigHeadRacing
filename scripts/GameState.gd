@@ -69,6 +69,12 @@ const STICKER_PRICE_PCT := 0.02   # наклейка или полоса, за �
 const STICKER_MIN := 30
 const METAL_PRICE_PCT := 0.035    # металлик одного цвета (все 3 оттенка)
 const METAL_MIN := 50
+# Эффекты (04.09, ЛЮБОЙ машине): цветной дым из-под колёс и неон под
+# днищем — каждый цвет отдельно («smoke:<цвет>», «neon:<цвет>»).
+const SMOKE_PRICE_PCT := 0.03
+const SMOKE_MIN := 40
+const NEON_PRICE_PCT := 0.04
+const NEON_MIN := 60
 const FREE_CAR_BASE_PRICE := 1000
 
 # ---- Косметика аркадных машин (раздел 7а) ----
@@ -132,8 +138,24 @@ var player_name := ""
 # Опыт даётся на финише заезда: за место + за уничтоженных соперников
 # (Main._show_finish). Уровни открывают машины, оружие и ступени улучшений
 # для ПОКУПКИ за монеты — вся сетка разблокировок и цен в ЭКОНОМИКА.md.
-const PROFILE_PATH := "user://profile.cfg"
+## Файл профиля. Стенды и тесты (tools/*, --script, --headless) живут в
+## ОТДЕЛЬНОМ user://profile_test.cfg: 04.09 игрок дважды «терял прогресс» —
+## запускал игру, пока test_gift/test_shop на секунды подменяли боевой
+## profile.cfg тестовым, и игра жила с ним в памяти (см. PROGRESS.md).
+static var PROFILE_PATH: String = _pick_profile_path()
+const PROFILE_TEST_PATH := "user://profile_test.cfg"
 const PLACE_XP := [100, 60, 40, 25]   # опыт за 1..4 место
+
+
+## Игра, запущенная человеком (play.bat, dist, Яндекс), — без «tools/»,
+## «--script» и «--headless» в командной строке; всё остальное — стенд.
+static func _pick_profile_path() -> String:
+	for a in OS.get_cmdline_args():
+		var s := str(a).replace("\\", "/")
+		if s.contains("tools/") or s == "--script" or s == "--headless" \
+				or s.begins_with("--script="):
+			return PROFILE_TEST_PATH
+	return "user://profile.cfg"
 const KILL_XP := 10                    # + за каждого уничтоженного соперника
 
 var xp := 0
@@ -372,9 +394,9 @@ static func item_parts(key: String) -> Array:
 	var slot := key.get_slice(":", 0)
 	if key.count(":") != 1:
 		return ["", "", 0]
-	if slot == "metal":
+	if slot == "metal" or CarModelLibrary.FX_KEYS.has(slot):
 		var color := key.get_slice(":", 1)
-		return ["metal", color, 0] if CarModelLibrary.ARCADE_COLORS.has(color) \
+		return [slot, color, 0] if CarModelLibrary.ARCADE_COLORS.has(color) \
 				else ["", "", 0]
 	var idx := int(key.get_slice(":", 1))
 	if idx <= 0 or idx > CarModelLibrary.PART_COUNT:
@@ -407,6 +429,12 @@ func item_price(base: String, key: String) -> int:
 		"metal":
 			return maxi(METAL_MIN, int(round(price_base(base)
 					* METAL_PRICE_PCT / 10.0)) * 10)
+		"smoke":
+			return maxi(SMOKE_MIN, int(round(price_base(base)
+					* SMOKE_PRICE_PCT / 10.0)) * 10)
+		"neon":
+			return maxi(NEON_MIN, int(round(price_base(base)
+					* NEON_PRICE_PCT / 10.0)) * 10)
 	return 0
 
 
@@ -419,18 +447,24 @@ func item_unlock_level(base: String, key: String) -> int:
 	return 1
 
 
-## Купить элемент: своя машина со слотами (аркадная или советская —
-## CarModelLibrary.has_parts; у советских деталь должна быть из её
-## набора slot_options, наклейки/полоса/металлик — только у аркадных),
-## уровень, монеты, ещё не куплен. Порядок свободный — ярус II можно
-## брать без яруса I.
+## Купить элемент: своя машина; дым и неон («smoke:<цвет>»,
+## «neon:<цвет>») — любой машине; детали — только со слотами (аркадная
+## или советская — CarModelLibrary.has_parts; у советских деталь должна
+## быть из её набора slot_options), наклейки/полоса/металлик — только у
+## аркадных; уровень, монеты, ещё не куплен. Порядок свободный — ярус II
+## можно брать без яруса I.
 func try_buy_item(base: String, key: String) -> bool:
-	if not car_owned(base) or not CarModelLibrary.has_parts(base):
+	if not car_owned(base):
 		return false
 	var p := item_parts(key)
-	if String(p[0]) == "" or item_owned(base, key):
+	var kind := String(p[0])
+	if kind == "" or item_owned(base, key):
 		return false
-	if String(p[0]) == "part":
+	if CarModelLibrary.FX_KEYS.has(kind):
+		pass   # эффекты продаются всем машинам
+	elif not CarModelLibrary.has_parts(base):
+		return false
+	elif kind == "part":
 		if not CarModelLibrary.slot_options(base, p[1]).has(int(p[2])):
 			return false
 	elif not CarModelLibrary.is_arcade(base):
@@ -551,6 +585,8 @@ func tuning_allowed(base: String, key: String, value: Variant) -> bool:
 			return int(value) == 0 or item_owned(base, "sticker:%d" % int(value))
 		"line":
 			return int(value) == 0 or item_owned(base, "line")
+		"smoke", "neon":
+			return str(value).is_empty() or item_owned(base, "%s:%s" % [key, str(value)])
 		"wheel", "engine", "spoiler", "exhaust":
 			if not CarModelLibrary.slot_options(base, key).has(int(value)):
 				return false
@@ -559,10 +595,13 @@ func tuning_allowed(base: String, key: String, value: Variant) -> bool:
 	return false
 
 
-## Поставить деталь/краску/наклейку (проверяет права, см. tuning_allowed);
+## Поставить деталь/краску/наклейку/эффект (проверяет права, см.
+## tuning_allowed; дым и неон — любой машине, остальное — со слотами);
 ## если машина выбрана — обновляет и выбор. Переживает перезапуск.
 func set_tuning(base: String, key: String, value: Variant) -> bool:
-	if not CarModelLibrary.has_parts(base) or not tuning_allowed(base, key, value):
+	if not CarModelLibrary.has_parts(base) and not CarModelLibrary.FX_KEYS.has(key):
+		return false
+	if not tuning_allowed(base, key, value):
 		return false
 	if not car_tuning.has(base):
 		car_tuning[base] = {}

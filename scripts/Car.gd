@@ -226,6 +226,8 @@ var _track_ang_abs := 0.0       # |угол носа к оси трассы|, с
 var _side_speed := 0.0          # боковой снос с последнего кадра езды (дым)
 var _on_sand := false           # на песчаной трассе съехал с полотна на песок
 var _smoke: Array[CPUParticles3D] = []  # дым из-под задних колёс (занос)
+var _smoke_color := ""          # цвет дыма/пламени из тюнинга ("" — обычный), apply_fx
+var debug_smoke := false        # стенды: дымить и гореть выхлопом без заноса
 var _skid_active := false       # сильный занос: задние колёса чертят следы
 var _skid_trails := {}          # пивот заднего колеса -> текущая SkidTrail
 var _boost_flame: CPUParticles3D        # огонь из выхлопа при ускорении
@@ -535,61 +537,114 @@ const FIRE_TEX: Texture2D = preload("res://assets/fx/fire_6x3.png")
 
 
 func _build_smoke() -> void:
-	var tex: Texture2D = SMOKE_TEX
+	# Эмиттеры — строго ЗА задними колёсами, внутри колеи (x ±0.55):
+	# на краю корпуса (±0.85) крупные клубы торчали по бокам машины.
+	# На песчаной трассе пыль песочная (track ставится Main ДО add_child,
+	# так что в _ready он уже известен; без track — обычный серый дым).
+	var sand := track != null and track.kind == TrackBuilder.KIND_SAND
+	for sx: float in [-0.55, 0.55]:
+		var p := make_smoke()
+		tint_smoke(p, _smoke_color, sand)
+		p.position = Vector3(sx, 0.12, 1.5)
+		add_child(p)
+		_smoke.append(p)
+
+
+## Эмиттер дыма из-под колеса (без цвета — см. tint_smoke). Статический:
+## им же дымит машина на подиуме гаража (CarSelect), когда куплен или
+## примерен цветной дым. Шлейф короткий: жизнь 0.5 с и слабый разлёт.
+static func make_smoke() -> CPUParticles3D:
 	# Клуб рождается небольшим, быстро набухает и слегка дорастает.
 	var growth := Curve.new()
 	growth.add_point(Vector2(0.0, 0.4))
 	growth.add_point(Vector2(0.35, 1.0))
 	growth.add_point(Vector2(1.0, 1.2))
-	# Эмиттеры — строго ЗА задними колёсами, внутри колеи (x ±0.55):
-	# на краю корпуса (±0.85) крупные клубы торчали по бокам машины.
-	# Шлейф короткий: жизнь 0.5 с и слабый разлёт.
-	for sx: float in [-0.55, 0.55]:
-		var p := CPUParticles3D.new()
-		p.emitting = false
-		p.amount = 16
-		p.lifetime = 0.5
-		p.local_coords = false   # клубы остаются позади машины
-		p.direction = Vector3.UP
-		p.spread = 25.0
-		p.gravity = Vector3(0.0, 1.2, 0.0)
-		p.initial_velocity_min = 0.5
-		p.initial_velocity_max = 1.2
-		p.angle_min = 0.0        # случайный поворот билборда
-		p.angle_max = 360.0
-		p.scale_amount_min = 0.55
-		p.scale_amount_max = 0.95
-		p.scale_amount_curve = growth
-		# Случайный кадр атласа 2×2 на всю жизнь частицы (анимация не
-		# крутится — у частицы случайный anim_offset).
-		p.anim_offset_min = 0.0
-		p.anim_offset_max = 1.0
-		var quad := QuadMesh.new()
-		quad.size = Vector2(0.7, 0.7)
-		var mat := StandardMaterial3D.new()
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
-		mat.particles_anim_h_frames = 2
-		mat.particles_anim_v_frames = 2
-		mat.particles_anim_loop = false
-		mat.vertex_color_use_as_albedo = true
-		mat.albedo_texture = tex
-		quad.material = mat
-		p.mesh = quad
-		var grad := Gradient.new()
-		# На песчаной трассе пыль песочная (track ставится Main ДО add_child,
-		# так что в _ready он уже известен; без track — обычный серый дым).
-		if track != null and track.kind == TrackBuilder.KIND_SAND:
-			grad.set_color(0, Color(0.87, 0.74, 0.5, 0.8))
-			grad.set_color(1, Color(0.84, 0.72, 0.5, 0.0))
-		else:
-			grad.set_color(0, Color(0.92, 0.92, 0.92, 0.75))
-			grad.set_color(1, Color(0.85, 0.85, 0.85, 0.0))
-		p.color_ramp = grad
-		p.position = Vector3(sx, 0.12, 1.5)
-		add_child(p)
-		_smoke.append(p)
+	var p := CPUParticles3D.new()
+	p.emitting = false
+	p.amount = 16
+	p.lifetime = 0.5
+	p.local_coords = false   # клубы остаются позади машины
+	p.direction = Vector3.UP
+	p.spread = 25.0
+	p.gravity = Vector3(0.0, 1.2, 0.0)
+	p.initial_velocity_min = 0.5
+	p.initial_velocity_max = 1.2
+	p.angle_min = 0.0        # случайный поворот билборда
+	p.angle_max = 360.0
+	p.scale_amount_min = 0.55
+	p.scale_amount_max = 0.95
+	p.scale_amount_curve = growth
+	# Случайный кадр атласа 2×2 на всю жизнь частицы (анимация не
+	# крутится — у частицы случайный anim_offset).
+	p.anim_offset_min = 0.0
+	p.anim_offset_max = 1.0
+	var quad := QuadMesh.new()
+	quad.size = Vector2(0.7, 0.7)
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	mat.particles_anim_h_frames = 2
+	mat.particles_anim_v_frames = 2
+	mat.particles_anim_loop = false
+	mat.vertex_color_use_as_albedo = true
+	mat.albedo_texture = SMOKE_TEX
+	quad.material = mat
+	p.mesh = quad
+	return p
+
+
+## Цвет дыма: купленный в тюнинге цвет (имя из CarModelLibrary.ARCADE_COLORS
+## — светлый клуб, гаснущий в чистый цвет), иначе песочная пыль (sand) или
+## обычный серый дым.
+static func tint_smoke(p: CPUParticles3D, color: String, sand: bool) -> void:
+	var grad := Gradient.new()
+	if CarModelLibrary.ARCADE_COLORS.has(color):
+		var c := CarModelLibrary.fx_color(color)
+		var light := c.lerp(Color.WHITE, 0.35)
+		grad.set_color(0, Color(light.r, light.g, light.b, 0.9))
+		grad.set_color(1, Color(c.r, c.g, c.b, 0.0))
+	elif sand:
+		grad.set_color(0, Color(0.87, 0.74, 0.5, 0.8))
+		grad.set_color(1, Color(0.84, 0.72, 0.5, 0.0))
+	else:
+		grad.set_color(0, Color(0.92, 0.92, 0.92, 0.75))
+		grad.set_color(1, Color(0.85, 0.85, 0.85, 0.0))
+	p.color_ramp = grad
+
+
+## Жизнь языка пламени выхлопа: без цвета — бело-жёлтое ядро у сопла →
+## оранжевый → тёмно-красный гаснущий кончик (при ADD тёмный цвет сам
+## сходит на нет); с купленным цветом дыма — светлое ядро того же цвета
+## → чистый цвет → тёмный кончик.
+static func flame_ramp(color: String) -> Gradient:
+	var grad := Gradient.new()
+	if CarModelLibrary.ARCADE_COLORS.has(color):
+		var c := CarModelLibrary.fx_color(color)
+		var core := c.lerp(Color.WHITE, 0.6)
+		var dark := c.darkened(0.6)
+		grad.set_color(0, Color(core.r, core.g, core.b, 1.0))
+		grad.set_color(1, Color(dark.r, dark.g, dark.b, 0.0))
+		grad.add_point(0.3, Color(c.r, c.g, c.b, 1.0))
+		grad.add_point(0.65, Color(dark.r, dark.g, dark.b, 0.6))
+		return grad
+	grad.set_color(0, Color(1.0, 0.97, 0.75, 1.0))
+	grad.set_color(1, Color(0.55, 0.08, 0.01, 0.0))
+	grad.add_point(0.3, Color(1.0, 0.62, 0.12, 1.0))
+	grad.add_point(0.65, Color(0.95, 0.3, 0.03, 0.6))
+	return grad
+
+
+## Косметика из id машины (Main._set_car_model): цвет дыма из-под колёс и
+## пламени выхлопа — из токена "-m<цвет>". Неон под днищем — часть
+## модели (CarModelLibrary.build), тут не нужен.
+func apply_fx(id: String) -> void:
+	_smoke_color = str(CarModelLibrary.parse_cfg(id).get("smoke", ""))
+	var sand := track != null and track.kind == TrackBuilder.KIND_SAND
+	for p in _smoke:
+		tint_smoke(p, _smoke_color, sand)
+	if _boost_flame:
+		_boost_flame.color_ramp = flame_ramp(_smoke_color)
 
 
 ## Огонь из выхлопа — бьёт из кормы, пока действует ускорение (бонус BOOST
@@ -637,14 +692,8 @@ func _build_boost_flame() -> void:
 	mat.albedo_texture = tex
 	quad.material = mat
 	p.mesh = quad
-	# Жизнь клуба: бело-жёлтое ядро у сопла → оранжевый → тёмно-красный
-	# гаснущий кончик (при ADD тёмный цвет сам сходит на нет).
-	var grad := Gradient.new()
-	grad.set_color(0, Color(1.0, 0.97, 0.75, 1.0))
-	grad.set_color(1, Color(0.55, 0.08, 0.01, 0.0))
-	grad.add_point(0.3, Color(1.0, 0.62, 0.12, 1.0))
-	grad.add_point(0.65, Color(0.95, 0.3, 0.03, 0.6))
-	p.color_ramp = grad
+	# Жизнь клуба — flame_ramp (обычное пламя или в цвет купленного дыма).
+	p.color_ramp = flame_ramp(_smoke_color)
 	# Ниже и ЗА бампером (кузов 3.2 м, корма на 1.6): при сопле на самом
 	# бампере половина струи в изометрии ложилась на багажник — «зад горит».
 	p.position = Vector3(0.0, 0.3, 1.85)
@@ -896,7 +945,8 @@ func _physics_process(delta: float) -> void:
 	var smoking := alive and on_ground and (
 			(absf(_side_speed) > 5.0 and hh.length() > 8.0)
 			or (_slip_time > 0.0 and hh.length() > 3.0)
-			or (_on_sand and hh.length() > 3.0))
+			or (_on_sand and hh.length() > 3.0)
+			or debug_smoke)
 	for p in _smoke:
 		p.emitting = smoking
 	# Следы шин на асфальте: пороги ВЫШЕ дымовых — дым идёт от любого
@@ -961,7 +1011,8 @@ func _tick_effects(delta: float) -> void:
 		_boost_flame.scale_amount_max = 0.22 if narrow else 0.34
 		_boost_flame.spread = 2.0 if narrow else 3.0
 		_boost_flame.emitting = alive and (_boost_time > 0.0
-				or (_status_time > 0.0 and _status_kind == Weapons.BOOST))
+				or (_status_time > 0.0 and _status_kind == Weapons.BOOST)
+				or debug_smoke)
 	if _ghost_time > 0.0:
 		_ghost_age += delta
 		_ghost_time -= delta

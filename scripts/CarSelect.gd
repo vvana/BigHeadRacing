@@ -74,6 +74,7 @@ var _index := 0
 var _turntable: Node3D
 var _dragging := false            # тянут машину на подиуме (мышь/палец)
 var _model: Node3D
+var _podium_smoke: Array[CPUParticles3D] = []   # цветной дым на подиуме
 var _name_label: Label
 var _count_label: Label
 var _buttons: Array[Button] = []
@@ -611,12 +612,7 @@ func _set_index(i: int) -> void:
 	if _model:
 		_model.queue_free()
 	var base: String = CarModelLibrary.CAR_IDS[_index]
-	# На подиуме — машина С ПРИМЕРКОЙ из панели тюнинга (некупленные
-	# детали надеты только здесь; профиль и миниатюра — без них).
-	var id := _full_id(_index)
-	if _tuning != null and _tuning.visible and _tuning.base() == base \
-			and _tuning.has_preview():
-		id = _tuning.preview_id()
+	var id := _podium_id()
 	_model = CarModelLibrary.build(id, 3.2, 0.02)
 	if _model:
 		_turntable.add_child(_model)
@@ -635,12 +631,58 @@ func _set_index(i: int) -> void:
 			_tuning.open(base)
 		else:
 			_tuning.close()
+	# Дым — ПОСЛЕ open(): у другой машины панель переходит на первую
+	# вкладку, и решать «дымить ли» надо по ней.
+	_refresh_podium_smoke()
 	# Подсветка ячейки на доске.
 	if _buttons.size() > prev:
 		_apply_style(_buttons[prev], _style_normal, _style_hover)
 	if _buttons.size() > _index:
 		_apply_style(_buttons[_index], _style_selected)
 		_scroll.ensure_control_visible(_buttons[_index])
+
+
+## id машины на подиуме: С ПРИМЕРКОЙ из панели тюнинга (некупленные
+## детали надеты только здесь; профиль и миниатюра — без них).
+func _podium_id() -> String:
+	var base: String = CarModelLibrary.CAR_IDS[_index]
+	if _tuning != null and _tuning.visible and _tuning.base() == base \
+			and _tuning.has_preview():
+		return _tuning.preview_id()
+	return _full_id(_index)
+
+
+## Цветной дым на подиуме (04.09): ленивые клубы из-под задних колёс,
+## когда у машины куплен или примерен цвет дыма — иначе покупку в
+## гараже не видно (в заезде дым идёт только в заносе). Показывается
+## ТОЛЬКО пока открыта вкладка ЭФФЕКТЫ панели тюнинга, т.е. когда дым
+## выбирают (просьба 04.09: «не всегда в гараже, только когда
+## выбираешь»); в остальное время подиум чистый. Обычный серый не
+## показываем. Эмиттеры — дети поворотного стола, как модель.
+func _refresh_podium_smoke() -> void:
+	var color := ""
+	if _tuning != null and _tuning.visible and _tuning.tab() == "fx":
+		color = str(CarModelLibrary.parse_cfg(_podium_id()).get("smoke", ""))
+	_set_podium_smoke(color)
+
+
+func _set_podium_smoke(color: String) -> void:
+	for p in _podium_smoke:
+		p.queue_free()
+	_podium_smoke.clear()
+	if not CarModelLibrary.ARCADE_COLORS.has(color):
+		return
+	for sx: float in [-0.55, 0.55]:
+		var p := Car.make_smoke()
+		Car.tint_smoke(p, color, false)
+		p.amount = 10
+		p.lifetime = 1.1
+		p.initial_velocity_min = 0.3
+		p.initial_velocity_max = 0.7
+		p.position = Vector3(sx, 0.15, 1.4)   # за задними колёсами (нос −Z)
+		_turntable.add_child(p)
+		p.emitting = true   # ПОСЛЕ add_child: вне дерева эмиттер ругается на transform
+		_podium_smoke.append(p)
 
 
 ## Затемнить модель на подиуме (закрытая машина — «силуэт в тени»).
@@ -1399,6 +1441,7 @@ func _setup_grid(canvas: CanvasLayer) -> void:
 	_place(_tuning, BOARD_X, BOARD_Y, BOARD_W, BOARD_H)
 	_tuning.changed.connect(_on_tuning_changed)
 	_tuning.closed.connect(_on_tuning_closed)
+	_tuning.tab_changed.connect(_refresh_podium_smoke)
 	canvas.add_child(_tuning)
 
 	_scroll = ScrollContainer.new()

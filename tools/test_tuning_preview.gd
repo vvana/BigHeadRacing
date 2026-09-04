@@ -129,7 +129,7 @@ func _physics_process(_d: float) -> void:
 	# Вкладки: у Копейки мотор/колёса/спойлер/выхлоп/краска, у аркадной
 	# ещё полоса и наклейки; выбор вкладки перестраивает панель.
 	panel.open("vz01")
-	_ok(panel._tabs() == ["engine", "wheel", "spoiler", "exhaust", "paint"]
+	_ok(panel._tabs() == ["engine", "wheel", "spoiler", "exhaust", "paint", "fx"]
 			and panel._tab == "engine", "вкладки Копейки: %s" % [panel._tabs()])
 	panel._select_tab("paint")
 	_ok(panel._tab == "paint", "вкладка «КРАСКА» выбрана")
@@ -158,6 +158,47 @@ func _physics_process(_d: float) -> void:
 			"строка примерки без «итого»")
 	_ok(buy_btn != null and buy_btn.text.contains("·"),
 			"цена на самой кнопке: %s" % [buy_btn.text if buy_btn else "нет"])
+	panel.close()
+
+	# Эффекты (04.09): вкладка «ЭФФЕКТЫ» у всех машин; дым и неон
+	# примеряются (подиум — с неоном), покупаются «КУПИТЬ», попадают в id.
+	panel.open("vz01")
+	_ok(panel._tabs()[-1] == "fx", "последняя вкладка Копейки — ЭФФЕКТЫ: %s" % [panel._tabs()])
+	panel._select_tab("fx")
+	GameState.money = 1000
+	var money_fx: int = GameState.money
+	panel._try_on("smoke", "cyan")
+	panel._try_on("neon", "pink")
+	_ok(panel.has_preview() and GameState.money == money_fx
+			and panel.preview_id().ends_with("-mcyan-npink"),
+			"дым и неон примерены, не куплены: %s" % panel.preview_id())
+	_ok(_podium_has("Underglow"), "на подиуме примеренный неон")
+	_ok(_find_button(panel._foot, "КУПИТЬ") != null
+			and _find_label(panel._foot, "дым голубой") != null,
+			"строка примерки с дымом и неоном")
+	var fx_price: int = GameState.item_price("vz01", "smoke:cyan") \
+			+ GameState.item_price("vz01", "neon:pink")
+	panel._buy_preview(buy)
+	_ok(GameState.money == money_fx - fx_price
+			and GameState.item_owned("vz01", "smoke:cyan")
+			and GameState.item_owned("vz01", "neon:pink"),
+			"куплены дым и неон, списано %d" % fx_price)
+	_ok(GameState.full_id("vz01").ends_with("-mcyan-npink"),
+			"id с эффектами: %s" % GameState.full_id("vz01"))
+	_ok(not panel.has_preview() and _podium_has("Underglow"),
+			"после покупки неон на подиуме уже по профилю")
+	# Дым на подиуме — только пока открыта вкладка ЭФФЕКТЫ (04.09: «не
+	# всегда в гараже, только когда выбираешь»).
+	_ok(not _select._podium_smoke.is_empty(),
+			"на вкладке ЭФФЕКТЫ с купленным дымом подиум дымит")
+	panel._select_tab("engine")
+	_ok(_select._podium_smoke.is_empty(),
+			"на вкладке МОТОР дыма на подиуме нет")
+	panel._select_tab("fx")
+	_ok(not _select._podium_smoke.is_empty(), "вернулись на ЭФФЕКТЫ — дым снова идёт")
+	# Unity-машина без слотов: вкладки КРАСКА и ЭФФЕКТЫ.
+	panel.open("fastback")
+	_ok(panel._tabs() == ["paint", "fx"], "вкладки Unity-машины: %s" % [panel._tabs()])
 	panel.close()
 
 	# Вернуть профиль.

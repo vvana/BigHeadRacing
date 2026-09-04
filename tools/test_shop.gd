@@ -95,6 +95,43 @@ func _run() -> void:
 	gs.set_tuning("vz01", "engine", 1)
 	_ok(not gs.set_tuning("fastback", "color_engine", "grey2"), "у Unity-машин слотов нет")
 
+	# --- Эффекты (04.09): цветной дым и неон — любой машине, по цвету за
+	# штуку («smoke:<цвет>», «neon:<цвет>»), в id — токены -m/-n.
+	_ok(GS.item_parts("smoke:red") == ["smoke", "red", 0]
+			and GS.item_parts("neon:cyan") == ["neon", "cyan", 0]
+			and String(GS.item_parts("smoke:zzz")[0]) == "", "ключи дыма/неона")
+	_ok(gs.item_price("vz01", "smoke:red") == 40 and gs.item_price("vz01", "neon:red") == 60,
+			"цены эффектов у бесплатной машины — минимумы 40 / 60")
+	_ok(gs.item_unlock_level("vz01", "neon:red") == 1, "эффекты с 1 уровня")
+	_ok(not gs.set_tuning("vz01", "smoke", "red") and gs.set_tuning("vz01", "smoke", ""),
+			"дым без покупки — нельзя, обычный — свободно")
+	var money_fx: int = gs.money
+	_ok(gs.try_buy_item("vz01", "smoke:red") and gs.money == money_fx - 40,
+			"дым red куплен, списано 40")
+	_ok(gs.set_tuning("vz01", "smoke", "red") and not gs.set_tuning("vz01", "smoke", "blue"),
+			"дым red ставится, blue (не куплен) — нет")
+	_ok(gs.try_buy_item("vz01", "neon:blue") and gs.set_tuning("vz01", "neon", "blue"),
+			"неон blue куплен и включён")
+	_ok(gs.full_id("vz01") == "vz01_green-e1-mred-nblue",
+			"id с эффектами: %s" % gs.full_id("vz01"))
+	_ok(not gs.set_tuning("vz01", "smoke", "zzz") and not gs.try_buy_item("vz01", "neon:zzz"),
+			"мусорный цвет эффекта — отказ")
+	# Unity-машина без слотов: эффекты можно, детали — по-прежнему нет.
+	gs.owned_cars.append("fastback")
+	_ok(gs.full_id("fastback") == "fastback", "сток Unity-машины — голая база")
+	var smoke_price: int = gs.item_price("fastback", "smoke:cyan")
+	_ok(smoke_price == maxi(40, int(round(gs.car_price("fastback") * 0.03 / 10.0)) * 10),
+			"дым — 3 %% цены машины: %d" % smoke_price)
+	gs.add_money(smoke_price)
+	_ok(gs.try_buy_item("fastback", "smoke:cyan") and gs.set_tuning("fastback", "smoke", "cyan")
+			and gs.full_id("fastback") == "fastback-mcyan",
+			"дым у Unity-машины: %s" % gs.full_id("fastback"))
+	_ok(not gs.try_buy_item("fastback", "engine:1")
+			and not gs.set_tuning("fastback", "wheel", 2),
+			"деталей у Unity-машины по-прежнему нет")
+	_ok(gs.set_tuning("vz01", "smoke", "") and gs.set_tuning("vz01", "neon", "")
+			and gs.full_id("vz01") == "vz01_green-e1", "эффекты сняты — id прежний")
+
 	# --- Аркадная машина: покупка, детали поштучно, наклейки поштучно.
 	_ok(not gs.try_buy_item("ac1", "wheel:2"), "чужую машину не тюнить")
 	gs.add_xp(4000)   # далеко за 12 уровень
@@ -160,6 +197,9 @@ func _run() -> void:
 			"поштучные покупки пережили перезапуск")
 	_ok(fresh.item_owned("ac1", "metal:cyan") and not fresh.item_owned("ac1", "metal:red"),
 			"металлик cyan пережил перезапуск")
+	_ok(fresh.item_owned("vz01", "smoke:red") and fresh.item_owned("vz01", "neon:blue")
+			and fresh.full_id("fastback") == "fastback-mcyan",
+			"дым и неон пережили перезапуск: %s" % fresh.full_id("fastback"))
 	_ok(fresh.selected_car_id == want, "выбор с комплектацией: %s" % fresh.selected_car_id)
 	_ok(fresh.car_owned("ac1") and fresh.color_of("ac1") == "cyan", "владение и цвет")
 	fresh.free()

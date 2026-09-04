@@ -198,6 +198,7 @@ func _set_car_model(car: Car, id: String) -> void:
 		model.name = "CarModel"
 		car.add_child(model)
 		car.collect_wheels(model)
+	car.apply_fx(id)   # цвет дыма/пламени из тюнинга; неон — в модели
 
 
 ## Цветное кольцо команды под машиной: свой/чужой виден с одного взгляда.

@@ -61,6 +61,12 @@ func _physics_process(_d: float) -> void:
 		var panel: TuningPanel = _select.get("_tuning")
 		var b: String = panel.base()
 		var slot: String = panel._tab
+		if slot == "fx":
+			# Вкладка ЭФФЕКТЫ: примерить голубой дым и розовый неон — на
+			# подиуме появляются клубы дыма и пятно неона.
+			panel._try_on("smoke", "cyan")
+			panel._try_on("neon", "pink")
+			return
 		if not GameState.UPGRADE_SLOTS.has(slot):
 			slot = "engine"
 		panel._try_on(slot, CarModelLibrary.slot_options(b, slot)[-1])

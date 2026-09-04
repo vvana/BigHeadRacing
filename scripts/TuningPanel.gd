@@ -30,6 +30,9 @@ extends PanelContainer
 
 signal changed
 signal closed
+## Сменилась вкладка (гараж по ней решает, дымить ли подиуму: цветной
+## дым показывается только на вкладке ЭФФЕКТЫ — просьба 04.09).
+signal tab_changed
 
 const SLOT_NAMES := {
 	"engine": "МОТОР", "wheel": "КОЛЁСА", "spoiler": "СПОЙЛЕР", "exhaust": "ВЫХЛОП",
@@ -45,7 +48,22 @@ const SLOT_EFFECT := {
 const TAB_NAMES := {
 	"engine": "МОТОР", "wheel": "КОЛЁСА", "spoiler": "СПОЙЛЕР",
 	"exhaust": "ВЫХЛОП", "paint": "КРАСКА", "line": "ПОЛОСА",
-	"sticker": "НАКЛЕЙКИ",
+	"sticker": "НАКЛЕЙКИ", "fx": "ЭФФЕКТЫ",
+}
+## Вкладка «ЭФФЕКТЫ» (04.09, у всех машин): цветной дым из-под колёс
+## (и пламя выхлопа при ускорении того же цвета) и неоновая подсветка
+## под днищем — по цвету за штуку, GameState «smoke:<цвет>»/«neon:<цвет>».
+const FX_ROWS := {
+	"smoke": ["ДЫМ ИЗ-ПОД КОЛЁС", "ОБЫЧНЫЙ",
+			"цветной дым в заносе, пламя выхлопа при ускорении"],
+	"neon": ["НЕОН ПОД ДНИЩЕМ", "ВЫКЛ", "подсветка под машиной"],
+}
+## Названия красок аркадного пака (цвета дыма и неона) для подсказок.
+const FX_COLOR_NAMES := {
+	"red": "красный", "orange": "оранжевый", "yellow": "жёлтый",
+	"green": "зелёный", "turquoise": "бирюзовый", "cyan": "голубой",
+	"blue": "синий", "purple": "фиолетовый", "pink": "розовый",
+	"brown": "коричневый", "cream": "кремовый", "grey": "серый",
 }
 ## Названия цветов советских машин для подсказок.
 const COLOR_NAMES := {
@@ -134,6 +152,11 @@ func base() -> String:
 	return _base
 
 
+## Открытая вкладка ("engine" … "fx").
+func tab() -> String:
+	return _tab
+
+
 ## Вкладки этой машины: слоты деталей (если есть), краска, у аркадных
 ## полоса и наклейки; у машин без слотов — одна краска (вкладок не видно).
 func _tabs() -> Array[String]:
@@ -145,6 +168,7 @@ func _tabs() -> Array[String]:
 	if CarModelLibrary.is_arcade(_base):
 		out.append("line")
 		out.append("sticker")
+	out.append("fx")   # дым и неон — у всех
 	return out
 
 
@@ -158,6 +182,7 @@ func _select_tab(tab: String) -> void:
 	if had:
 		changed.emit()
 	rebuild()
+	tab_changed.emit()
 
 
 # ---- Примерка ----
@@ -194,6 +219,8 @@ func _preview_items() -> Array[String]:
 				key = "line"
 			"glitter":
 				key = "metal:%s" % str(preview_cfg()["color"])
+			"smoke", "neon":
+				key = "%s:%s" % [k, str(_preview[k])]
 		if not key.is_empty() and not GameState.item_owned(_base, key) \
 				and not keys.has(key):
 			keys.append(key)
@@ -266,6 +293,8 @@ func _build_preview_row() -> void:
 			"sticker": names.append("наклейка №%d" % int(_preview[k]))
 			"line": names.append("полоса")
 			"glitter": names.append("металлик %s" % str(preview_cfg()["color"]))
+			"smoke": names.append("дым %s" % _fx_color_name(str(_preview[k])))
+			"neon": names.append("неон %s" % _fx_color_name(str(_preview[k])))
 	var lbl := _label("ПРИМЕРКА: %s" % ", ".join(names), 14, PREVIEW_COLOR)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(lbl)
@@ -325,10 +354,13 @@ func rebuild() -> void:
 		var bar := HBoxContainer.new()
 		bar.add_theme_constant_override("separation", 4)
 		_box.add_child(bar)
+		# Восемь вкладок у аркадных (с ЭФФЕКТАМИ, 04.09) — шрифт 10 и поля
+		# 3 px, иначе «НАКЛЕЙКИ» и «ЭФФЕКТЫ» обрезались (снимок tuning_fx).
+		var crowded := tabs.size() > 7
 		for tab in tabs:
 			var b := Button.new()
 			b.text = TAB_NAMES[tab]
-			UiKit.style_button(b, "teal" if tab == _tab else "steel", 11)
+			UiKit.style_button(b, "teal" if tab == _tab else "steel", 10 if crowded else 11)
 			# Семь вкладок в 560 px: боковые поля пластины ужаты (у
 			# UiKit.style_button они 20 px — семь кнопок не влезали и
 			# панель уезжала за край, снимок ShotTuning --tab line).
@@ -336,8 +368,8 @@ func rebuild() -> void:
 				var sb := b.get_theme_stylebox(state)
 				if sb:
 					sb = sb.duplicate()
-					sb.content_margin_left = 5
-					sb.content_margin_right = 5
+					sb.content_margin_left = 3 if crowded else 5
+					sb.content_margin_right = 3 if crowded else 5
 					b.add_theme_stylebox_override(state, sb)
 			b.custom_minimum_size = Vector2(0, 30)
 			b.clip_text = true
@@ -361,6 +393,10 @@ func rebuild() -> void:
 			_build_line()
 		"sticker":
 			_build_stickers()
+		"fx":
+			_build_fx_row("smoke")
+			_box.add_child(HSeparator.new())
+			_build_fx_row("neon")
 
 	# Подвал — после содержимого: появившись, кнопка не двигает меню.
 	_build_preview_row()
@@ -475,8 +511,12 @@ func _build_part_color(part: String) -> void:
 			14, Color.WHITE)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(lbl)
-	row.add_child(_mode_button("ТЁМНАЯ" if part == "line" else "КАК КУЗОВ",
-			cur.is_empty(), func() -> void: _set_free(key, "")))
+	# У выхлопа без выбора цвета трубы остаются родными (палитра пака),
+	# а не в цвет кузова — у его меша нет окрашиваемой поверхности.
+	var none := "ТЁМНАЯ" if part == "line" \
+			else ("РОДНОЙ" if part == "exhaust" else "КАК КУЗОВ")
+	row.add_child(_mode_button(none, cur.is_empty(),
+			func() -> void: _set_free(key, "")))
 	for shade in [1, 2, 3]:
 		var line := HBoxContainer.new()
 		line.add_theme_constant_override("separation", 4)
@@ -684,6 +724,58 @@ func _build_stickers() -> void:
 			b.tooltip_text = _item_hint(key)
 			b.pressed.connect(_try_on.bind("sticker", idx))
 		icons.add_child(b)
+
+
+# ---- Эффекты: дым из-под колёс и неон, по цвету за штуку ----
+
+## Ряд эффекта key ("smoke"/"neon"): подпись с ценой, кнопка «без
+## эффекта» (бесплатно, сразу) и 12 цветов: купленный — ставится сразу,
+## некупленный — примеряется (оранжевая рамка; на подиуме — дым/неон).
+func _build_fx_row(key: String) -> void:
+	var row_info: Array = FX_ROWS[key]
+	var cfg := GameState.tuning_of(_base)
+	var cur := str(cfg[key])
+	var owned := GameState.items_owned_count(_base, key + ":")
+	# Шапка ряда: подпись + кнопка «без эффекта». Кнопка НЕ в ряду цветов:
+	# 12 клеток по 42 px и так занимают всю ширину панели (как металлик),
+	# с кнопкой ряд был 656 px и панель уезжала за край (снимок tuning_fx).
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	_box.add_child(head)
+	var lbl := _label("%s  %d из %d   по %s за цвет · %s" % [row_info[0],
+			owned, CarModelLibrary.ARCADE_COLORS.size(),
+			_fmt(GameState.item_price(_base, "%s:red" % key)), row_info[2]],
+			14, Color.WHITE)
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(lbl)
+	var none_on := cur.is_empty() and not _preview.has(key)
+	head.add_child(_mode_button(String(row_info[1]), none_on, func() -> void:
+		_preview.erase(key)
+		_set_free(key, "")))
+	var line := HBoxContainer.new()
+	line.add_theme_constant_override("separation", 4)
+	_box.add_child(line)
+	for color in CarModelLibrary.ARCADE_COLORS:
+		var item := "%s:%s" % [key, color]
+		var mounted: bool = cur == color and not _preview.has(key)
+		var previewed: bool = _preview.has(key) and str(_preview[key]) == color
+		var b := _swatch(CarModelLibrary.fx_color(color), mounted, CELL, previewed)
+		var cname := _fx_color_name(color)
+		if GameState.item_owned(_base, item):
+			b.tooltip_text = "Куплено · %s" % cname
+			b.pressed.connect(func() -> void:
+				_preview.erase(key)
+				_set_free(key, color))
+		else:
+			b.modulate = Color(0.7, 0.7, 0.72)
+			_price_tag(b, item)
+			b.tooltip_text = "%s — %s" % [cname.capitalize(), _item_hint(item)]
+			b.pressed.connect(_try_on.bind(key, color))
+		line.add_child(b)
+
+
+func _fx_color_name(color: String) -> String:
+	return String(FX_COLOR_NAMES.get(color, color))
 
 
 # ---- Мелочи ----

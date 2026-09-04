@@ -435,6 +435,8 @@ func _set_car_model(car: Car, id: String) -> void:
 		car.fit_headlights(model)
 	else:
 		_build_placeholder_visual(car)
+	# Цвет дыма и пламени из id (тюнинг); неон — уже в модели.
+	car.apply_fx(id)
 
 
 ## Стрелка-указатель над машиной: своя — зелёная, соперник — оранжевая.

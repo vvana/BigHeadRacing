@@ -19,14 +19,27 @@ func _ready() -> void:
 	DirAccess.make_dir_recursive_absolute(_out)
 	GameState.selected_car_id = args[1] if args.size() > 1 \
 			else "vz01_red-w8-e7-s3-x6"
-	GameState.track_kind = "grass"
+	# Ключи (04.09): `--night` — ночной город (неон под днищем виден
+	# лучше всего), `--smoke` — машина игрока дымит и горит выхлопом без
+	# заноса (Car.debug_smoke), кадры на полсекунды позже, чтобы шлейф
+	# набрался.
+	GameState.track_kind = TrackBuilder.KIND_NEON if args.has("--night") else "grass"
+	_late = 30 if args.has("--smoke") else 0
 	_main = (load("res://scenes/Main.tscn") as PackedScene).instantiate()
 	add_child(_main)
 
 
+var _late := 0   # задержка кадров (--smoke)
+
+
 func _suffix() -> String:
 	var a := OS.get_cmdline_user_args()
-	return "_" + a[1].replace("-", "_") if a.size() > 1 else ""
+	var s := "_" + a[1].replace("-", "_") if a.size() > 1 else ""
+	if a.has("--night"):
+		s += "_night"
+	if a.has("--smoke"):
+		s += "_smoke"
+	return s
 
 
 func _shot(file: String) -> void:
@@ -54,15 +67,17 @@ func _physics_process(_d: float) -> void:
 		add_child(_cam)
 		_cam.current = true
 		_car = car
-	if _frame == 14 or _frame == 24:
+		if OS.get_cmdline_user_args().has("--smoke"):
+			car.set("debug_smoke", true)
+	if _frame == 14 + _late or _frame == 24 + _late:
 		var fwd := -_car.global_transform.basis.z
 		var right := _car.global_transform.basis.x
-		var off := (-fwd * 4.0 + right * 3.0 + Vector3.UP * 2.0) if _frame == 270 				else (fwd * 4.0 - right * 3.0 + Vector3.UP * 2.0)
+		var off := (-fwd * 4.0 + right * 3.0 + Vector3.UP * 2.0) if _frame == 14 + _late else (fwd * 4.0 - right * 3.0 + Vector3.UP * 2.0)
 		_cam.look_at_from_position(_car.global_position + off,
 				_car.global_position + Vector3.UP * 0.3)
-	if _frame == 18:
+	if _frame == 18 + _late:
 		_shot("race_parts_rear%s.png" % _suffix())
-	if _frame == 28:
+	if _frame == 28 + _late:
 		_shot("race_parts_front%s.png" % _suffix())
-	if _frame == 32:
+	if _frame == 32 + _late:
 		get_tree().quit(0)

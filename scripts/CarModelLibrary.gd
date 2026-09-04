@@ -101,12 +101,21 @@ const ARCADE_KEYS := {
 ## "-pered1" мотор, "-ps…" спойлер, "-px…" выхлоп, "-pl…" полоса.
 ## Старые токены "-p<цвет>" (один цвет на все детали) и "-c<цвет>"
 ## (полоса) читаются.
+## Эффекты (04.09, у ВСЕХ машин, включая Unity без слотов): smoke —
+## цвет дыма из-под колёс и пламени выхлопа ("" — обычный серый дым),
+## neon — цвет неоновой подсветки под днищем ("" — нет). Значение —
+## имя цвета ARCADE_COLORS (яркий оттенок №2), токены id "-m<цвет>"
+## (дым) и "-n<цвет>" (неон); у Unity-машин это единственный хвост id
+## ("fastback-mcyan"). Старые клиенты чужие токены пропускают.
 const ARCADE_DEFAULT := {
 	"color": "red", "shade": 2, "glitter": 0, "wheel": 1, "engine": 0,
 	"spoiler": 0, "exhaust": 0, "sticker": 0, "line": 0,
 	"color_wheel": "", "color_engine": "", "color_spoiler": "",
 	"color_exhaust": "", "color_line": "",
+	"smoke": "", "neon": "",
 }
+## Ключ эффекта → буква токена id.
+const FX_KEYS := {"smoke": "m", "neon": "n"}
 ## Слот/полоса → ключ его цвета в комплектации.
 const COLOR_KEYS := {
 	"wheel": "color_wheel", "engine": "color_engine",
@@ -345,7 +354,9 @@ static func tuned_id(base: String, cfg: Dictionary) -> String:
 	if is_arcade(base):
 		return arcade_id(base, cfg)
 	if not SOVIET_PARTS.has(base):
-		return base
+		# Unity-машины: база + только эффекты ("fastback-mred"); без них —
+		# голая база, как раньше.
+		return base + _fx_tokens(_clamp_cfg(cfg, base))
 	var c := _clamp_cfg(cfg, base)
 	var id := skin_id(base, str(c["color"]))
 	for slot in PART_SLOTS:
@@ -362,6 +373,16 @@ static func _color_tokens(c: Dictionary) -> String:
 		var spec := str(c[COLOR_KEYS[part]])
 		if not spec.is_empty():
 			t += "-p%s%s" % [ARCADE_KEYS[part], spec]
+	return t + _fx_tokens(c)
+
+
+## Хвост id с эффектами: "-m<цвет>" дым, "-n<цвет>" неон (пустые — опущены).
+static func _fx_tokens(c: Dictionary) -> String:
+	var t := ""
+	for key in FX_KEYS:
+		var color := str(c.get(key, ""))
+		if ARCADE_COLORS.has(color):
+			t += "-%s%s" % [FX_KEYS[key], color]
 	return t
 
 
@@ -433,7 +454,13 @@ static func _parse_tokens(parts: PackedStringArray, from: int,
 		if key == "c":
 			cfg["color_line"] = rest
 			continue
-		if not rest.is_valid_int():
+		# Эффекты: "m<цвет>" дым, "n<цвет>" неон (чужой цвет — пропуск).
+		var fx_hit := false
+		for fx in FX_KEYS:
+			if FX_KEYS[fx] == key and ARCADE_COLORS.has(rest):
+				cfg[fx] = rest
+				fx_hit = true
+		if fx_hit or not rest.is_valid_int():
 			continue
 		for name in ARCADE_KEYS:
 			if ARCADE_KEYS[name] == key:
@@ -479,9 +506,20 @@ static func _clamp_cfg(cfg: Dictionary, base := "") -> Dictionary:
 		var k: String = COLOR_KEYS[part]
 		if not is_paint_spec(str(c.get(k, ""))):
 			c[k] = ""
+	for fx in FX_KEYS:
+		if not ARCADE_COLORS.has(str(c.get(fx, ""))):
+			c[fx] = ""
 	c.erase("pcolor")
 	c.erase("lcolor")
 	return c
+
+
+## Цвет эффекта (дым/неон) по имени из ARCADE_COLORS — яркий оттенок №2;
+## чужое имя — fallback.
+static func fx_color(color: String, fallback := Color.WHITE) -> Color:
+	if not ARCADE_PAINTS.has(color):
+		return fallback
+	return (ARCADE_PAINTS[color] as Array)[1]
 
 
 ## Ступень улучшения, нужная для детали с номером index в слоте slot:
@@ -537,6 +575,17 @@ static func shuffled_bot_pool() -> Array[String]:
 		else:
 			out.append(skin_id(base,
 					SOVIET_COLORS[rng.randi_range(0, SOVIET_COLORS.size() - 1)]))
+	# Эффекты — витрина: у каждого четвёртого бота цветной дым, у каждого
+	# четвёртого — неон (любой машине, включая Unity).
+	for i in out.size():
+		var cfg := parse_cfg(out[i])
+		var touched := false
+		for fx in FX_KEYS:
+			if rng.randi_range(0, 3) == 0:
+				cfg[fx] = ARCADE_COLORS[rng.randi_range(0, ARCADE_COLORS.size() - 1)]
+				touched = true
+		if touched:
+			out[i] = tuned_id(String(cfg["base"]), cfg)
 	for i in range(out.size() - 1, 0, -1):   # Фишер–Йетс на своём RNG
 		var j := rng.randi_range(0, i)
 		var tmp := out[i]
@@ -630,6 +679,12 @@ static func build(
 	elif is_arcade(base):
 		model = _build_arcade(arcade_parse(id), id, target_length, base_y)
 	if model:
+		# Неон под днищем — часть модели: так он есть и на подиуме гаража,
+		# и в лобби, и в заезде (модель едет по видимому положению машины —
+		# см. Car._process, — свет не отстаёт от кузова).
+		var neon := str(parse_cfg(id).get("neon", ""))
+		if ARCADE_COLORS.has(neon):
+			_attach_underglow(model, neon, base_y)
 		var dt := Time.get_ticks_msec() - t0
 		if dt > 100:
 			print("[slow] CarModelLibrary.build('%s') занял %d мс" % [car_id, dt])
@@ -827,8 +882,11 @@ static func _arcade_material(key: String) -> StandardMaterial3D:
 
 ## Экземпляр меша с материалами по именам поверхностей пака ("body",
 ## "details", "bottom", "sticker", "sticker line"): body — краска paint_key.
+## paint_all — красить и "details" (у выхлопов в паке ТОЛЬКО эта поверхность,
+## без флага цвет труб не менялся — жалоба 04.09; включается, когда игрок
+## явно выбрал цвет выхлопа, без выбора трубы остаются палитрой пака).
 static func _arcade_part(mesh: Mesh, paint_key: String, sticker: int,
-		line: int, line_color := "") -> MeshInstance3D:
+		line: int, line_color := "", paint_all := false) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	var line_key := "line:%s" % line_color if is_paint_spec(line_color) else "line"
@@ -838,7 +896,7 @@ static func _arcade_part(mesh: Mesh, paint_key: String, sticker: int,
 		var key := ""
 		match nm:
 			"body": key = paint_key
-			"details": key = "details"
+			"details": key = paint_key if paint_all else "details"
 			"bottom": key = "bottom"
 			"sticker": key = "sticker:%d" % sticker if sticker > 0 else "hidden"
 			"sticker line": key = line_key if line > 0 else "hidden"
@@ -914,7 +972,8 @@ static func _build_arcade(cfg: Dictionary, car_id: String,
 		if mesh == null:
 			continue
 		var place: Array = geo[slot]
-		var part := _arcade_part(mesh, _part_paint(cfg, slot, body_paint), 0, 0)
+		var part := _arcade_part(mesh, _part_paint(cfg, slot, body_paint), 0, 0,
+				"", _paint_all(cfg, slot))
 		part.name = slot.capitalize()
 		part.transform = Transform3D(Basis.IDENTITY.scaled(place[1]), place[0])
 		container.add_child(part)
@@ -939,17 +998,68 @@ static func _part_paint(cfg: Dictionary, slot: String, body_paint: String) -> St
 	return "paint:%s0" % pc if is_paint_spec(pc) else body_paint
 
 
+## Красить ли деталь целиком (и поверхность "details"): выхлоп — при явно
+## выбранном цвете (см. _arcade_part), остальные — никогда.
+static func _paint_all(cfg: Dictionary, slot: String) -> bool:
+	return slot == "exhaust" \
+			and is_paint_spec(str(cfg.get(COLOR_KEYS.get(slot, ""), "")))
+
+
 # ---- Аркадные детали на советском кузове ----
 
-## Верх кузова в столбике радиусом r вокруг (x, z) — по вершинам мешей
-## (fallback — если столбик пуст).
-static func _top_at(verts: PackedVector3Array, x: float, z: float,
+## Верх кузова под вертикалью (x, z) — по ТРЕУГОЛЬНИКАМ меша (faces —
+## тройки вершин из get_faces()), а не по вершинам: у низкополи-кузовов
+## капот — один большой квад, и в столбике вершин может не быть вовсе
+## (Нива, 04.09: единственной вершиной в столбике оказалась кромка
+## колёсной арки, мотор ставился на высоту ступицы и тонул в капоте).
+## Берётся максимум по пяти точкам — центр и крест радиусом r
+## (fallback — если ни одна вертикаль ничего не пересекла).
+static func _top_at(faces: PackedVector3Array, x: float, z: float,
 		r: float, fallback: float) -> float:
 	var top := -INF
-	for v in verts:
-		if absf(v.x - x) <= r and absf(v.z - z) <= r:
-			top = maxf(top, v.y)
+	var pts: Array[Vector2] = [Vector2(x, z), Vector2(x + r, z),
+			Vector2(x - r, z), Vector2(x, z + r), Vector2(x, z - r)]
+	var n := faces.size() - faces.size() % 3
+	for i in range(0, n, 3):
+		var a := faces[i]
+		var b := faces[i + 1]
+		var c := faces[i + 2]
+		# Барицентрические веса точки в проекции на XZ.
+		var d := (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z)
+		if absf(d) < 1e-9:
+			continue                        # вертикальная грань
+		for p in pts:
+			var w0 := ((b.z - c.z) * (p.x - c.x) + (c.x - b.x) * (p.y - c.z)) / d
+			var w1 := ((c.z - a.z) * (p.x - c.x) + (a.x - c.x) * (p.y - c.z)) / d
+			var w2 := 1.0 - w0 - w1
+			if w0 >= -1e-4 and w1 >= -1e-4 and w2 >= -1e-4:
+				top = maxf(top, w0 * a.y + w1 * b.y + w2 * c.y)
 	return top if top > -INF else fallback
+
+
+## Нижняя кромка заднего бампера: x — самая кормовая z кузова (в СИСТЕМЕ
+## НОСА, т.е. z*nose; меньше — дальше назад) среди вершин у продольной оси
+## (±25 % ширины) не выше пояса (ступица + 30 % высоты — багажник и стёкла
+## не в счёт); y — низ кузова у самой этой кормы (низ
+## бампера, допуск 1 % длины). Fallback — торец габарита на высоте ступицы.
+static func _bumper_edge(verts: PackedVector3Array, cx: float, aabb: AABB,
+		nose: float, hub_y: float) -> Vector2:
+	var half_w := aabb.size.x * 0.25
+	var y_max := hub_y + aabb.size.y * 0.3
+	var rear := INF
+	for v in verts:
+		if absf(v.x - cx) <= half_w and v.y <= y_max:
+			rear = minf(rear, v.z * nose)
+	if rear == INF:
+		return Vector2(aabb.get_center().z * nose - aabb.size.z * 0.5, hub_y)
+	var y_edge := INF
+	# 1 % длины: при 2 % у Волги-24 в кромку попадало днище (на 9 см
+	# впереди бампера), и трубы съезжали под кузов.
+	var tol := aabb.size.z * 0.01
+	for v in verts:
+		if absf(v.x - cx) <= half_w and v.y <= y_max and v.z * nose <= rear + tol:
+			y_edge = minf(y_edge, v.y)
+	return Vector2(rear, y_edge if y_edge < INF else hub_y)
 
 
 ## Поставить детали cfg на собранную советскую модель (контейнер
@@ -1050,17 +1160,111 @@ static func _attach_parts(m: Node3D, base: String, cfg: Dictionary) -> void:
 				# сдвигаем вперёд, чтобы крыло не висело за багажником:
 				# хвост меша — в 15 % его длины за кормой.
 				var sz := z_rear + nose * (-a.position.z * 0.85) * k
+				# Хэтчбеки (Зубило, Девятка; жалоба 04.09): под этой точкой —
+				# крутая дверь багажника, лапа вставала посреди стекла, а
+				# крыло висело в воздухе. Идём вперёд шагами 2 % длины, пока
+				# верх под лапой не станет пологим (подъём < 35 % на 6 %
+				# длины): на седане это сразу багажник, на хэтчбеке —
+				# задняя кромка крыши (лапу ставим на r за кромку, чтобы
+				# целиком стояла на крыше).
+				var probe := len * 0.06
+				var rs := len * 0.015
+				var limit := z_rear + nose * len * 0.55
+				var moved := false
+				while (limit - sz) * nose > 0.0:
+					var y0 := _top_at(verts, cx, sz, rs, aabb.end.y)
+					var y1 := _top_at(verts, cx, sz + nose * probe, rs, aabb.end.y)
+					if y1 - y0 < probe * 0.35:
+						break
+					sz += nose * len * 0.02
+					moved = true
+				if moved:
+					sz += nose * r
 				pos = Vector3(cx, _top_at(verts, cx, sz, r, aabb.end.y), sz)
 			"exhaust":
-				# Трубы целиком позади начала: начало — внутри кормы так,
-				# чтобы наружу торчало ~0.2 ед. пака; по высоте — под
-				# бампером (между днищем и ступицей, ближе к днищу).
-				var xz := z_rear + nose * (-a.position.z - 0.2) * k
-				pos = Vector3(cx, aabb.position.y + (hub_y - aabb.position.y) * 0.4, xz)
+				# Трубы целиком позади начала. Сажаем их на нижнюю кромку
+				# бампера (_bumper_edge: самая кормовая точка кузова не выше
+				# пояса и низ кузова у неё): центр трубы — на кромке, так
+				# что труба наполовину утоплена в бампер, наружу торчит
+				# ~0.14 ед. пака от самой кормы. Раньше труба стояла на
+				# днище в торце габарита — а низ кузова там уходит вперёд,
+				# и трубы висели в воздухе (жалоба 04.09).
+				var edge := _bumper_edge(verts, cx, aabb, nose, hub_y)
+				var xz := (edge.x + (-a.position.z - 0.14) * k) * nose
+				pos = Vector3(cx, edge.y, xz)
 		if fix.has(slot):
 			var f: Vector3 = fix[slot]
 			pos += Vector3(f.x, f.y, 0) / s_c + fwd * (f.z / s_c)
-		var part := _arcade_part(mesh, _part_paint(cfg, slot, body_paint), 0, 0)
+		var part := _arcade_part(mesh, _part_paint(cfg, slot, body_paint), 0, 0,
+				"", _paint_all(cfg, slot))
 		part.name = slot.capitalize()
 		part.transform = Transform3D(basis.scaled(Vector3.ONE * k), pos)
 		m.add_child(part)
+
+
+## Неоновая подсветка под днищем (04.09): пятно света на земле — плоский
+## квад с радиальным градиентом в цвете неона (аддитивно, без теней —
+## виден и днём) + OmniLight3D, подсвечивающий колёса и полотно (главное
+## на тёмных трассах — ночной город, космос). Держатель «Underglow» —
+## ребёнок модели, но в ОСЯХ МАШИНЫ: модель повёрнута и в единицах файла
+## (масштаб 0.01 у FBX из Unity), поэтому держатель берёт обратный
+## трансформ модели; base_y — низ модели (метры), как у build().
+static func _attach_underglow(m: Node3D, color: String, base_y: float) -> void:
+	var col := fx_color(color)
+	var holder := Node3D.new()
+	holder.name = "Underglow"
+	holder.transform = m.transform.affine_inverse()
+
+	var glow := MeshInstance3D.new()
+	glow.name = "Glow"
+	var quad := QuadMesh.new()
+	quad.orientation = PlaneMesh.FACE_Y
+	quad.size = Vector2(2.7, 4.3)
+	glow.mesh = quad
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.disable_receive_shadows = true
+	mat.albedo_color = Color(col.r, col.g, col.b, 0.85)
+	mat.albedo_texture = _glow_texture()
+	glow.material_override = mat
+	glow.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# Чуть выше низа колёс: в заезде дорога при обычном прогибе подвески
+	# лежит на 0–5 см выше низа модели, квад под ней пропал бы.
+	glow.position = Vector3(0.0, base_y + 0.12, 0.0)
+	holder.add_child(glow)
+
+	var light := OmniLight3D.new()
+	light.name = "NeonLight"
+	light.light_color = col
+	light.light_energy = 2.2
+	light.omni_range = 3.2
+	light.omni_attenuation = 1.4
+	light.shadow_enabled = false
+	light.position = Vector3(0.0, base_y + 0.3, 0.0)
+	holder.add_child(light)
+	m.add_child(holder)
+
+
+## Радиальный градиент пятна неона (белый, прозрачность к краю); общий.
+static var _glow_tex: GradientTexture2D
+
+
+static func _glow_texture() -> GradientTexture2D:
+	if _glow_tex == null:
+		var g := Gradient.new()
+		g.set_color(0, Color(1, 1, 1, 1.0))
+		g.set_color(1, Color(1, 1, 1, 0.0))
+		g.add_point(0.35, Color(1, 1, 1, 0.75))
+		g.add_point(0.7, Color(1, 1, 1, 0.25))
+		var t := GradientTexture2D.new()
+		t.gradient = g
+		t.fill = GradientTexture2D.FILL_RADIAL
+		t.fill_from = Vector2(0.5, 0.5)
+		t.fill_to = Vector2(0.5, 0.0)
+		t.width = 128
+		t.height = 128
+		_glow_tex = t
+	return _glow_tex
