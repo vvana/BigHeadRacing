@@ -394,9 +394,14 @@ static func item_parts(key: String) -> Array:
 	var slot := key.get_slice(":", 0)
 	if key.count(":") != 1:
 		return ["", "", 0]
-	if slot == "metal" or CarModelLibrary.FX_KEYS.has(slot):
+	if slot == "metal":
 		var color := key.get_slice(":", 1)
 		return [slot, color, 0] if CarModelLibrary.ARCADE_COLORS.has(color) \
+				else ["", "", 0]
+	if CarModelLibrary.FX_KEYS.has(slot):
+		# Эффекты (дым, неон, тонировка): палитра шире — с белым и чёрным.
+		var fcolor := key.get_slice(":", 1)
+		return [slot, fcolor, 0] if CarModelLibrary.FX_COLORS.has(fcolor) \
 				else ["", "", 0]
 	var idx := int(key.get_slice(":", 1))
 	if idx <= 0 or idx > CarModelLibrary.PART_COUNT:
@@ -435,6 +440,10 @@ func item_price(base: String, key: String) -> int:
 		"neon":
 			return maxi(NEON_MIN, int(round(price_base(base)
 					* NEON_PRICE_PCT / 10.0)) * 10)
+		"glass":
+			# Тонировка стёкол (04.09) — по цене дыма.
+			return maxi(SMOKE_MIN, int(round(price_base(base)
+					* SMOKE_PRICE_PCT / 10.0)) * 10)
 	return 0
 
 
@@ -460,8 +469,8 @@ func try_buy_item(base: String, key: String) -> bool:
 	var kind := String(p[0])
 	if kind == "" or item_owned(base, key):
 		return false
-	if CarModelLibrary.FX_KEYS.has(kind):
-		pass   # эффекты продаются всем машинам
+	if CarModelLibrary.FX_KEYS.has(kind) or kind == "line":
+		pass   # эффекты и полоса (04.09) продаются всем машинам
 	elif not CarModelLibrary.has_parts(base):
 		return false
 	elif kind == "part":
@@ -585,7 +594,7 @@ func tuning_allowed(base: String, key: String, value: Variant) -> bool:
 			return int(value) == 0 or item_owned(base, "sticker:%d" % int(value))
 		"line":
 			return int(value) == 0 or item_owned(base, "line")
-		"smoke", "neon":
+		"smoke", "neon", "glass":
 			return str(value).is_empty() or item_owned(base, "%s:%s" % [key, str(value)])
 		"wheel", "engine", "spoiler", "exhaust":
 			if not CarModelLibrary.slot_options(base, key).has(int(value)):
@@ -599,7 +608,9 @@ func tuning_allowed(base: String, key: String, value: Variant) -> bool:
 ## tuning_allowed; дым и неон — любой машине, остальное — со слотами);
 ## если машина выбрана — обновляет и выбор. Переживает перезапуск.
 func set_tuning(base: String, key: String, value: Variant) -> bool:
-	if not CarModelLibrary.has_parts(base) and not CarModelLibrary.FX_KEYS.has(key):
+	# Без слотов (Unity-машины) можно только эффекты и полосу с её цветом.
+	if not CarModelLibrary.has_parts(base) and not CarModelLibrary.FX_KEYS.has(key) \
+			and key != "line" and key != "color_line":
 		return false
 	if not tuning_allowed(base, key, value):
 		return false

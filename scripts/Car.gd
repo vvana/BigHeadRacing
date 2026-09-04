@@ -94,6 +94,9 @@ var _scramble_time := 0.0       # глушилка: лево и право по�
 const LASER_RANGE := 70.0
 var _laser_left := 0.0
 var _laser_lag := 0.0
+# Клиент предсказал гибель этой марионетки от СВОЕГО лазера (взрыв уже
+# показан) — подтверждение сервера (_rx_destroy_fx) второй раз не рисует.
+var _predicted_dead := false
 # «Усталость» от магнита: каждый рывок в окне _magnet_worn_time режет силу
 # следующего (жалоба 31.08: «несколько машин применили — выкидывает с
 # трассы с огромной силой»). Окно истекло — счёт с нуля.
@@ -399,6 +402,13 @@ func fit_headlights(model: Node3D) -> void:
 ## Отдельной функцией — чтобы отладочный дамп (tools/DbgCarBox.tscn)
 ## считал ровно то же самое, что игра.
 static func headlight_anchor(model: Node3D, model_xf: Transform3D) -> Dictionary:
+	# Советский пак (04.09): у него фары НАРИСОВАНЫ — светятся клеткой
+	# эмиссии, и лампу можно посадить ровно на них, а не по эвристике
+	# «55 % высоты носа», которая ставила её на бампер/решётку («фары
+	# впереди от машины или сбоку» — Пятёрка Спорт, Нива, Волга).
+	var lit := _emissive_anchor(model, model_xf)
+	if not lit.is_empty():
+		return lit
 	var pts := model_points(model, model_xf)
 	if pts.size() < 8:
 		return {}
@@ -443,6 +453,90 @@ static func headlight_anchor(model: Node3D, model_xf: Transform3D) -> Dictionary
 			front_z = z
 			break
 	return {"x": lamp_x, "y": lamp_y, "z": front_z, "w": lamp_w}
+
+
+## Якорь фары по СВЕТЯЩИМСЯ треугольникам модели: у мешей с текстурой
+## эмиссии (советский пак) берём треугольники, чей UV-центроид попадает в
+## клетку фары (жёлтая (255,229,112) в emission.png; красная — стоп-сигналы,
+## их отсекаем и по цвету, и по положению: только передняя половина).
+## Возвращает {x, y, z, w} в осях машины или пустой словарь.
+static func _emissive_anchor(model: Node3D, model_xf: Transform3D) -> Dictionary:
+	var xs := PackedFloat32Array()
+	var ys := PackedFloat32Array()
+	var zs := PackedFloat32Array()
+	var stack: Array = [[model, model_xf]]
+	var z_min := 1e9
+	var z_max := -1e9
+	while not stack.is_empty():
+		var item: Array = stack.pop_back()
+		var node: Node3D = item[0]
+		var xf: Transform3D = item[1]
+		if node.has_meta("wheel_radius"):
+			continue
+		for child in node.get_children():
+			if child is Node3D:
+				stack.append([child, xf * (child as Node3D).transform])
+		var mi := node as MeshInstance3D
+		if mi == null or mi.mesh == null:
+			continue
+		var mat := mi.material_override as BaseMaterial3D
+		if mat == null or not mat.emission_enabled or mat.emission_texture == null:
+			continue
+		var img := (mat.emission_texture as Texture2D).get_image()
+		if img == null:
+			continue
+		if img.is_compressed():
+			img.decompress()
+		var w := img.get_width()
+		var h := img.get_height()
+		for si in mi.mesh.get_surface_count():
+			var arr := mi.mesh.surface_get_arrays(si)
+			var verts: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+			var uvs: PackedVector2Array = arr[Mesh.ARRAY_TEX_UV]
+			var idx: PackedInt32Array = arr[Mesh.ARRAY_INDEX]
+			if uvs.is_empty():
+				continue
+			var n := idx.size() / 3 if idx.size() > 0 else verts.size() / 3
+			for t in n:
+				var i0 := idx[t * 3] if idx.size() > 0 else t * 3
+				var i1 := idx[t * 3 + 1] if idx.size() > 0 else t * 3 + 1
+				var i2 := idx[t * 3 + 2] if idx.size() > 0 else t * 3 + 2
+				var c := xf * ((verts[i0] + verts[i1] + verts[i2]) / 3.0)
+				z_min = minf(z_min, c.z)
+				z_max = maxf(z_max, c.z)
+				var uv := (uvs[i0] + uvs[i1] + uvs[i2]) / 3.0
+				var px := Vector2i(posmod(int(uv.x * w), w), posmod(int(uv.y * h), h))
+				var col := img.get_pixelv(px)
+				# Жёлтая клетка фар: яркая, с заметной долей синего; красная
+				# (стопы) отсеивается по g/b.
+				if col.r > 0.8 and col.g > 0.7 and col.b > 0.3:
+					xs.append(c.x)
+					ys.append(c.y)
+					zs.append(c.z)
+	if xs.size() < 2:
+		return {}
+	# Только передняя половина кузова (нос в -Z).
+	var mid := (z_min + z_max) * 0.5
+	var fx := 0.0
+	var fy := 0.0
+	var fz := 1e9
+	var n_f := 0
+	var x_lo := 1e9
+	var x_hi := -1e9
+	for i in xs.size():
+		if zs[i] > mid:
+			continue
+		var ax := absf(xs[i])
+		fx += ax
+		fy += ys[i]
+		fz = minf(fz, zs[i])
+		x_lo = minf(x_lo, ax)
+		x_hi = maxf(x_hi, ax)
+		n_f += 1
+	if n_f < 1:
+		return {}
+	var lamp_w := clampf((x_hi - x_lo) + 0.06, 0.14, 0.34)
+	return {"x": fx / n_f, "y": fy / n_f, "z": fz, "w": lamp_w}
 
 
 ## Самая передняя вершина в окошке вокруг точки (|x| = x_at, y = y_at).
@@ -556,23 +650,28 @@ func _build_smoke() -> void:
 static func make_smoke() -> CPUParticles3D:
 	# Клуб рождается небольшим, быстро набухает и слегка дорастает.
 	var growth := Curve.new()
-	growth.add_point(Vector2(0.0, 0.4))
-	growth.add_point(Vector2(0.35, 1.0))
-	growth.add_point(Vector2(1.0, 1.2))
+	growth.add_point(Vector2(0.0, 0.35))
+	growth.add_point(Vector2(0.3, 1.0))
+	growth.add_point(Vector2(1.0, 1.45))
 	var p := CPUParticles3D.new()
 	p.emitting = false
-	p.amount = 16
-	p.lifetime = 0.5
+	# 04.09: было 16 клубов по 0.5 с и одного размера — читалось как ряд
+	# одинаковых картинок. Теперь клубов вдвое меньше, они крупнее, живут
+	# дольше и заметно разного размера; каждый ещё и крутится по-своему.
+	p.amount = 7
+	p.lifetime = 0.8
 	p.local_coords = false   # клубы остаются позади машины
 	p.direction = Vector3.UP
-	p.spread = 25.0
-	p.gravity = Vector3(0.0, 1.2, 0.0)
-	p.initial_velocity_min = 0.5
-	p.initial_velocity_max = 1.2
+	p.spread = 35.0
+	p.gravity = Vector3(0.0, 1.0, 0.0)
+	p.initial_velocity_min = 0.4
+	p.initial_velocity_max = 1.4
 	p.angle_min = 0.0        # случайный поворот билборда
 	p.angle_max = 360.0
-	p.scale_amount_min = 0.55
-	p.scale_amount_max = 0.95
+	p.angular_velocity_min = -40.0
+	p.angular_velocity_max = 40.0
+	p.scale_amount_min = 0.8
+	p.scale_amount_max = 1.7
 	p.scale_amount_curve = growth
 	# Случайный кадр атласа 2×2 на всю жизнь частицы (анимация не
 	# крутится — у частицы случайный anim_offset).
@@ -599,9 +698,13 @@ static func make_smoke() -> CPUParticles3D:
 ## обычный серый дым.
 static func tint_smoke(p: CPUParticles3D, color: String, sand: bool) -> void:
 	var grad := Gradient.new()
-	if CarModelLibrary.ARCADE_COLORS.has(color):
+	if CarModelLibrary.FX_COLORS.has(color):
 		var c := CarModelLibrary.fx_color(color)
+		# Белый и чёрный (04.09): белый — чуть плотнее обычного серого,
+		# чёрный — копоть: тёмное ядро, гаснет в чёрный.
 		var light := c.lerp(Color.WHITE, 0.35)
+		if color == "black":
+			light = Color(0.16, 0.16, 0.16)
 		grad.set_color(0, Color(light.r, light.g, light.b, 0.9))
 		grad.set_color(1, Color(c.r, c.g, c.b, 0.0))
 	elif sand:
@@ -619,10 +722,16 @@ static func tint_smoke(p: CPUParticles3D, color: String, sand: bool) -> void:
 ## → чистый цвет → тёмный кончик.
 static func flame_ramp(color: String) -> Gradient:
 	var grad := Gradient.new()
-	if CarModelLibrary.ARCADE_COLORS.has(color):
+	if CarModelLibrary.FX_COLORS.has(color):
 		var c := CarModelLibrary.fx_color(color)
 		var core := c.lerp(Color.WHITE, 0.6)
 		var dark := c.darkened(0.6)
+		if color == "black":
+			# Аддитивно чёрный невидим — «чёрное пламя» рисуем тёмно-серым
+			# с тусклым серым ядром: читается как копоть из трубы.
+			core = Color(0.55, 0.55, 0.55)
+			c = Color(0.3, 0.3, 0.3)
+			dark = Color(0.12, 0.12, 0.12)
 		grad.set_color(0, Color(core.r, core.g, core.b, 1.0))
 		grad.set_color(1, Color(dark.r, dark.g, dark.b, 0.0))
 		grad.add_point(0.3, Color(c.r, c.g, c.b, 1.0))
@@ -660,18 +769,26 @@ func _build_boost_flame() -> void:
 	shrink.add_point(Vector2(1.0, 0.05))
 	var p := CPUParticles3D.new()
 	p.emitting = false
-	p.amount = 30
-	p.lifetime = 0.13   # короткий язык: длинный хвост тянулся за машиной шлейфом
+	# 04.09: 30 языков по 0.13 с выстраивались в цепочку одинаковых
+	# картинок. Языков втрое меньше, каждый крупнее, живёт дольше и
+	# крутится — струя читается как одно пляшущее пламя, а не ряд кадров.
+	p.amount = 10
+	p.lifetime = 0.2
 	p.local_coords = false   # струя остаётся позади машины
 	# Почти горизонтально назад (+Z): струя из выхлопной трубы, а не костёр
 	# на бампере — подъём убран, скорость выше, конус узкий.
 	p.direction = Vector3(0.0, 0.04, 1.0)
-	p.spread = 3.0
+	p.spread = 4.0
 	p.gravity = Vector3.ZERO
-	p.initial_velocity_min = 7.0
-	p.initial_velocity_max = 10.0
-	p.scale_amount_min = 0.22
-	p.scale_amount_max = 0.34
+	p.initial_velocity_min = 5.0
+	p.initial_velocity_max = 8.0
+	# Кадры огня в атласе направленные (языки вверх): случайный поворот
+	# превращал струю в россыпь «осколков» — поворот не трогаем, пляшет
+	# сама анимация кадров и разброс размера.
+	p.angle_min = -12.0
+	p.angle_max = 12.0
+	p.scale_amount_min = 0.36
+	p.scale_amount_max = 0.6
 	p.scale_amount_curve = shrink
 	# Случайный стартовый кадр атласа + прокрутка кадров по жизни частицы.
 	p.anim_offset_min = 0.0
@@ -1007,9 +1124,9 @@ func _tick_effects(delta: float) -> void:
 	if _boost_flame:
 		# С плиты — узкий короткий язык, от турбины — полный.
 		var narrow := _boost_from_pad and _boost_time > 0.0
-		_boost_flame.scale_amount_min = 0.14 if narrow else 0.22
-		_boost_flame.scale_amount_max = 0.22 if narrow else 0.34
-		_boost_flame.spread = 2.0 if narrow else 3.0
+		_boost_flame.scale_amount_min = 0.24 if narrow else 0.36
+		_boost_flame.scale_amount_max = 0.4 if narrow else 0.6
+		_boost_flame.spread = 3.0 if narrow else 4.0
 		_boost_flame.emitting = alive and (_boost_time > 0.0
 				or (_status_time > 0.0 and _status_kind == Weapons.BOOST)
 				or debug_smoke)
@@ -2663,6 +2780,7 @@ func _begin_respawn_wait() -> void:
 ## взрыва: иначе полсекунды её съедали бы).
 func _finish_respawn_wait() -> void:
 	_respawn_wait = 0.0
+	_predicted_dead = false
 	visible = true
 	if not _respawn_own:
 		return
@@ -2759,11 +2877,35 @@ func _end_ghost() -> void:
 ## на буфер, и взрыв по «серверному сейчас» вспыхнул бы в стороне), и
 ## мигание неуязвимости.
 func net_show_destroy() -> void:
+	# Взрыв уже предсказан у стрелявшего (net_predict_destroy) — только
+	# «призрак», иначе жертва рванула бы дважды.
+	if _predicted_dead:
+		_predicted_dead = false
+		net_set_ghost(true)
+		return
 	_boom_fx(visual_origin())
 	# Пауза появления — и на чужих экранах: без неё соперник полсекунды
 	# стоял бы на месте взрыва, а потом прыгал (снимки-то идут всегда).
 	_begin_respawn_wait()
 	net_set_ghost(true)
+
+
+## КЛИЕНТ, предсказание (04.09): моя машина выстрелила лазером, и эта
+## марионетка стоит в коридоре луча НА МОЁМ ЭКРАНЕ — показать её взрыв
+## сразу, не дожидаясь, пока сервер посчитает попадание (он это делает с
+## отмоткой к моей картине — см. _use_laser, поэтому совпадение почти
+## всегда) и пришлёт _rx_destroy_fx через пинг + буфер марионетки. Раньше
+## жертва «проезжала через луч и взрывалась чуть позже». Если сервер не
+## подтвердит, машина сама появится по концу паузы (снимки идут всегда).
+func net_predict_destroy() -> void:
+	if net_role != NetRole.PUPPET or not alive or is_ghost() \
+			or _respawn_wait > 0.0:
+		return
+	_predicted_dead = true
+	FxKit.lightning_burst(get_parent(), visual_origin() + Vector3.UP * 0.7,
+			Color(1.0, 0.5, 0.4), 6, 1.2)
+	_boom_fx(visual_origin())
+	_begin_respawn_wait()
 
 
 ## Признак «призрака» из снимка (Main._rx_state): пока сервер его шлёт,

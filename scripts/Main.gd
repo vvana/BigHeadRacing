@@ -1790,10 +1790,25 @@ func _client_tick(_delta: float) -> void:
 			var fwd := -_car.global_transform.basis.z
 			fwd.y = 0.0
 			if fwd.length_squared() > 1e-6:
+				var fn := fwd.normalized()
 				LaserFx.spawn(self,
 						_car.global_position + Vector3.UP * 0.5,
-						fwd.normalized(), 70.0, _car)
+						fn, 70.0, _car)
 				_laser_predicted = Time.get_ticks_msec() / 1000.0
+				# И жертвы тоже предсказываем (04.09): кто стоит в коридоре
+				# луча на МОЁМ экране — взрывается сразу, сервер решает
+				# то же по отмотке к моей картине (Car._use_laser).
+				var from := _car.global_position
+				for c in _cars:
+					if c == _car or c.net_role != Car.NetRole.PUPPET:
+						continue
+					var to := c.visual_origin() - from
+					to.y = 0.0
+					var along := to.dot(fn)
+					if along < 0.0 or along > Car.LASER_RANGE:
+						continue
+					if (to - fn * along).length() <= 1.6:
+						c.net_predict_destroy()
 
 
 ## Снимок: на машину 11 float (позиция, кватернион, скорость, метка тика

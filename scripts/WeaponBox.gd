@@ -15,11 +15,20 @@ extends Area3D
 ## И того же оружия, что уже в руках, бокс не даёт (Weapons.random_weapon
 ## с исключением) — иначе подбор без смены значка выглядел как промах.
 
-const PER_CAR_COOLDOWN := 2.5
+# 04.09: вместо отката 2.5 с — ГИСТЕРЕЗИС «вход/выход»: бонус даётся на
+# входе в зону куба, повторно — только после того, как машина отъехала
+# дальше LEAVE_DIST. Раньше игрок, крутанувшийся у куба или проехавший
+# два близко стоящих куба, за 2.5 с получал «проехал сквозь бонус, а он
+# не дался». Короткий откат PER_CAR_COOLDOWN прикрывает двойной триггер
+# (Area3D и замёт отрезка в одном кадре).
+const PER_CAR_COOLDOWN := 0.3
+const LEAVE_DIST := 3.0
 
 var _mesh: MeshInstance3D
 # id машины → время (сек. с запуска), когда ей снова можно выдать бонус.
 var _next_pickup := {}
+# id машины → она сейчас «внутри» зоны куба (бонус уже выдан на этот заход).
+var _inside := {}
 # id машины → её сырое положение на ПРОШЛОЙ проверке (для замёта отрезка).
 var _last_true := {}
 
@@ -62,13 +71,21 @@ func _ready() -> void:
 		_mesh.material_override = mat
 		add_child(_mesh)
 
-	# На клиенте бокс — просто крутящийся куб: оружие выдаёт сервер и
-	# присылает его в снимке. Иначе клиент выдал бы себе своё, случайное.
+	# На клиенте оружие выдаёт сервер и присылает его в снимке; Area3D тут
+	# только для мгновенной вспышки по своей машине (см. _on_body). Иначе
+	# клиент выдал бы себе своё, случайное.
+	body_entered.connect(_on_body)
 	if Net.is_client():
-		set_deferred("monitoring", false)
+		body_exited.connect(_on_body_left)
+		set_physics_process(false)
 	else:
-		body_entered.connect(_on_body)
 		set_physics_process(true)
+
+
+## Клиент: машина покинула зону куба — следующий заезд снова сверкнёт.
+func _on_body_left(body: Node3D) -> void:
+	if body is Car:
+		_inside[body.get_instance_id()] = false
 
 
 ## СЕРВЕР: подбор машиной ЖИВОГО ИГРОКА проверяем сами, по сырым данным
@@ -80,18 +97,20 @@ func _ready() -> void:
 ## Меряем зазор от куба до ОТРЕЗКА кузова (как _bounce_off_cars): машина
 ## 3.2 x 1.7 м, поэтому полудлина 0.9 плюс полуширина куба и кузова.
 func _physics_process(_delta: float) -> void:
-	if Net.is_client() or not Net.is_online():
+	if Net.is_client():
 		return
 	for node in get_tree().get_nodes_in_group("cars"):
 		var car := node as Car
-		if car == null or car.net_role != Car.NetRole.PUPPET:
-			continue
-		if not car.alive:
+		if car == null or not car.alive:
 			continue
 		var id := car.get_instance_id()
 		var p := car.true_position()
 		var prev: Vector3 = _last_true.get(id, p)
 		_last_true[id] = p
+		# Отъехала от куба — можно выдавать снова (гистерезис).
+		if _inside.get(id, false) and Vector2(p.x - global_position.x,
+				p.z - global_position.z).length() > LEAVE_DIST:
+			_inside[id] = false
 		# Снимки владельца приходят РЕЖЕ кадров сервера, и на 30+ м/с сырая
 		# точка между двумя проверками перешагивает несколько метров — куб
 		# 1.3 м проваливался между ними («проехал сквозь бонус, оружия нет»,
@@ -129,10 +148,13 @@ func _on_body(body: Node3D) -> void:
 	var car := body as Car
 	if car == null or not car.alive:
 		return
-	# Машины живых игроков считает _physics_process по сырым данным — иначе
-	# один проезд засчитался бы дважды (откат ниже это и так ловит, но
-	# честнее не проверять одно и то же двумя способами).
-	if car.net_role == Car.NetRole.PUPPET and Net.is_server():
+	# На клиенте бокс ничего не выдаёт (оружие пришлёт сервер в снимке), но
+	# СВОЕЙ машине сразу рисует вспышку подбора: раньше игрок видел её
+	# только со снимком через пинг и не понимал, взял ли бонус (04.09).
+	if Net.is_client():
+		if car.net_role == Car.NetRole.OWNED and not _inside.get(car.get_instance_id(), false):
+			_inside[car.get_instance_id()] = true
+			_pickup_fx()
 		return
 	_give(car)
 
@@ -141,9 +163,10 @@ func _on_body(body: Node3D) -> void:
 func _give(car: Car) -> void:
 	var id := car.get_instance_id()
 	var now := Time.get_ticks_msec() / 1000.0
-	if _next_pickup.get(id, 0.0) > now:
+	if _next_pickup.get(id, 0.0) > now or _inside.get(id, false):
 		return
 	_next_pickup[id] = now + PER_CAR_COOLDOWN
+	_inside[id] = true
 	# Шансы зависят от положения в гонке (последнему реже мина/масло,
 	# отставшему чаще буст) — их знает менеджер гонки; без него (стенды,
 	# где бокс стоит сам по себе) — равновероятно.
@@ -151,6 +174,12 @@ func _give(car: Car) -> void:
 		car.weapon = car.race.pickup_weapon_for(car)
 	else:
 		car.weapon = Weapons.random_weapon(false, 0.0, car.weapon)
+	_pickup_fx()
+
+
+## Вспышка подбора у куба (сервер/оффлайн — при выдаче, клиент — при
+## проезде своей машины).
+func _pickup_fx() -> void:
 	FlashFx.spawn(get_parent(), global_position, 0.9, Color(1.0, 0.9, 0.3))
 	SparksFx.spawn(get_parent(), global_position, 5.0)
 	FxKit.stars_burst(get_parent(), global_position + Vector3.UP * 0.4, 5)

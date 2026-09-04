@@ -129,7 +129,7 @@ func _physics_process(_d: float) -> void:
 	# Вкладки: у Копейки мотор/колёса/спойлер/выхлоп/краска, у аркадной
 	# ещё полоса и наклейки; выбор вкладки перестраивает панель.
 	panel.open("vz01")
-	_ok(panel._tabs() == ["engine", "wheel", "spoiler", "exhaust", "paint", "fx"]
+	_ok(panel._tabs() == ["engine", "wheel", "spoiler", "exhaust", "paint", "line", "fx"]
 			and panel._tab == "engine", "вкладки Копейки: %s" % [panel._tabs()])
 	panel._select_tab("paint")
 	_ok(panel._tab == "paint", "вкладка «КРАСКА» выбрана")
@@ -198,7 +198,7 @@ func _physics_process(_d: float) -> void:
 	_ok(not _select._podium_smoke.is_empty(), "вернулись на ЭФФЕКТЫ — дым снова идёт")
 	# Unity-машина без слотов: вкладки КРАСКА и ЭФФЕКТЫ.
 	panel.open("fastback")
-	_ok(panel._tabs() == ["paint", "fx"], "вкладки Unity-машины: %s" % [panel._tabs()])
+	_ok(panel._tabs() == ["paint", "line", "fx"], "вкладки Unity-машины: %s" % [panel._tabs()])
 	panel.close()
 
 	# Вернуть профиль.

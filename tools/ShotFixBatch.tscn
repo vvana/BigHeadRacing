@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_shotfixbatch"]
+
+[ext_resource type="Script" path="res://tools/shot_fix_batch.gd" id="1_fixbatch"]
+
+[node name="ShotFixBatch" type="Node3D"]
+script = ExtResource("1_fixbatch")

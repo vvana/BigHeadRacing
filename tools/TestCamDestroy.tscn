@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testcamdestroy"]
+
+[ext_resource type="Script" path="res://tools/test_cam_destroy.gd" id="1_camdestroy"]
+
+[node name="TestCamDestroy" type="Node3D"]
+script = ExtResource("1_camdestroy")

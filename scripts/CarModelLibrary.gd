@@ -112,10 +112,22 @@ const ARCADE_DEFAULT := {
 	"spoiler": 0, "exhaust": 0, "sticker": 0, "line": 0,
 	"color_wheel": "", "color_engine": "", "color_spoiler": "",
 	"color_exhaust": "", "color_line": "",
-	"smoke": "", "neon": "",
+	"smoke": "", "neon": "", "glass": "",
 }
-## Ключ эффекта → буква токена id.
-const FX_KEYS := {"smoke": "m", "neon": "n"}
+## Ключ эффекта → буква токена id. glass — тонировка стёкол (04.09 вечер,
+## «добавить смену цвета стёкол»): у всех паков, токен "-t<цвет>".
+const FX_KEYS := {"smoke": "m", "neon": "n", "glass": "t"}
+## Цвета эффектов (дым, неон, тонировка): 12 красок аркадного пака + белый
+## и чёрный (просьба 04.09). Белый/чёрный — только для эффектов, кузов и
+## детали по-прежнему красятся ARCADE_COLORS.
+const FX_COLORS: Array[String] = [
+	"red", "orange", "yellow", "green", "turquoise", "cyan",
+	"blue", "purple", "pink", "brown", "cream", "grey", "white", "black",
+]
+const FX_EXTRA_PAINT := {
+	"white": Color(1.0, 1.0, 1.0),
+	"black": Color(0.02, 0.02, 0.02),
+}
 ## Слот/полоса → ключ его цвета в комплектации.
 const COLOR_KEYS := {
 	"wheel": "color_wheel", "engine": "color_engine",
@@ -230,6 +242,9 @@ const SOVIET_PART_PAINT := {
 ## ShotCrossTuning --soviet.
 const SOVIET_SLOT_FIX := {
 }
+## Хэтчбеки, у которых спойлер ставится на НИЖНЮЮ кромку двери багажника
+## (как на настоящих тюнингованных «восьмёрках»), а не на кромку крыши.
+const LOW_SPOILER_HATCH: Array[String] = ["vz08", "vz09"]
 
 ## БАЗОВЫЕ идентификаторы машин (без цвета) — порядок сетки гаража:
 ## сперва 3 стартовые, дальше по порядку открытия (GameState.CAR_UNLOCKS).
@@ -354,14 +369,21 @@ static func tuned_id(base: String, cfg: Dictionary) -> String:
 	if is_arcade(base):
 		return arcade_id(base, cfg)
 	if not SOVIET_PARTS.has(base):
-		# Unity-машины: база + только эффекты ("fastback-mred"); без них —
-		# голая база, как раньше.
-		return base + _fx_tokens(_clamp_cfg(cfg, base))
+		# Unity-машины: база + полоса (04.09, "-l1" и её цвет "-pl…") +
+		# эффекты ("fastback-l1-mred"); без них — голая база, как раньше.
+		var u := _clamp_cfg(cfg, base)
+		var uid := base
+		if int(u["line"]) > 0:
+			uid += "-l1"
+		return uid + _color_tokens(u)
 	var c := _clamp_cfg(cfg, base)
 	var id := skin_id(base, str(c["color"]))
 	for slot in PART_SLOTS:
 		if int(c[slot]) > 0:
 			id += "-%s%d" % [ARCADE_KEYS[slot], int(c[slot])]
+	# Полоса вдоль кузова — с 04.09 и у советских (шейдерный дубль кузова).
+	if int(c["line"]) > 0:
+		id += "-l1"
 	return id + _color_tokens(c)
 
 
@@ -381,7 +403,7 @@ static func _fx_tokens(c: Dictionary) -> String:
 	var t := ""
 	for key in FX_KEYS:
 		var color := str(c.get(key, ""))
-		if ARCADE_COLORS.has(color):
+		if FX_COLORS.has(color):
 			t += "-%s%s" % [FX_KEYS[key], color]
 	return t
 
@@ -457,7 +479,7 @@ static func _parse_tokens(parts: PackedStringArray, from: int,
 		# Эффекты: "m<цвет>" дым, "n<цвет>" неон (чужой цвет — пропуск).
 		var fx_hit := false
 		for fx in FX_KEYS:
-			if FX_KEYS[fx] == key and ARCADE_COLORS.has(rest):
+			if FX_KEYS[fx] == key and FX_COLORS.has(rest):
 				cfg[fx] = rest
 				fx_hit = true
 		if fx_hit or not rest.is_valid_int():
@@ -507,7 +529,7 @@ static func _clamp_cfg(cfg: Dictionary, base := "") -> Dictionary:
 		if not is_paint_spec(str(c.get(k, ""))):
 			c[k] = ""
 	for fx in FX_KEYS:
-		if not ARCADE_COLORS.has(str(c.get(fx, ""))):
+		if not FX_COLORS.has(str(c.get(fx, ""))):
 			c[fx] = ""
 	c.erase("pcolor")
 	c.erase("lcolor")
@@ -517,6 +539,8 @@ static func _clamp_cfg(cfg: Dictionary, base := "") -> Dictionary:
 ## Цвет эффекта (дым/неон) по имени из ARCADE_COLORS — яркий оттенок №2;
 ## чужое имя — fallback.
 static func fx_color(color: String, fallback := Color.WHITE) -> Color:
+	if FX_EXTRA_PAINT.has(color):
+		return FX_EXTRA_PAINT[color]
 	if not ARCADE_PAINTS.has(color):
 		return fallback
 	return (ARCADE_PAINTS[color] as Array)[1]
@@ -679,11 +703,21 @@ static func build(
 	elif is_arcade(base):
 		model = _build_arcade(arcade_parse(id), id, target_length, base_y)
 	if model:
+		var fx := parse_cfg(id)
+		# Полоса вдоль кузова у НЕаркадных машин (04.09): у аркадных она в
+		# UV-развёртке ("sticker line"), у советских и Unity рисуется
+		# шейдером на дубле кузова (см. _attach_line).
+		if not is_arcade(base) and int(fx.get("line", 0)) > 0:
+			_attach_line(model, base, str(fx.get("color_line", "")))
+		# Тонировка стёкол (04.09) — у всех паков, своим способом.
+		var glass := str(fx.get("glass", ""))
+		if FX_COLORS.has(glass):
+			_apply_glass(model, base, glass)
 		# Неон под днищем — часть модели: так он есть и на подиуме гаража,
 		# и в лобби, и в заезде (модель едет по видимому положению машины —
 		# см. Car._process, — свет не отстаёт от кузова).
-		var neon := str(parse_cfg(id).get("neon", ""))
-		if ARCADE_COLORS.has(neon):
+		var neon := str(fx.get("neon", ""))
+		if FX_COLORS.has(neon):
 			_attach_underglow(model, neon, base_y)
 		var dt := Time.get_ticks_msec() - t0
 		if dt > 100:
@@ -1007,6 +1041,12 @@ static func _paint_all(cfg: Dictionary, slot: String) -> bool:
 
 # ---- Аркадные детали на советском кузове ----
 
+## Радиус пробы верха для низкого спойлера хэтчбека: узкий (0.5 % длины),
+## чтобы крест проб не зацепил заднее стекло выше кромки двери.
+static func rs_low(len: float) -> float:
+	return len * 0.005
+
+
 ## Верх кузова под вертикалью (x, z) — по ТРЕУГОЛЬНИКАМ меша (faces —
 ## тройки вершин из get_faces()), а не по вершинам: у низкополи-кузовов
 ## капот — один большой квад, и в столбике вершин может не быть вовсе
@@ -1160,6 +1200,30 @@ static func _attach_parts(m: Node3D, base: String, cfg: Dictionary) -> void:
 				# сдвигаем вперёд, чтобы крыло не висело за багажником:
 				# хвост меша — в 15 % его длины за кормой.
 				var sz := z_rear + nose * (-a.position.z * 0.85) * k
+				# Зубило и Девятка (04.09 вечер): крыло — у самой кормы, на
+				# нижней кромке двери багажника (верх кузова там — низ двери,
+				# над бампером); вперёд на крышу, как остальные хэтчбеки,
+				# не идём.
+				if LOW_SPOILER_HATCH.has(base):
+					# Нижняя кромка двери — первая точка от кормы, где верх
+					# кузова поднимается выше 52 см от низа (бампер и фонари
+					# ниже, стекло выше): идём вперёд шагом 1 % длины.
+					var y_lid := aabb.position.y + 0.52 / s_c
+					var lz := z_rear + nose * len * 0.01
+					var y_top := _top_at(verts, cx, lz, rs_low(len), aabb.end.y)
+					while y_top < y_lid and (lz - z_rear) * nose < len * 0.4:
+						lz += nose * len * 0.01
+						y_top = _top_at(verts, cx, lz, rs_low(len), aabb.end.y)
+					pos = Vector3(cx, y_top, lz)
+					if fix.has(slot):
+						var f0: Vector3 = fix[slot]
+						pos += Vector3(f0.x, f0.y, 0) / s_c + fwd * (f0.z / s_c)
+					var low := _arcade_part(mesh, _part_paint(cfg, slot, body_paint),
+							0, 0, "", _paint_all(cfg, slot))
+					low.name = slot.capitalize()
+					low.transform = Transform3D(basis.scaled(Vector3.ONE * k), pos)
+					m.add_child(low)
+					continue
 				# Хэтчбеки (Зубило, Девятка; жалоба 04.09): под этой точкой —
 				# крутая дверь багажника, лапа вставала посреди стекла, а
 				# крыло висело в воздухе. Идём вперёд шагами 2 % длины, пока
@@ -1191,7 +1255,11 @@ static func _attach_parts(m: Node3D, base: String, cfg: Dictionary) -> void:
 				# и трубы висели в воздухе (жалоба 04.09).
 				var edge := _bumper_edge(verts, cx, aabb, nose, hub_y)
 				var xz := (edge.x + (-a.position.z - 0.14) * k) * nose
-				pos = Vector3(cx, edge.y, xz)
+				# Не выше 20 см от низа кузова (в единицах файла: /s_c). У
+				# vz21 и vz05r кромка бампера находилась на 26-32 см — трубы
+				# садились вровень с фонарями («выхлоп из фар», 04.09).
+				var y_cap := aabb.position.y + 0.20 / s_c
+				pos = Vector3(cx, minf(edge.y, y_cap), xz)
 		if fix.has(slot):
 			var f: Vector3 = fix[slot]
 			pos += Vector3(f.x, f.y, 0) / s_c + fwd * (f.z / s_c)
@@ -1211,6 +1279,7 @@ static func _attach_parts(m: Node3D, base: String, cfg: Dictionary) -> void:
 ## трансформ модели; base_y — низ модели (метры), как у build().
 static func _attach_underglow(m: Node3D, color: String, base_y: float) -> void:
 	var col := fx_color(color)
+	var black := color == "black"
 	var holder := Node3D.new()
 	holder.name = "Underglow"
 	holder.transform = m.transform.affine_inverse()
@@ -1224,28 +1293,255 @@ static func _attach_underglow(m: Node3D, color: String, base_y: float) -> void:
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	# Чёрный «неон» — не свет, а тень под машиной: обычное смешивание
+	# тёмного пятна (аддитивно чёрный невидим вовсе).
+	if black:
+		mat.blend_mode = BaseMaterial3D.BLEND_MODE_MIX
+		mat.albedo_color = Color(0.0, 0.0, 0.0, 0.8)
+	else:
+		mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+		mat.albedo_color = Color(col.r, col.g, col.b, 0.85)
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mat.disable_receive_shadows = true
-	mat.albedo_color = Color(col.r, col.g, col.b, 0.85)
 	mat.albedo_texture = _glow_texture()
 	glow.material_override = mat
 	glow.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	# Чуть выше низа колёс: в заезде дорога при обычном прогибе подвески
-	# лежит на 0–5 см выше низа модели, квад под ней пропал бы.
-	glow.position = Vector3(0.0, base_y + 0.12, 0.0)
+	# У самого низа колёс (+4 см). Было +12 см — на машинах с высокими
+	# колёсами (Нива, Копейка) пятно резало шины поперёк на уровне ступицы
+	# (жалоба 04.09 «неон поперёк колёс лежит»). Дорога в заезде при
+	# обычном прогибе на 0–5 см выше низа модели — пятно всё ещё над ней.
+	glow.position = Vector3(0.0, base_y + 0.04, 0.0)
 	holder.add_child(glow)
 
 	var light := OmniLight3D.new()
 	light.name = "NeonLight"
-	light.light_color = col
-	light.light_energy = 2.2
+	# Чёрный — «отрицательный» свет: гасит подсветку под днищем и колёса.
+	light.light_color = Color.WHITE if black else col
+	light.light_negative = black
+	light.light_energy = 1.4 if black else 2.2
 	light.omni_range = 3.2
 	light.omni_attenuation = 1.4
 	light.shadow_enabled = false
-	light.position = Vector3(0.0, base_y + 0.3, 0.0)
+	light.position = Vector3(0.0, base_y + 0.25, 0.0)
 	holder.add_child(light)
 	m.add_child(holder)
+
+
+# ---- Полоса вдоль кузова у советских и Unity-машин (04.09) ----
+# У аркадных полоса — поверхность "sticker line" в UV-развёртке; у
+# остальных паков такой развёртки нет, и полоса рисуется шейдером на
+# ДУБЛЕ меша кузова, приподнятом по нормали на 4 мм (material_overlay в
+# 4.3 Forward+ не рисуется — проверено стендом tools/shot_line_all.gd):
+# две полосы по |x − cx| на верхних гранях (normal.y > 0.35); стёкла
+# советского пака — клетка палитры (56, 81, 79) — не красятся, у Unity
+# поверхности "glass"/"Black-T" на дубле невидимы.
+const LINE_SHADER := """
+shader_type spatial;
+render_mode cull_back;
+uniform vec4 color : source_color = vec4(0.11, 0.11, 0.11, 1.0);
+uniform float cx = 0.0;
+uniform float half_w = 0.1;
+uniform float gap = 0.05;
+uniform float min_ny = 0.35;
+uniform bool mask_glass = false;
+uniform float lift = 0.0;
+uniform sampler2D albedo_tex;
+varying vec3 lpos;
+varying vec3 lnorm;
+void vertex() {
+	lpos = VERTEX;
+	lnorm = NORMAL;
+	VERTEX += NORMAL * lift;
+}
+void fragment() {
+	float dx = abs(lpos.x - cx);
+	if (dx < gap || dx > gap + 2.0 * half_w || lnorm.y < min_ny) {
+		discard;
+	}
+	if (mask_glass) {
+		vec3 t = texture(albedo_tex, UV).rgb;
+		if (distance(t, vec3(56.0, 81.0, 79.0) / 255.0) < 0.04) {
+			discard;
+		}
+	}
+	ALBEDO = color.rgb;
+	ROUGHNESS = 0.5;
+	METALLIC = 0.0;
+}
+"""
+static var _line_shader: Shader
+
+
+## Материал-невидимка (все пиксели отсекаются) — для стёкол на дубле.
+static func _hidden_material() -> StandardMaterial3D:
+	var hid := StandardMaterial3D.new()
+	hid.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	hid.alpha_scissor_threshold = 0.5
+	hid.albedo_color = Color(0, 0, 0, 0)
+	return hid
+
+
+## Меши КУЗОВА модели (без колёс в пивотах и без приставных деталей).
+static func _body_meshes(m: Node3D) -> Array[MeshInstance3D]:
+	var out: Array[MeshInstance3D] = []
+	for c in m.get_children():
+		if c is MeshInstance3D and (c as MeshInstance3D).mesh != null \
+				and not ["Engine", "Spoiler", "Exhaust", "Wheel"].has(String(c.name)):
+			out.append(c as MeshInstance3D)
+	return out
+
+
+static func _attach_line(m: Node3D, _base: String, color_spec: String) -> void:
+	if _line_shader == null:
+		_line_shader = Shader.new()
+		_line_shader.code = LINE_SHADER
+	var bodies := _body_meshes(m)
+	if bodies.is_empty():
+		return
+	var aabb := AABB()
+	var first := true
+	for mi in bodies:
+		var a: AABB = mi.transform * mi.mesh.get_aabb()
+		aabb = a if first else aabb.merge(a)
+		first = false
+	var color := paint_color(color_spec, Color(0.113, 0.113, 0.113))
+	for mi in bodies:
+		var mat := ShaderMaterial.new()
+		mat.shader = _line_shader
+		# Центр и ширины — в ЛОКАЛЬНЫХ единицах меша (у FBX из Unity в
+		# трансформе зашит масштаб 100: переводим обратным трансформом).
+		var inv := mi.transform.affine_inverse()
+		var kx := inv.basis.get_scale().x
+		mat.set_shader_parameter("cx", (inv * Vector3(aabb.get_center().x, 0, 0)).x)
+		mat.set_shader_parameter("half_w", aabb.size.x * 0.05 * kx)
+		mat.set_shader_parameter("gap", aabb.size.x * 0.03 * kx)
+		mat.set_shader_parameter("color", color)
+		mat.set_shader_parameter("lift", 0.004 * kx / maxf(m.scale.x, 1e-6))
+		var base_mat := mi.material_override as BaseMaterial3D
+		if base_mat != null and base_mat.albedo_texture != null:
+			mat.set_shader_parameter("mask_glass", true)
+			mat.set_shader_parameter("albedo_tex", base_mat.albedo_texture)
+		var dup := MeshInstance3D.new()
+		dup.name = String(mi.name) + "_line"
+		dup.mesh = mi.mesh
+		dup.transform = mi.transform
+		dup.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		if mi.material_override != null:
+			dup.material_override = mat
+		else:
+			for i in mi.mesh.get_surface_count():
+				var sm := mi.mesh.surface_get_material(i)
+				var nm := (sm.resource_name if sm else "").to_lower()
+				if nm.contains("glass") or nm.contains("black-t"):
+					dup.set_surface_override_material(i, _hidden_material())
+				else:
+					dup.set_surface_override_material(i, mat)
+		m.add_child(dup)
+
+
+# ---- Тонировка стёкол (04.09) ----
+# Стекло в паках сидит по-разному: советский — одна клетка палитры
+# albedo.png (56, 81, 79), аркадный — тёмно-серые ячейки палитры
+# ColorPalette.png (x 436–472, y 0–26; туда же смотрят UV окон всех восьми
+# кузовов — стенд tools/dump_glass_cells.gd), Unity — отдельные поверхности
+# "…glass". Для палитр делаем КОПИЮ текстуры с перекрашенной клеткой и
+# вешаем её только на кузов (колёса и детали остаются на общей).
+const SOVIET_GLASS_CELL := Color8(56, 81, 79)
+static var _glass_mats := {}   # ключ → материал
+
+
+## Цвет тонировки: краска эффекта, чуть приглушённая к «стеклянному».
+static func glass_tint(color: String) -> Color:
+	var c := fx_color(color)
+	if color == "white":
+		return Color(0.86, 0.9, 0.92)
+	if color == "black":
+		return Color(0.06, 0.06, 0.07)
+	return c.lerp(Color(0.22, 0.32, 0.31), 0.3)
+
+
+static func _apply_glass(m: Node3D, base: String, color: String) -> void:
+	var tint := glass_tint(color)
+	if SOVIET_IDS.has(base):
+		var mat := _soviet_glass_material(color, tint)
+		if mat == null:
+			return
+		for mi in _body_meshes(m):
+			if mi.material_override != null:
+				mi.material_override = mat
+	elif is_arcade(base):
+		var body := m.get_node_or_null("Body") as MeshInstance3D
+		if body == null:
+			return
+		var mat := _arcade_glass_material(color, tint)
+		for i in body.mesh.get_surface_count():
+			var sm := body.mesh.surface_get_material(i)
+			if sm != null and sm.resource_name == "details":
+				body.set_surface_override_material(i, mat)
+	else:
+		for mi in _body_meshes(m):
+			for i in mi.mesh.get_surface_count():
+				var sm := mi.mesh.surface_get_material(i)
+				var nm := (sm.resource_name if sm else "").to_lower()
+				if not nm.contains("glass"):
+					continue
+				var key := "unity:%s:%s" % [nm, color]
+				if not _glass_mats.has(key):
+					var g := (sm as BaseMaterial3D).duplicate() as BaseMaterial3D \
+							if sm is BaseMaterial3D else StandardMaterial3D.new()
+					g.albedo_color = tint
+					g.albedo_texture = null
+					_glass_mats[key] = g
+				mi.set_surface_override_material(i, _glass_mats[key])
+
+
+## Копия советского материала с перекрашенной клеткой стекла в палитре.
+static func _soviet_glass_material(color: String, tint: Color) -> StandardMaterial3D:
+	var key := "soviet:" + color
+	if _glass_mats.has(key):
+		return _glass_mats[key]
+	var src := _soviet_material()
+	var tex := src.albedo_texture as ImageTexture
+	if tex == null:
+		return null
+	var img := tex.get_image().duplicate() as Image
+	for y in img.get_height():
+		for x in img.get_width():
+			var c := img.get_pixel(x, y)
+			if absf(c.r - SOVIET_GLASS_CELL.r) < 0.03 and absf(c.g - SOVIET_GLASS_CELL.g) < 0.03 \
+					and absf(c.b - SOVIET_GLASS_CELL.b) < 0.03:
+				img.set_pixel(x, y, tint)
+	var mat := src.duplicate() as StandardMaterial3D
+	mat.albedo_texture = ImageTexture.create_from_image(img)
+	_glass_mats[key] = mat
+	return mat
+
+
+## Материал "details" аркадного пака с перекрашенными стёклами в палитре:
+## тёмно-серые ячейки окон (x 436–472, y 0–26) — в оттенки выбранного
+## цвета с сохранением их светлоты, шины/решётки на других клетках не
+## трогаются.
+static func _arcade_glass_material(color: String, tint: Color) -> StandardMaterial3D:
+	var key := "arcade:" + color
+	if _glass_mats.has(key):
+		return _glass_mats[key]
+	var base := _arcade_material("details")
+	var tex := base.albedo_texture as ImageTexture
+	if tex == null:
+		return base
+	var img := tex.get_image().duplicate() as Image
+	for y in range(0, mini(26, img.get_height())):
+		for x in range(436, mini(472, img.get_width())):
+			var c := img.get_pixel(x, y)
+			var lum := (c.r + c.g + c.b) / 3.0
+			if lum < 0.45:
+				# Светлота ячейки (0.05–0.3) задаёт глубину тонировки.
+				var k := clampf(lum / 0.3, 0.25, 1.0)
+				img.set_pixel(x, y, Color(tint.r * k, tint.g * k, tint.b * k))
+	var mat := base.duplicate() as StandardMaterial3D
+	mat.albedo_texture = ImageTexture.create_from_image(img)
+	_glass_mats[key] = mat
+	return mat
 
 
 ## Радиальный градиент пятна неона (белый, прозрачность к краю); общий.

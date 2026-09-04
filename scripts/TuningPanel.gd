@@ -57,6 +57,7 @@ const FX_ROWS := {
 	"smoke": ["ДЫМ ИЗ-ПОД КОЛЁС", "ОБЫЧНЫЙ",
 			"цветной дым в заносе, пламя выхлопа при ускорении"],
 	"neon": ["НЕОН ПОД ДНИЩЕМ", "ВЫКЛ", "подсветка под машиной"],
+	"glass": ["ТОНИРОВКА СТЁКОЛ", "РОДНЫЕ", "цвет стёкол"],
 }
 ## Названия красок аркадного пака (цвета дыма и неона) для подсказок.
 const FX_COLOR_NAMES := {
@@ -64,6 +65,7 @@ const FX_COLOR_NAMES := {
 	"green": "зелёный", "turquoise": "бирюзовый", "cyan": "голубой",
 	"blue": "синий", "purple": "фиолетовый", "pink": "розовый",
 	"brown": "коричневый", "cream": "кремовый", "grey": "серый",
+	"white": "белый", "black": "чёрный",
 }
 ## Названия цветов советских машин для подсказок.
 const COLOR_NAMES := {
@@ -165,10 +167,10 @@ func _tabs() -> Array[String]:
 		for slot in GameState.UPGRADE_SLOTS:
 			out.append(slot)
 	out.append("paint")
+	out.append("line")   # полоса — у всех машин (04.09)
 	if CarModelLibrary.is_arcade(_base):
-		out.append("line")
 		out.append("sticker")
-	out.append("fx")   # дым и неон — у всех
+	out.append("fx")   # дым, неон, тонировка — у всех
 	return out
 
 
@@ -219,7 +221,7 @@ func _preview_items() -> Array[String]:
 				key = "line"
 			"glitter":
 				key = "metal:%s" % str(preview_cfg()["color"])
-			"smoke", "neon":
+			"smoke", "neon", "glass":
 				key = "%s:%s" % [k, str(_preview[k])]
 		if not key.is_empty() and not GameState.item_owned(_base, key) \
 				and not keys.has(key):
@@ -295,6 +297,7 @@ func _build_preview_row() -> void:
 			"glitter": names.append("металлик %s" % str(preview_cfg()["color"]))
 			"smoke": names.append("дым %s" % _fx_color_name(str(_preview[k])))
 			"neon": names.append("неон %s" % _fx_color_name(str(_preview[k])))
+			"glass": names.append("стёкла %s" % _fx_color_name(str(_preview[k])))
 	var lbl := _label("ПРИМЕРКА: %s" % ", ".join(names), 14, PREVIEW_COLOR)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(lbl)
@@ -395,6 +398,7 @@ func rebuild() -> void:
 			_build_stickers()
 		"fx":
 			_build_fx_row("smoke")
+			_build_fx_row("glass")
 			_box.add_child(HSeparator.new())
 			_build_fx_row("neon")
 
@@ -525,7 +529,16 @@ func _build_part_color(part: String) -> void:
 			var spec := "%s%d" % [color, shade]
 			var b := _swatch(CarModelLibrary.paint_color(spec), cur == spec, SWATCH)
 			b.tooltip_text = spec
-			b.pressed.connect(func() -> void: _set_free(key, spec))
+			b.pressed.connect(func() -> void:
+				_set_free(key, spec)
+				# Цвет полосы выбран, а сама полоса выключена или ещё не
+				# куплена — включаем/примеряем её, иначе выбор невидим.
+				if part == "line" and int(GameState.tuning_of(_base)["line"]) == 0 \
+						and not _preview.has("line"):
+					if GameState.item_owned(_base, "line"):
+						_set_free("line", 1)
+					else:
+						_try_on("line", 1))
 			line.add_child(b)
 
 
@@ -743,7 +756,7 @@ func _build_fx_row(key: String) -> void:
 	head.add_theme_constant_override("separation", 8)
 	_box.add_child(head)
 	var lbl := _label("%s  %d из %d   по %s за цвет · %s" % [row_info[0],
-			owned, CarModelLibrary.ARCADE_COLORS.size(),
+			owned, CarModelLibrary.FX_COLORS.size(),
 			_fmt(GameState.item_price(_base, "%s:red" % key)), row_info[2]],
 			14, Color.WHITE)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -755,7 +768,7 @@ func _build_fx_row(key: String) -> void:
 	var line := HBoxContainer.new()
 	line.add_theme_constant_override("separation", 4)
 	_box.add_child(line)
-	for color in CarModelLibrary.ARCADE_COLORS:
+	for color in CarModelLibrary.FX_COLORS:
 		var item := "%s:%s" % [key, color]
 		var mounted: bool = cur == color and not _preview.has(key)
 		var previewed: bool = _preview.has(key) and str(_preview[key]) == color
