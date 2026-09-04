@@ -32,23 +32,44 @@ func _ready() -> void:
 	add_child(_select)
 
 
+## Прокрутка меню панели: ScrollContainer лежит в колонке-корне (под ним
+## неподвижный подвал с «КУПИТЬ»), потому ищем рекурсивно.
+func _find_scroll(root: Node) -> ScrollContainer:
+	if root is ScrollContainer:
+		return root
+	for c in root.get_children():
+		var s := _find_scroll(c)
+		if s != null:
+			return s
+	return null
+
+
 func _physics_process(_d: float) -> void:
 	_frame += 1
 	if _frame == 60:
 		_select.call("_open_tuning")
-	# Ключ `--preview`: примерить некупленное (мотор №7 и диски, у Копейки
-	# — из её набора) — оранжевые рамки, строка «ПРИМЕРКА … КУПИТЬ».
+	# Ключ `--tab <вкладка>` (engine/wheel/spoiler/exhaust/paint/line/sticker):
+	# открыть эту вкладку панели. ПЕРВЫМ делом: смена вкладки снимает
+	# примерку (03.09, ночь), иначе --preview с ней не сложить.
+	var ta := OS.get_cmdline_user_args()
+	var ti := ta.find("--tab")
+	if _frame == 66 and ti >= 0 and ti + 1 < ta.size():
+		(_select.get("_tuning") as TuningPanel)._select_tab(ta[ti + 1])
+	# Ключ `--preview`: примерить некупленную деталь ОТКРЫТОЙ вкладки (по
+	# умолчанию мотор) — оранжевая рамка и строка «ПРИМЕРКА … КУПИТЬ» внизу.
 	if _frame == 70 and OS.get_cmdline_user_args().has("--preview"):
 		var panel: TuningPanel = _select.get("_tuning")
 		var b: String = panel.base()
-		panel._try_on("engine", CarModelLibrary.slot_options(b, "engine")[-1])
-		panel._try_on("wheel", CarModelLibrary.slot_options(b, "wheel")[-1])
+		var slot: String = panel._tab
+		if not GameState.UPGRADE_SLOTS.has(slot):
+			slot = "engine"
+		panel._try_on(slot, CarModelLibrary.slot_options(b, slot)[-1])
 	# Ключ `--bottom`: прокрутить панель вниз (краски и наклейки).
 	if _frame == 80 and OS.get_cmdline_user_args().has("--bottom"):
 		var panel: Control = _select.get("_tuning")
-		for c in panel.get_children():
-			if c is ScrollContainer:
-				(c as ScrollContainer).scroll_vertical = 9999
+		var scroll := _find_scroll(panel)
+		if scroll != null:
+			scroll.scroll_vertical = 9999
 	if _frame == 100:
 		await RenderingServer.frame_post_draw
 		var img := get_viewport().get_texture().get_image()
@@ -57,6 +78,9 @@ func _physics_process(_d: float) -> void:
 				else ("tuning_bottom.png" if args.has("--bottom") else "tuning.png")
 		if args.has("--preview"):
 			name = name.replace(".png", "_preview.png")
+		var tab := args.find("--tab")
+		if tab >= 0 and tab + 1 < args.size():
+			name = name.replace(".png", "_%s.png" % args[tab + 1])
 		img.save_png(_out + "/" + name)
 		print("SHOT " + name)
 		get_tree().quit(0)

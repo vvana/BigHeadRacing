@@ -40,6 +40,28 @@ func _ok(cond: bool, what: String) -> void:
 		print("ok   ", what)
 
 
+## Первая кнопка (рекурсивно) с текстом, начинающимся на what.
+func _find_button(root: Node, what: String) -> Button:
+	if root is Button and (root as Button).text.begins_with(what):
+		return root
+	for c in root.get_children():
+		var b := _find_button(c, what)
+		if b != null:
+			return b
+	return null
+
+
+## Первая подпись (рекурсивно), содержащая what.
+func _find_label(root: Node, what: String) -> Label:
+	if root is Label and (root as Label).text.contains(what):
+		return root
+	for c in root.get_children():
+		var l := _find_label(c, what)
+		if l != null:
+			return l
+	return null
+
+
 func _podium_has(node_name: String) -> bool:
 	var model: Node = _select.get("_model")
 	return model != null and model.has_node(node_name)
@@ -102,8 +124,41 @@ func _physics_process(_d: float) -> void:
 			"после закрытия: мотор (куплен) есть, примеренных дисков нет")
 
 	# Цвет деталей — бесплатно и сразу.
-	_ok(GameState.set_tuning("vz01", "pcolor", "cyan2")
-			and GameState.full_id("vz01").ends_with("-pcyan2"), "цвет деталей в id")
+	_ok(GameState.set_tuning("vz01", "color_engine", "cyan2")
+			and GameState.full_id("vz01").ends_with("-pecyan2"), "цвет мотора в id")
+	# Вкладки: у Копейки мотор/колёса/спойлер/выхлоп/краска, у аркадной
+	# ещё полоса и наклейки; выбор вкладки перестраивает панель.
+	panel.open("vz01")
+	_ok(panel._tabs() == ["engine", "wheel", "spoiler", "exhaust", "paint"]
+			and panel._tab == "engine", "вкладки Копейки: %s" % [panel._tabs()])
+	panel._select_tab("paint")
+	_ok(panel._tab == "paint", "вкладка «КРАСКА» выбрана")
+
+	# Смена вкладки снимает непокупленную примерку (просьба 03.09, ночь):
+	# выбор живёт только в своей вкладке, пока его не купили.
+	panel._select_tab("wheel")
+	panel._try_on("wheel", wheel)
+	_ok(panel.has_preview(), "диски примерены на вкладке КОЛЁСА")
+	panel._select_tab("spoiler")
+	_ok(not panel.has_preview() and not GameState.item_owned("vz01", "wheel:%d" % wheel),
+			"уход на другую вкладку снял примерку, покупки нет")
+	_ok(panel.preview_id() == GameState.full_id("vz01"),
+			"подиум вернулся к настоящему виду: %s" % panel.preview_id())
+
+	# Кнопка «КУПИТЬ» — в подвале панели (_foot), а не в меню (_box):
+	# появляясь сверху, она сдвигала всё меню вниз.
+	panel._select_tab("engine")
+	panel._try_on("engine", CarModelLibrary.slot_options("vz01", "engine")[2])
+	_ok(_find_button(panel._foot, "КУПИТЬ") != null
+			and _find_button(panel._box, "КУПИТЬ") == null,
+			"кнопка «КУПИТЬ» внизу панели")
+	var buy_btn := _find_button(panel._foot, "КУПИТЬ")
+	_ok(_find_label(panel._foot, "итого") == null
+			and _find_label(panel._foot, "ПРИМЕРКА:") != null,
+			"строка примерки без «итого»")
+	_ok(buy_btn != null and buy_btn.text.contains("·"),
+			"цена на самой кнопке: %s" % [buy_btn.text if buy_btn else "нет"])
+	panel.close()
 
 	# Вернуть профиль.
 	for k in _saved:

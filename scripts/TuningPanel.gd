@@ -4,20 +4,26 @@ extends PanelContainer
 ## характеристик тюнинг больше не даёт вовсе, чтобы в сетевом заезде все
 ## ехали на равных; улучшать можно будет только оружие и бонусы,
 ## ЭКОНОМИКА.md раздел 7).
-## У ЛЮБОЙ своей машины здесь краски (с 03.09 цвета выбираются только
-## тут — ряда красок в гараже больше нет): у советских и Unity-машин —
-## 10 бесплатных цветов, у аркадных конструкторов — 36 красок и
-## «Металлик». Слоты деталей (мотор, колёса, спойлер, выхлоп) — у
-## аркадных ×10 вариантов и у СОВЕТСКИХ (03.09 вечер) — свой подобранный
-## набор на каждую (CarModelLibrary.SOVIET_PARTS); наклейки и полоса —
-## только у аркадных. У деталей и у полосы СВОЙ цвет (pcolor/lcolor),
-## бесплатно.
+## С 03.09 (ночь) панель — ВКЛАДКИ по частям машины (просьба «отдельные
+## подменю тюнинга разных частей, цвет выбирается отдельно у каждой»):
+## МОТОР · КОЛЁСА · СПОЙЛЕР · ВЫХЛОП · КРАСКА, у аркадных ещё ПОЛОСА и
+## НАКЛЕЙКИ. Во вкладке детали — её варианты (каждый покупается
+## ОТДЕЛЬНО, GameState.try_buy_item) и ЕЁ цвет («как кузов» или 36
+## красок, бесплатно, GameState color_<слот>); во вкладке полосы —
+## покупка/включение полосы и её цвет вместе. КРАСКА: у советских и
+## Unity-машин 10 бесплатных цветов, у аркадных 36 красок и металлик.
+## Слоты деталей — у аркадных ×10 вариантов и у СОВЕТСКИХ свой набор
+## (CarModelLibrary.SOVIET_PARTS); наклейки и полоса — только у аркадных.
 ## ПРИМЕРКА (03.09 вечер): клик по некупленному элементу НЕ покупает,
-## а надевает его на машину на подиуме (оранжевая рамка); всё примеренное
-## собирается в строку «ПРИМЕРКА … итого N» с кнопкой «КУПИТЬ» — она
-## покупает разом и ставит. Примерка живёт только в панели (_preview):
-## профиль, selected_car_id и миниатюры её не видят; закрыл панель —
-## примерка сброшена. Купленное/бесплатное ставится сразу (set_tuning).
+## а надевает его на машину на подиуме (оранжевая рамка); примеренное
+## показано строкой «ПРИМЕРКА: …» с кнопкой «КУПИТЬ · цена» — она
+## покупает и ставит. Примерка живёт только в панели (_preview):
+## профиль, selected_car_id и миниатюры её не видят; закрыл панель или
+## ушёл на другую вкладку — примерка снята (просьба 03.09: «перешёл в
+## другую вкладку — выбор пропал, пока не купил»), поэтому примерка
+## всегда про ТЕКУЩУЮ вкладку и «итого» в строке не пишем. Строка с
+## «КУПИТЬ» — ВНИЗУ панели (_foot, вне скролла): появившись сверху, она
+## сдвигала всё меню вниз. Купленное/бесплатное ставится сразу (set_tuning).
 ## Всё состояние — в GameState (профиль); панель лишь рисует и зовёт
 ## try_buy_item/set_tuning, после чего шлёт changed — гараж перестраивает
 ## подиум (с примеркой — preview_id) и миниатюру.
@@ -34,6 +40,12 @@ const SLOT_EFFECT := {
 	"wheel": "комплекты дисков",
 	"spoiler": "спойлеры на корму",
 	"exhaust": "выхлопы",
+}
+## Подписи вкладок.
+const TAB_NAMES := {
+	"engine": "МОТОР", "wheel": "КОЛЁСА", "spoiler": "СПОЙЛЕР",
+	"exhaust": "ВЫХЛОП", "paint": "КРАСКА", "line": "ПОЛОСА",
+	"sticker": "НАКЛЕЙКИ",
 }
 ## Названия цветов советских машин для подсказок.
 const COLOR_NAMES := {
@@ -60,8 +72,10 @@ const ROMAN := ["", "I", "II", "III"]
 const PREVIEW_COLOR := Color(1.0, 0.55, 0.15)   # рамка примеренного
 
 var _base := ""
+var _tab := "engine"
 var _font: FontFile
 var _box: VBoxContainer
+var _foot: VBoxContainer   # подвал панели: строка примерки с «КУПИТЬ»
 var _flash_gen := 0
 ## Примерка: ключ комплектации → значение (только НЕкупленное платное).
 var _preview := {}
@@ -78,22 +92,34 @@ func _ready() -> void:
 	style.set_border_width_all(1)
 	style.border_color = Color(UiKit.RIM.r, UiKit.RIM.g, UiKit.RIM.b, 0.45)
 	add_theme_stylebox_override("panel", style)
+	# Корень — колонка: прокручиваемое меню и НЕподвижный подвал с
+	# «КУПИТЬ». Кнопка покупки жила сверху и, появляясь, толкала всё меню
+	# вниз (просьба 03.09) — теперь она приклеена к низу панели.
+	var root := VBoxContainer.new()
+	root.add_theme_constant_override("separation", 6)
+	add_child(root)
 	var scroll := ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	add_child(scroll)
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.add_child(scroll)
 	_box = VBoxContainer.new()
 	_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_box.add_theme_constant_override("separation", 6)
 	scroll.add_child(_box)
+	_foot = VBoxContainer.new()
+	_foot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.add_child(_foot)
 	visible = false
 
 
 ## Открыть панель для машины base (только своя машина). Другая машина —
-## примерка прежней сбрасывается.
+## примерка прежней сбрасывается, вкладка — первая доступная.
 func open(base: String) -> void:
 	if base != _base:
 		_preview.clear()
-	_base = base
+		_base = base
+		_tab = _tabs()[0]
 	visible = true
 	rebuild()
 
@@ -106,6 +132,32 @@ func close() -> void:
 
 func base() -> String:
 	return _base
+
+
+## Вкладки этой машины: слоты деталей (если есть), краска, у аркадных
+## полоса и наклейки; у машин без слотов — одна краска (вкладок не видно).
+func _tabs() -> Array[String]:
+	var out: Array[String] = []
+	if CarModelLibrary.has_parts(_base):
+		for slot in GameState.UPGRADE_SLOTS:
+			out.append(slot)
+	out.append("paint")
+	if CarModelLibrary.is_arcade(_base):
+		out.append("line")
+		out.append("sticker")
+	return out
+
+
+## Сменить вкладку. Непокупленная примерка при этом СНИМАЕТСЯ (просьба
+## 03.09): выбор живёт в пределах своей вкладки, пока его не купили —
+## машина на подиуме возвращается к настоящему виду.
+func _select_tab(tab: String) -> void:
+	_tab = tab
+	var had := not _preview.is_empty()
+	_preview.clear()
+	if had:
+		changed.emit()
+	rebuild()
 
 
 # ---- Примерка ----
@@ -197,13 +249,15 @@ func _drop_preview() -> void:
 	rebuild()
 
 
-## Строка примерки: что надето и почём, «КУПИТЬ · N», «СБРОС».
+## Строка примерки в подвале панели: что надето, «КУПИТЬ · N», «СБРОС».
+## Без «итого» (просьба 03.09): примерка не переживает смену вкладки,
+## складывать нечего — цена стоит на самой кнопке.
 func _build_preview_row() -> void:
 	if _preview.is_empty():
 		return
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
-	_box.add_child(row)
+	_foot.add_child(row)
 	var names: Array[String] = []
 	for k in _preview:
 		match k:
@@ -212,8 +266,7 @@ func _build_preview_row() -> void:
 			"sticker": names.append("наклейка №%d" % int(_preview[k]))
 			"line": names.append("полоса")
 			"glitter": names.append("металлик %s" % str(preview_cfg()["color"]))
-	var lbl := _label("ПРИМЕРКА: %s · итого %s" % [", ".join(names),
-			_fmt(_preview_total())], 14, PREVIEW_COLOR)
+	var lbl := _label("ПРИМЕРКА: %s" % ", ".join(names), 14, PREVIEW_COLOR)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(lbl)
 	var buy := Button.new()
@@ -237,9 +290,13 @@ func rebuild() -> void:
 	for c in _box.get_children():
 		_box.remove_child(c)
 		c.queue_free()
+	for c in _foot.get_children():
+		_foot.remove_child(c)
+		c.queue_free()
 	_flash_gen += 1
-	var arcade := CarModelLibrary.is_arcade(_base)
-	var parts := CarModelLibrary.has_parts(_base)
+	var tabs := _tabs()
+	if not tabs.has(_tab):
+		_tab = tabs[0]
 
 	# Шапка: имя машины, кошелёк, «ЗАКРЫТЬ».
 	var head := HBoxContainer.new()
@@ -260,19 +317,53 @@ func rebuild() -> void:
 	_box.add_child(_label(
 			"Тюнинг — только внешний вид: на скорость, разгон и управляемость"
 			+ " он не влияет. Клик по некупленному — примерить, покупка —"
-			+ " кнопкой «КУПИТЬ».", 12, Color(1, 1, 1, 0.55)))
+			+ " кнопкой «КУПИТЬ» внизу; уйдёте на другую вкладку — примерка"
+			+ " снимется.", 12, Color(1, 1, 1, 0.55)))
+
+	# Вкладки по частям машины.
+	if tabs.size() > 1:
+		var bar := HBoxContainer.new()
+		bar.add_theme_constant_override("separation", 4)
+		_box.add_child(bar)
+		for tab in tabs:
+			var b := Button.new()
+			b.text = TAB_NAMES[tab]
+			UiKit.style_button(b, "teal" if tab == _tab else "steel", 11)
+			# Семь вкладок в 560 px: боковые поля пластины ужаты (у
+			# UiKit.style_button они 20 px — семь кнопок не влезали и
+			# панель уезжала за край, снимок ShotTuning --tab line).
+			for state in ["normal", "hover", "pressed", "disabled", "focus"]:
+				var sb := b.get_theme_stylebox(state)
+				if sb:
+					sb = sb.duplicate()
+					sb.content_margin_left = 5
+					sb.content_margin_right = 5
+					b.add_theme_stylebox_override(state, sb)
+			b.custom_minimum_size = Vector2(0, 30)
+			b.clip_text = true
+			b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			b.focus_mode = Control.FOCUS_NONE
+			if tab != _tab:
+				b.pressed.connect(_select_tab.bind(tab))
+			bar.add_child(b)
+		_box.add_child(HSeparator.new())
+
+	match _tab:
+		"engine", "wheel", "spoiler", "exhaust":
+			_build_slot(_tab)
+			_build_part_color(_tab)
+		"paint":
+			if CarModelLibrary.is_arcade(_base):
+				_build_paint()
+			else:
+				_build_simple_paint()
+		"line":
+			_build_line()
+		"sticker":
+			_build_stickers()
+
+	# Подвал — после содержимого: появившись, кнопка не двигает меню.
 	_build_preview_row()
-	if parts:
-		for slot in GameState.UPGRADE_SLOTS:
-			_build_slot(slot)
-	if arcade:
-		_build_paint()
-	else:
-		_build_simple_paint()
-	if parts:
-		_build_part_color()
-	if arcade:
-		_build_stickers()
 
 
 # ---- Слот деталей: каждая покупается отдельно ----
@@ -367,6 +458,50 @@ func _price_tag(b: Button, key: String) -> void:
 func _mount(slot: String, idx: int) -> void:
 	_preview.erase(slot)
 	if GameState.set_tuning(_base, slot, idx):
+		changed.emit()
+		rebuild()
+
+
+## Цвет детали слота (или полосы, part == "line") отдельно от кузова:
+## «КАК КУЗОВ» (у полосы — «ТЁМНАЯ») или 36 красок пака — бесплатно.
+func _build_part_color(part: String) -> void:
+	var key: String = CarModelLibrary.COLOR_KEYS[part]
+	var cur := str(GameState.tuning_of(_base)[key])
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	_box.add_child(row)
+	var what := "полосы" if part == "line" else "детали"
+	var lbl := _label("ЦВЕТ %s   36 красок — бесплатно" % what.to_upper(),
+			14, Color.WHITE)
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(lbl)
+	row.add_child(_mode_button("ТЁМНАЯ" if part == "line" else "КАК КУЗОВ",
+			cur.is_empty(), func() -> void: _set_free(key, "")))
+	for shade in [1, 2, 3]:
+		var line := HBoxContainer.new()
+		line.add_theme_constant_override("separation", 4)
+		_box.add_child(line)
+		for color in CarModelLibrary.ARCADE_COLORS:
+			var spec := "%s%d" % [color, shade]
+			var b := _swatch(CarModelLibrary.paint_color(spec), cur == spec, SWATCH)
+			b.tooltip_text = spec
+			b.pressed.connect(func() -> void: _set_free(key, spec))
+			line.add_child(b)
+
+
+func _mode_button(text: String, on: bool, cb: Callable) -> Button:
+	var b := Button.new()
+	b.text = text
+	UiKit.style_button(b, "teal" if on else "steel", 13)
+	b.custom_minimum_size = Vector2(120, 30)
+	b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	b.pressed.connect(cb)
+	return b
+
+
+## Бесплатная настройка (цвет детали/полосы): сразу в профиль.
+func _set_free(key: String, value: Variant) -> void:
+	if GameState.set_tuning(_base, key, value):
 		changed.emit()
 		rebuild()
 
@@ -468,67 +603,6 @@ func _build_simple_paint() -> void:
 		line.add_child(b)
 
 
-## Цвет деталей (колёса, мотор, спойлер, выхлоп) отдельно от кузова:
-## «КАК КУЗОВ» или 36 красок пака — бесплатно.
-func _build_part_color() -> void:
-	var cur := str(GameState.tuning_of(_base)["pcolor"])
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 8)
-	_box.add_child(row)
-	var lbl := _label("ЦВЕТ ДЕТАЛЕЙ   диски, мотор, спойлер, выхлоп — бесплатно",
-			14, Color.WHITE)
-	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(lbl)
-	row.add_child(_mode_button("КАК КУЗОВ", cur.is_empty(),
-			func() -> void: _set_free("pcolor", "")))
-	_build_spec_rows(cur, func(spec: String) -> void: _set_free("pcolor", spec))
-
-
-## Цвет двойной полосы: «ТЁМНАЯ» (как в паке) или 36 красок — бесплатно.
-func _build_line_color() -> void:
-	var cur := str(GameState.tuning_of(_base)["lcolor"])
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 8)
-	_box.add_child(row)
-	var lbl := _label("ЦВЕТ ПОЛОСЫ   бесплатно", 14, Color.WHITE)
-	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(lbl)
-	row.add_child(_mode_button("ТЁМНАЯ", cur.is_empty(),
-			func() -> void: _set_free("lcolor", "")))
-	_build_spec_rows(cur, func(spec: String) -> void: _set_free("lcolor", spec))
-
-
-## Три ряда по 12 квадратиков красок пака; cur — выбранная спецификация.
-func _build_spec_rows(cur: String, on_pick: Callable) -> void:
-	for shade in [1, 2, 3]:
-		var line := HBoxContainer.new()
-		line.add_theme_constant_override("separation", 4)
-		_box.add_child(line)
-		for color in CarModelLibrary.ARCADE_COLORS:
-			var spec := "%s%d" % [color, shade]
-			var b := _swatch(CarModelLibrary.paint_color(spec), cur == spec, SWATCH)
-			b.tooltip_text = spec
-			b.pressed.connect(on_pick.bind(spec))
-			line.add_child(b)
-
-
-func _mode_button(text: String, on: bool, cb: Callable) -> Button:
-	var b := Button.new()
-	b.text = text
-	UiKit.style_button(b, "teal" if on else "steel", 13)
-	b.custom_minimum_size = Vector2(120, 30)
-	b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	b.pressed.connect(cb)
-	return b
-
-
-## Бесплатная настройка (цвет деталей/полосы): сразу в профиль.
-func _set_free(key: String, value: Variant) -> void:
-	if GameState.set_tuning(_base, key, value):
-		changed.emit()
-		rebuild()
-
-
 ## Квадратик краски: жёлтая рамка — стоит на машине, оранжевая — примерен.
 func _swatch(color: Color, current: bool, size: int, previewed := false) -> Button:
 	var b := Button.new()
@@ -545,26 +619,23 @@ func _swatch(color: Color, current: bool, size: int, previewed := false) -> Butt
 	return b
 
 
-# ---- Наклейки и полоса: каждая покупается отдельно ----
+# ---- Полоса: покупка/включение и цвет — в одной вкладке ----
 
-func _build_stickers() -> void:
+func _build_line() -> void:
 	var cfg := GameState.tuning_of(_base)
-	var owned := GameState.items_owned_count(_base, "sticker:")
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 	_box.add_child(row)
-	var lbl := _label("НАКЛЕЙКИ  %d из %d   по %s за штуку" % [owned,
-			CarModelLibrary.PART_COUNT, _fmt(GameState.item_price(_base, "sticker:1"))],
-			14, Color.WHITE)
+	var lbl := _label("ПОЛОСА   двойная полоса по кузову — %s" % _fmt(
+			GameState.item_price(_base, "line")), 14, Color.WHITE)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(lbl)
-	# Двойная полоса — отдельный элемент: некупленная примеряется
-	# (кнопка оранжевая, пока примерена), купленная — ВКЛ/ВЫКЛ.
+	# Некупленная примеряется (кнопка оранжевая, пока примерена),
+	# купленная — ВКЛ/ВЫКЛ.
 	var pb := Button.new()
 	pb.custom_minimum_size = Vector2(190, 32)
 	pb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	var line_owned := GameState.item_owned(_base, "line")
-	if line_owned:
+	if GameState.item_owned(_base, "line"):
 		var on := int(cfg["line"]) == 1
 		UiKit.style_button(pb, "teal" if on else "steel", 13)
 		pb.text = "ПОЛОСА: %s" % ("ВКЛ" if on else "ВЫКЛ")
@@ -575,12 +646,22 @@ func _build_stickers() -> void:
 	else:
 		var previewed := _preview.has("line")
 		UiKit.style_button(pb, "orange" if previewed else "steel", 13)
-		pb.text = ("ПРИМЕРЕНА · %s" if previewed else "ПОЛОСА · %s") \
+		pb.text = ("ПРИМЕРЕНА · %s" if previewed else "ПРИМЕРИТЬ · %s") \
 				% _fmt(GameState.item_price(_base, "line"))
-		pb.tooltip_text = "Двойная полоса по кузову — нажмите, чтобы примерить"
+		pb.tooltip_text = "Нажмите, чтобы примерить; купить — кнопкой «КУПИТЬ»"
 		pb.pressed.connect(func() -> void: _try_on("line", 1))
 	row.add_child(pb)
+	_build_part_color("line")
 
+
+# ---- Наклейки: каждая покупается отдельно ----
+
+func _build_stickers() -> void:
+	var cfg := GameState.tuning_of(_base)
+	var owned := GameState.items_owned_count(_base, "sticker:")
+	_box.add_child(_label("НАКЛЕЙКИ  %d из %d   по %s за штуку" % [owned,
+			CarModelLibrary.PART_COUNT, _fmt(GameState.item_price(_base, "sticker:1"))],
+			14, Color.WHITE))
 	var icons := HBoxContainer.new()
 	icons.add_theme_constant_override("separation", 4)
 	_box.add_child(icons)
@@ -603,9 +684,6 @@ func _build_stickers() -> void:
 			b.tooltip_text = _item_hint(key)
 			b.pressed.connect(_try_on.bind("sticker", idx))
 		icons.add_child(b)
-	# Цвет полосы — когда полоса есть (куплена) или примерена.
-	if line_owned or _preview.has("line"):
-		_build_line_color()
 
 
 # ---- Мелочи ----

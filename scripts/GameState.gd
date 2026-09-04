@@ -518,6 +518,18 @@ func tuning_of(base: String) -> Dictionary:
 	var saved: Dictionary = car_tuning.get(base, {})
 	for k in saved:
 		cfg[k] = saved[k]
+	# Профили дня 03.09: один цвет на все детали (pcolor) и цвет полосы
+	# (lcolor) → цвета по деталям (color_<слот>), если те не заданы.
+	if saved.has("pcolor"):
+		for slot in CarModelLibrary.PART_SLOTS:
+			var key: String = CarModelLibrary.COLOR_KEYS[slot]
+			if not saved.has(key):
+				cfg[key] = saved["pcolor"]
+		cfg.erase("pcolor")
+	if saved.has("lcolor"):
+		if not saved.has("color_line"):
+			cfg["color_line"] = saved["lcolor"]
+		cfg.erase("lcolor")
 	return cfg
 
 
@@ -529,7 +541,7 @@ func tuning_of(base: String) -> Dictionary:
 func tuning_allowed(base: String, key: String, value: Variant) -> bool:
 	match key:
 		"color": return CarModelLibrary.ARCADE_COLORS.has(str(value))
-		"pcolor", "lcolor":
+		"color_wheel", "color_engine", "color_spoiler", "color_exhaust", "color_line":
 			return str(value).is_empty() or CarModelLibrary.is_paint_spec(str(value))
 		"shade": return int(value) >= 1 and int(value) <= 3
 		"glitter":

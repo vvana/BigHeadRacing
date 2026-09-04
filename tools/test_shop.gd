@@ -72,19 +72,28 @@ func _run() -> void:
 			"мотор №1 ставится, №3 (не куплен) — нет")
 	_ok(gs.set_tuning("vz01", "wheel", 0) and not gs.set_tuning("vz01", "wheel", 4),
 			"родные колёса свободны, диски №4 не из набора")
-	_ok(gs.set_tuning("vz01", "pcolor", "grey2")
-			and not gs.set_tuning("vz01", "pcolor", "zzz"), "цвет деталей: grey2 да, мусор нет")
+	_ok(gs.set_tuning("vz01", "color_engine", "grey2")
+			and not gs.set_tuning("vz01", "color_engine", "zzz"),
+			"цвет мотора: grey2 да, мусор нет")
 	_ok(not gs.try_buy_item("vz01", "sticker:1") and not gs.try_buy_item("vz01", "line")
 			and not gs.try_buy_item("vz01", "metal:red"),
 			"наклейки, полоса и металлик советским не продаются")
-	_ok(gs.full_id("vz01") == "vz01_green-e1-pgrey2",
+	_ok(gs.full_id("vz01") == "vz01_green-e1-pegrey2",
 			"полный id Копейки: %s" % gs.full_id("vz01"))
-	_ok(gs.set_tuning("vz01", "pcolor", "") and gs.full_id("vz01") == "vz01_green-e1",
-			"цвет деталей «как кузов» — токен пропал")
+	_ok(gs.set_tuning("vz01", "color_engine", "") and gs.full_id("vz01") == "vz01_green-e1",
+			"цвет мотора «как кузов» — токен пропал")
+	# Старый профиль дня (pcolor/lcolor) читается как цвета по деталям.
+	gs.car_tuning["vz01"].erase("color_engine")   # явно заданный цвет главнее
+	gs.car_tuning["vz01"]["pcolor"] = "cyan2"
+	_ok(gs.tuning_of("vz01")["color_wheel"] == "cyan2"
+			and gs.tuning_of("vz01")["color_exhaust"] == "cyan2"
+			and gs.full_id("vz01").ends_with("-pwcyan2-pecyan2-pscyan2-pxcyan2"),
+			"перенос pcolor на все детали: %s" % gs.full_id("vz01"))
+	gs.car_tuning["vz01"].erase("pcolor")
 	_ok(gs.set_tuning("vz01", "engine", 0) and gs.full_id("vz01") == "vz01_green",
 			"снял мотор — короткий id как раньше")
 	gs.set_tuning("vz01", "engine", 1)
-	_ok(not gs.set_tuning("fastback", "pcolor", "grey2"), "у Unity-машин слотов нет")
+	_ok(not gs.set_tuning("fastback", "color_engine", "grey2"), "у Unity-машин слотов нет")
 
 	# --- Аркадная машина: покупка, детали поштучно, наклейки поштучно.
 	_ok(not gs.try_buy_item("ac1", "wheel:2"), "чужую машину не тюнить")

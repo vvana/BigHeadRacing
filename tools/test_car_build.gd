@@ -45,7 +45,8 @@ func _check_soviet_parts() -> void:
 				var o: Array = opts[slot]
 				cfg[slot] = o[mini(i, o.size() - 1)]
 			if i == longest - 1:
-				cfg["pcolor"] = "grey2"
+				cfg["color_wheel"] = "grey2"
+				cfg["color_spoiler"] = "red1"
 			_check_soviet_tuned(base, cfg)
 
 
@@ -94,26 +95,35 @@ func _check_soviet_ids() -> void:
 	cfg["color"] = "white"
 	cfg["wheel"] = 7
 	cfg["exhaust"] = 4
-	cfg["pcolor"] = "cyan3"
+	cfg["color_exhaust"] = "cyan3"
 	var id := CarModelLibrary.tuned_id("gz24", cfg)
-	ok = ok and id == "gz24_white-w7-x4-pcyan3"
+	ok = ok and id == "gz24_white-w7-x4-pxcyan3"
 	var back := CarModelLibrary.parse_cfg(id)
 	ok = ok and CarModelLibrary.base_id(id) == "gz24" \
 			and CarModelLibrary.color_of_id(id) == "white" \
 			and back["wheel"] == 7 and back["exhaust"] == 4 \
 			and back["engine"] == 0 and back["spoiler"] == 0 \
-			and back["pcolor"] == "cyan3"
+			and back["color_exhaust"] == "cyan3" and back["color_wheel"] == ""
 	# Битые токены с чужого клиента: зажаты; чужой цвет в голове id —
 	# машина просто не найдётся (бокс-заглушка, как и раньше).
-	var bad := CarModelLibrary.parse_cfg("vz05_yellow-w99-pzzz9-e-3-qq")
+	var bad := CarModelLibrary.parse_cfg("vz05_yellow-w99-pzzz9-pwzzz-e-3-qq")
 	ok = ok and bad["color"] == "yellow" and bad["base"] == "vz05" \
-			and bad["wheel"] == 10 and bad["pcolor"] == "" and bad["engine"] == 0
-	# Аркадный id с цветом деталей и полосы.
-	var acfg := {"color": "red", "pcolor": "grey2", "lcolor": "yellow2", "line": 1}
+			and bad["wheel"] == 10 and bad["color_wheel"] == "" \
+			and bad["color_engine"] == "" and bad["engine"] == 0
+	# Старые токены дня: "-p<цвет>" — на все детали, "-c<цвет>" — полоса.
+	var old := CarModelLibrary.parse_cfg("vz01_red-e1-pgrey2-cred1")
+	ok = ok and old["color_wheel"] == "grey2" and old["color_exhaust"] == "grey2" \
+			and old["color_line"] == "red1" \
+			and CarModelLibrary.tuned_id("vz01", old) \
+				== "vz01_red-e1-pwgrey2-pegrey2-psgrey2-pxgrey2-plred1"
+	# Аркадный id с цветом дисков и полосы.
+	var acfg := {"color": "red", "color_wheel": "grey2", "color_line": "yellow2",
+			"line": 1}
 	var aid := CarModelLibrary.arcade_id("ac1", acfg)
 	var aback := CarModelLibrary.arcade_parse(aid)
-	ok = ok and aid.ends_with("-pgrey2-cyellow2") and aback["pcolor"] == "grey2" \
-			and aback["lcolor"] == "yellow2" and aback["line"] == 1
+	ok = ok and aid.ends_with("-pwgrey2-plyellow2") and aback["color_wheel"] == "grey2" \
+			and aback["color_line"] == "yellow2" and aback["line"] == 1 \
+			and aback["color_engine"] == ""
 	ok = ok and CarModelLibrary.has_parts("vz01") and CarModelLibrary.has_parts("ac3") \
 			and not CarModelLibrary.has_parts("fastback") \
 			and CarModelLibrary.slot_options("fastback", "engine").is_empty() \
