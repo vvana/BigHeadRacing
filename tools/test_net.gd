@@ -87,12 +87,29 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	_t += delta
 	if Net.my_slot < 0:
+		# ДО welcome лобби уже должно рисовать СВОЮ машину в подсказанном
+		# слоте (07.09: раньше там секунду-две висела чужая машина ростера с
+		# подписью «Player 1»). Окно между _rx_slot_taken и welcome на
+		# локалхосте — кадр-другой, так что проверка срабатывает не всегда.
+		if Net.slot_hint >= 0 and _main._lobby != null \
+				and not _ok.has("своя машина в лобби до welcome"):
+			var shown: String = _main._lobby._slot_ids[Net.slot_hint]
+			_ok["своя машина в лобби до welcome"] = \
+					shown == GameState.selected_car_id
+			print("  до welcome: подсказка слота %d, на подиуме «%s»"
+					% [Net.slot_hint, shown])
 		if _t > 8.0:
 			_fail("сервер не выдал слот за 8 с (он запущен?)")
 		return
 	if _start_pos.is_empty():
 		_ok["слот выдан"] = true
 		_ok["ростер получен"] = _main._roster.size() == _main._cars.size()
+		# После welcome — своя машина в своём слоте с пометкой «— ты».
+		if _main._lobby != null:
+			var lobby: Lobby = _main._lobby
+			_ok["в лобби своя машина в своём слоте"] = \
+					lobby._slot_ids[Net.my_slot] == GameState.selected_car_id \
+					and lobby._name_labels[Net.my_slot].text.ends_with("— ты")
 		for c: Car in _main._cars:
 			_start_pos.append(c.global_position)
 	# Стартовать НЕ просим: проверяем как раз то, что сервер сам подождёт
@@ -128,15 +145,10 @@ func _physics_process(delta: float) -> void:
 				_main._cars[i].global_position.distance_to(_start_pos[i]))
 	_ok["своя машина поехала"] = moved_me > MOVE_MIN
 	_ok["снимки ботов идут"] = moved_bot > MOVE_MIN
-	# Метки соперников СОЗДАНЫ (по одной на каждый чужой слот) и ВСЕ ВИДНЫ:
-	# с 01.09 стрелка висит и над ботами — бот не должен отличаться от
-	# живого игрока, стрелка больше ничего не выдаёт.
-	_ok["метки соперников есть"] = 			_main._rival_markers.size() == Net.race_size - 1
-	var all_visible: bool = not _main._rival_markers.is_empty()
-	for m: Node3D in _main._rival_markers.values():
-		if not m.visible:
-			all_visible = false
-	_ok["метки соперников видны (и у ботов)"] = all_visible
+	# Стрелка — только над СВОЕЙ машиной (07.09: оранжевые над соперниками
+	# убраны по просьбе игрока).
+	_ok["стрелка над своей машиной есть"] = _main._player_marker != null \
+			and (_main._player_marker as Node3D).visible
 	_ok["своя машина не марионетка"] = me.net_role == Car.NetRole.OWNED
 	var jitter := _jitter()
 	print("  марионетка: шаг расходится со скоростью на %.1f%%, рывков назад %d из %d"

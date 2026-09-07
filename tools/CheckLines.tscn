@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_checklines"]
+
+[ext_resource type="Script" path="res://tools/check_lines.gd" id="1_chklines"]
+
+[node name="CheckLines" type="Node"]
+script = ExtResource("1_chklines")

@@ -74,21 +74,17 @@ const COLOR_NAMES := {
 	"red": "красный", "sand": "песочный", "white": "белый",
 	"yellow": "жёлтый",
 }
-## Цвет квадратика-образца советских машин. НЕ на глазок: это настоящие
-## пиксели палитры пака (albedo.png, цвет машины выбирается её UV) — сняты
-## стендом tools/dump_car_colors.gd по самой большой площади кузова.
-const SWATCH_COLORS := {
-	"black": Color(0.09, 0.09, 0.09), "blue": Color(0.000, 0.129, 0.612),
-	"gray": Color(0.314, 0.314, 0.314), "green": Color(0.000, 0.686, 0.016),
-	"lightblue": Color(0.082, 0.557, 1.000), "purple": Color(0.235, 0.102, 0.329),
-	"red": Color(0.678, 0.000, 0.000), "sand": Color(0.886, 0.835, 0.545),
-	"white": Color(1.0, 1.0, 1.0), "yellow": Color(1.000, 0.847, 0.000),
-}
+## Квадратики красок советских машин — таблица живёт в CarModelLibrary
+## (07.09): библиотека сама смотрит в неё за цветом кузова, а ссылка
+## отсюда в библиотеку ломала стенды-скрипты (`--script` без автозагрузок:
+## TuningPanel тянет GameState).
+const SWATCH_COLORS := CarModelLibrary.SOVIET_SWATCH_COLORS
 const ICON_DIR := "res://assets/ui/parts/"
 const CELL := 42          # иконка детали, px
 const SWATCH := 24        # квадратик краски (аркадные), px
 const SWATCH_BIG := 34    # квадратик цвета советских машин, px
 const ROMAN := ["", "I", "II", "III"]
+const TIER_NAMES := ["", "простая", "средняя", "лучшая"]   # ступени деталей
 const PREVIEW_COLOR := Color(1.0, 0.55, 0.15)   # рамка примеренного
 
 var _base := ""
@@ -418,7 +414,9 @@ func _build_slot(slot: String) -> void:
 	var prices := []
 	for tier in [1, 2, 3]:
 		prices.append(_fmt(_tier_price(slot, tier)))
-	_box.add_child(_label("%s  %d из %d   %s · ярус I / II / III — %s / %s / %s"
+	# Подпись без «ярусов» и голых цифр (жалоба 07.09 «что за слово ярус,
+	# что за цифры»): три ступени деталей и что стоит каждая.
+	_box.add_child(_label("%s  куплено %d из %d   %s · три ступени: простые %s, средние %s, лучшие %s монет"
 			% [SLOT_NAMES[slot], owned, total, SLOT_EFFECT[slot],
 					prices[0], prices[1], prices[2]], 14, Color.WHITE))
 
@@ -443,11 +441,11 @@ func _build_slot(slot: String) -> void:
 			if idx == 0:
 				b.tooltip_text = "Родные колёса" if slot == "wheel" else "Пусто"
 			else:
-				b.tooltip_text = "Сток" if tier == 0 else "Куплено · ярус %s" % ROMAN[tier]
+				b.tooltip_text = "Сток" if tier == 0 else "Куплено · %s деталь" % TIER_NAMES[tier]
 			b.pressed.connect(_mount.bind(slot, idx))
 		else:
 			_price_tag(b, key)
-			b.tooltip_text = "Ярус %s — %s" % [ROMAN[tier], _item_hint(key)]
+			b.tooltip_text = "%s деталь — %s" % [TIER_NAMES[tier].capitalize(), _item_hint(key)]
 			b.pressed.connect(_try_on.bind(slot, idx))
 		icons.add_child(b)
 
@@ -504,7 +502,9 @@ func _mount(slot: String, idx: int) -> void:
 
 
 ## Цвет детали слота (или полосы, part == "line") отдельно от кузова:
-## «КАК КУЗОВ» (у полосы — «ТЁМНАЯ») или 36 красок пака — бесплатно.
+## «КАК КУЗОВ» (у полосы — «АВТО»: тёмная на светлом верхе кузова,
+## светлая на тёмном; до 07.09 звалась «ТЁМНАЯ», хотя уже подбиралась
+## по кузову) или 36 красок пака — бесплатно.
 func _build_part_color(part: String) -> void:
 	var key: String = CarModelLibrary.COLOR_KEYS[part]
 	var cur := str(GameState.tuning_of(_base)[key])
@@ -518,10 +518,13 @@ func _build_part_color(part: String) -> void:
 	row.add_child(lbl)
 	# У выхлопа без выбора цвета трубы остаются родными (палитра пака),
 	# а не в цвет кузова — у его меша нет окрашиваемой поверхности.
-	var none := "ТЁМНАЯ" if part == "line" \
+	var none := "АВТО" if part == "line" \
 			else ("РОДНОЙ" if part == "exhaust" else "КАК КУЗОВ")
-	row.add_child(_mode_button(none, cur.is_empty(),
-			func() -> void: _set_free(key, "")))
+	var none_btn := _mode_button(none, cur.is_empty(),
+			func() -> void: _set_free(key, ""))
+	if part == "line":
+		none_btn.tooltip_text = "Цвет по кузову: тёмная полоса на светлом, светлая на тёмном"
+	row.add_child(none_btn)
 	for shade in [1, 2, 3]:
 		var line := HFlowContainer.new()
 		line.add_theme_constant_override("h_separation", 4)

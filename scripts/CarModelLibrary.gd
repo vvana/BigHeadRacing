@@ -17,6 +17,17 @@ const SOVIET_COLORS: Array[String] = [
 	"black", "blue", "gray", "green", "lightblue",
 	"purple", "red", "sand", "white", "yellow",
 ]
+## Цвет квадратика краски советской машины в гараже (по имени скина) —
+## он же цвет кузова «по имени», когда текстуру прочитать не вышло. НЕ на
+## глазок: настоящие пиксели палитры пака (albedo.png) — сняты стендом
+## tools/dump_car_colors.gd по самой большой площади кузова.
+const SOVIET_SWATCH_COLORS := {
+	"black": Color(0.09, 0.09, 0.09), "blue": Color(0.000, 0.129, 0.612),
+	"gray": Color(0.314, 0.314, 0.314), "green": Color(0.000, 0.686, 0.016),
+	"lightblue": Color(0.082, 0.557, 1.000), "purple": Color(0.235, 0.102, 0.329),
+	"red": Color(0.678, 0.000, 0.000), "sand": Color(0.886, 0.835, 0.545),
+	"white": Color(1.0, 1.0, 1.0), "yellow": Color(1.000, 0.847, 0.000),
+}
 const SOVIET_IDS: Array[String] = [
 	"vz01", "vz02", "vz21", "vz03", "vz04", "vz05", "vz06", "vz07",
 	"vz05r", "vz08", "vz09", "vz099", "gz21", "gz24", "vz31",
@@ -708,7 +719,8 @@ static func build(
 		# UV-развёртке ("sticker line"), у советских и Unity рисуется
 		# шейдером на дубле кузова (см. _attach_line).
 		if not is_arcade(base) and int(fx.get("line", 0)) > 0:
-			_attach_line(model, base, str(fx.get("color_line", "")))
+			_attach_line(model, base, str(fx.get("color_line", "")),
+					_body_tint(id, base, model))
 		# Тонировка стёкол (04.09) — у всех паков, своим способом.
 		var glass := str(fx.get("glass", ""))
 		if FX_COLORS.has(glass):
@@ -958,8 +970,16 @@ static func _build_arcade(cfg: Dictionary, car_id: String,
 	var container := Node3D.new()
 	container.name = "CarModel_" + car_id
 
+	# Цвет полосы не выбран — по умолчанию тёмно-серая, а на тёмной краске
+	# (шаг 1 у синего/фиолетового/коричневого) её не видно вовсе (жалоба
+	# 07.09 «двойные полосы не появляются на некоторых машинах») — тогда
+	# светлая.
+	var line_color := str(cfg.get("color_line", ""))
+	if line_color.is_empty():
+		line_color = line_default_spec(paint_color(
+				"%s%d" % [cfg["color"], cfg["shade"]], Color.GRAY))
 	var body := _arcade_part(body_mesh, paint, int(cfg["sticker"]),
-			int(cfg["line"]), str(cfg.get("color_line", "")))
+			int(cfg["line"]), line_color)
 	# Детали — каждая в своём цвете (color_<слот>), без него — в краске
 	# кузова.
 	var body_paint := paint
@@ -1077,6 +1097,26 @@ static func _top_at(faces: PackedVector3Array, x: float, z: float,
 	return top if top > -INF else fallback
 
 
+## Кромка капота — низ лобового стекла (07.09): от передней оси назад
+## шагом 2 % длины, пока верх кузова по оси не пойдёт круто вверх (подъём
+## больше половины шага, ~27°: капот положе, стекло круче). Возвращает z
+## последней «пологой» точки; fallback — 25 % длины за осью.
+static func _hood_end(faces: PackedVector3Array, cx: float, z0: float,
+		len: float, nose: float, aabb: AABB) -> float:
+	var step := len * 0.02
+	var rs := rs_low(len)
+	var z := z0
+	var y_prev := _top_at(faces, cx, z, rs, aabb.end.y)
+	for _i in range(23):
+		var zn := z - nose * step
+		var y := _top_at(faces, cx, zn, rs, aabb.end.y)
+		if y - y_prev > step * 0.5:
+			return z
+		z = zn
+		y_prev = y
+	return z0 - nose * len * 0.25
+
+
 ## Нижняя кромка заднего бампера: x — самая кормовая z кузова (в СИСТЕМЕ
 ## НОСА, т.е. z*nose; меньше — дальше назад) среди вершин у продольной оси
 ## (±25 % ширины) не выше пояса (ступица + 30 % высоты — багажник и стёкла
@@ -1189,10 +1229,24 @@ static func _attach_parts(m: Node3D, base: String, cfg: Dictionary) -> void:
 		# начала на a.end.z, назад на -a.position.z).
 		var a := mesh.get_aabb()
 		var pos := Vector3.ZERO
+		var kk := k                     # масштаб детали (мотор может ужаться)
 		match slot:
 			"engine":
 				# На капоте чуть позади передней оси, низом по капоту.
 				var ez := axle_f_z - nose * len * 0.05
+				# Не дальше кромки капота (07.09, «мотор заходит в лобовое
+				# стекло»): у коротких капотов (Зубило, Девятка, универсалы)
+				# хвост меша мотора упирался в стекло. Хвост — не ближе 2 %
+				# длины к низу стекла (_hood_end), т.е. мотор уезжает вперёд;
+				# если тогда его нос вылезет за бампер больше чем на 5 %
+				# длины — мотор уменьшаем. Координаты «u» — в системе носа
+				# (z·nose, больше — вперёд).
+				var hood := _hood_end(verts, cx, axle_f_z, len, nose, aabb)
+				var tail_u := hood * nose + len * 0.02
+				var room := z_front * nose + len * 0.05 - tail_u
+				if room > 0.0 and a.size.z * kk > room:
+					kk = room / a.size.z
+				ez = maxf(ez * nose, tail_u - a.position.z * kk) * nose
 				pos = Vector3(cx, _top_at(verts, cx, ez, r, aabb.end.y), ez)
 			"spoiler":
 				# Меш спойлера почти весь ПОЗАДИ своего начала (аркадные
@@ -1266,7 +1320,7 @@ static func _attach_parts(m: Node3D, base: String, cfg: Dictionary) -> void:
 		var part := _arcade_part(mesh, _part_paint(cfg, slot, body_paint), 0, 0,
 				"", _paint_all(cfg, slot))
 		part.name = slot.capitalize()
-		part.transform = Transform3D(basis.scaled(Vector3.ONE * k), pos)
+		part.transform = Transform3D(basis.scaled(Vector3.ONE * kk), pos)
 		m.add_child(part)
 
 
@@ -1382,6 +1436,111 @@ static func _hidden_material() -> StandardMaterial3D:
 
 
 ## Меши КУЗОВА модели (без колёс в пивотах и без приставных деталей).
+## Полоса по умолчанию для кузова цвета body: "" — штатная тёмно-серая,
+## иначе светлая краска пака (яркость кузова ниже 0.2 — чёрный, синий,
+## фиолетовый: тёмная полоса на нём сливается с краской).
+static func line_default_spec(body: Color) -> String:
+	return "cream3" if body.get_luminance() < 0.2 else ""
+
+
+## Основной цвет кузова машины id (советские — по цвету скина из палитры
+## гаража, Unity — albedo первой поверхности кузова); GRAY — неизвестно.
+static func _body_tint(id: String, base: String, model: Node3D) -> Color:
+	if SOVIET_IDS.has(base):
+		# Имя краски — не цвет верха: «синяя» Пятёрка Спорт — белый кузов
+		# с синими лентами (07.09, «полосы не рисуются»); смотрим текстуру.
+		var top := _top_tint(model)
+		if top.a > 0.0:
+			return top
+		return SOVIET_SWATCH_COLORS.get(color_of_id(id), Color.GRAY)
+	for mi in _body_meshes(model):
+		for i in mi.mesh.get_surface_count():
+			var sm := mi.mesh.surface_get_material(i) as BaseMaterial3D
+			if sm == null:
+				continue
+			var nm := sm.resource_name.to_lower()
+			if nm.contains("glass") or nm.contains("black-t"):
+				continue
+			return sm.albedo_color
+	return Color.GRAY
+
+
+## Средний цвет ВЕРХА кузова там, где ляжет полоса (07.09): у советских
+## скинов имя краски — не цвет верха («синяя» Пятёрка Спорт — белый кузов
+## с синими лентами на капоте и крыше, и светлая полоса «по имени краски»
+## на белом не видна). Берём треугольники кузова, смотрящие вверх
+## (normal.y > 0.35, как в шейдере полосы), в её полосе |x − cx| 3..13 %
+## ширины, и усредняем цвет палитры по их UV (вес — площадь в плане);
+## стёкла (клетка палитры 56, 81, 79) не в счёт. Альфа 0 — не вышло
+## (нет UV, текстуры или подходящих граней) — тогда по имени краски.
+static var _soviet_albedo: Image
+static func _top_tint(model: Node3D) -> Color:
+	if _soviet_albedo == null:
+		var tex := _soviet_material().albedo_texture
+		if tex != null:
+			_soviet_albedo = tex.get_image()
+	var img := _soviet_albedo
+	if img == null or img.is_empty():
+		return Color(0, 0, 0, 0)
+	var bodies := _body_meshes(model)
+	if bodies.is_empty():
+		return Color(0, 0, 0, 0)
+	var aabb := AABB()
+	var first := true
+	for mi in bodies:
+		var a: AABB = mi.transform * mi.mesh.get_aabb()
+		aabb = a if first else aabb.merge(a)
+		first = false
+	var cx := aabb.get_center().x
+	var w := aabb.size.x
+	var glass := Color(56.0 / 255.0, 81.0 / 255.0, 79.0 / 255.0)
+	var sum := Color(0, 0, 0, 0)
+	var wsum := 0.0
+	var iw := img.get_width()
+	var ih := img.get_height()
+	for mi in bodies:
+		var mesh := mi.mesh
+		for si in mesh.get_surface_count():
+			var arr := mesh.surface_get_arrays(si)
+			var v: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+			if arr[Mesh.ARRAY_TEX_UV] == null:
+				continue
+			var uv: PackedVector2Array = arr[Mesh.ARRAY_TEX_UV]
+			var idx: PackedInt32Array = arr[Mesh.ARRAY_INDEX] 					if arr[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
+			var nv: PackedVector3Array = arr[Mesh.ARRAY_NORMAL] 					if arr[Mesh.ARRAY_NORMAL] != null else PackedVector3Array()
+			var n := idx.size() if not idx.is_empty() else v.size()
+			for t in range(0, n - n % 3, 3):
+				var i0 := idx[t] if not idx.is_empty() else t
+				var i1 := idx[t + 1] if not idx.is_empty() else t + 1
+				var i2 := idx[t + 2] if not idx.is_empty() else t + 2
+				var a := mi.transform * v[i0]
+				var b := mi.transform * v[i1]
+				var c := mi.transform * v[i2]
+				var nrm := (b - a).cross(c - a)
+				var area := absf(nrm.y) * 0.5      # площадь в плане
+				# «Вверх» — по нормалям вершин; без них — по обходу (у Godot
+				# лицевые грани идут ПО часовой, потому знак минус).
+				var up := -nrm.normalized().y
+				if not nv.is_empty():
+					up = (mi.transform.basis * (nv[i0] + nv[i1] + nv[i2])).normalized().y
+				if area <= 0.0 or up < 0.35:
+					continue
+				var dx := absf((a.x + b.x + c.x) / 3.0 - cx)
+				if dx < w * 0.03 or dx > w * 0.13:
+					continue
+				var u := (uv[i0] + uv[i1] + uv[i2]) / 3.0
+				var px := img.get_pixel(wrapi(int(floor(u.x * iw)), 0, iw),
+						wrapi(int(floor(u.y * ih)), 0, ih))
+				if Vector3(px.r, px.g, px.b).distance_to(
+						Vector3(glass.r, glass.g, glass.b)) < 0.04:
+					continue
+				sum += px * area
+				wsum += area
+	if wsum <= 0.0:
+		return Color(0, 0, 0, 0)
+	return Color(sum.r / wsum, sum.g / wsum, sum.b / wsum, 1.0)
+
+
 static func _body_meshes(m: Node3D) -> Array[MeshInstance3D]:
 	var out: Array[MeshInstance3D] = []
 	for c in m.get_children():
@@ -1391,20 +1550,27 @@ static func _body_meshes(m: Node3D) -> Array[MeshInstance3D]:
 	return out
 
 
-static func _attach_line(m: Node3D, _base: String, color_spec: String) -> void:
+static func _attach_line(m: Node3D, _base: String, color_spec: String,
+		body_tint := Color.GRAY) -> void:
 	if _line_shader == null:
 		_line_shader = Shader.new()
 		_line_shader.code = LINE_SHADER
 	var bodies := _body_meshes(m)
 	if bodies.is_empty():
 		return
+	# Цвет полосы не выбран: тёмно-серая, но на тёмном кузове (чёрная
+	# Копейка, синяя Волга, фиолетовая Нива) её не видно — тогда светлая
+	# (жалоба 07.09 «двойные полосы не появляются на некоторых машинах»).
+	var default_color := Color(0.113, 0.113, 0.113)
+	if not is_paint_spec(color_spec) and not line_default_spec(body_tint).is_empty():
+		default_color = paint_color(line_default_spec(body_tint))
 	var aabb := AABB()
 	var first := true
 	for mi in bodies:
 		var a: AABB = mi.transform * mi.mesh.get_aabb()
 		aabb = a if first else aabb.merge(a)
 		first = false
-	var color := paint_color(color_spec, Color(0.113, 0.113, 0.113))
+	var color := paint_color(color_spec, default_color)
 	for mi in bodies:
 		var mat := ShaderMaterial.new()
 		mat.shader = _line_shader

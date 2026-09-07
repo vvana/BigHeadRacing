@@ -2,7 +2,10 @@ extends Node3D
 ## Автотест мины: наезд её не просто расталкивает, а УНИЧТОЖАЕТ машину
 ## (31.08: «пусть мина взрывает авто»). Проверяем обе половины правила:
 ##   1) машина в эпицентре гибнет — становится «призраком» (мигание и
-##      неуязвимость) и переезжает к месту появления на трассе;
+##      неуязвимость) и появляется ТАМ ЖЕ, где взорвалась (с 07.09 тело на
+##      паузе появления прибито к месту взрыва, а появление сохраняет
+##      боковое смещение — раньше волна уносила невидимую машину, и камера
+##      уезжала за ней и прыгала обратно);
 ##   2) машина ДАЛЬШЕ смертельного радиуса не гибнет, а получает прежний
 ##      толчок взрывной волной;
 ##   3) событие взрыва мины с сервера (Main._rx_mine_fx) убирает у клиента
@@ -58,10 +61,10 @@ func _physics_process(_delta: float) -> void:
 			_far_vel = _far.linear_velocity
 			var moved := _victim.global_position.distance_to(_victim_pos)
 			var cleaned := not is_instance_valid(_inert) or _inert.is_queued_for_deletion()
-			var ok := _victim.is_ghost() and moved > 1.0 \
+			var ok := _victim.is_ghost() and moved < 1.0 \
 					and _far_vel.length() > 3.0 and not _far.is_ghost() \
 					and cleaned
-			print("MINE KILL TEST: %s (жертва призрак=%s, переехала на %.1f м; "
+			print("MINE KILL TEST: %s (жертва призрак=%s, сдвиг от места взрыва %.1f м (норма < 1); "
 					% ["PASS" if ok else "FAIL", str(_victim.is_ghost()), moved]
 					+ "дальнюю толкнуло на %.1f м/с, призрак=%s; "
 					% [_far_vel.length(), str(_far.is_ghost())]

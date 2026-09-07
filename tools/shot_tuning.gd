@@ -16,6 +16,16 @@ func _ready() -> void:
 		_out = args[0]
 	DirAccess.make_dir_recursive_absolute(_out)
 	var base := "vz01" if args.has("--soviet") else "ac1"
+	# Ключ `--base <id>` (07.09): панель на любой машине; `--line <краска>`
+	# — полоса куплена, включена и в этом цвете (жалоба «на Пятёрке Спорт
+	# не рисуются полосы»).
+	var bi := args.find("--base")
+	if bi >= 0 and bi + 1 < args.size():
+		base = args[bi + 1]
+	var li := args.find("--line")
+	if li >= 0 and li + 1 < args.size():
+		GameState.car_items[base] = {"line": true}
+		GameState.car_tuning[base] = {"line": 1, "color_line": args[li + 1]}
 	if not GameState.owned_cars.has(base):
 		GameState.owned_cars.append(base)
 	GameState.money = 12345

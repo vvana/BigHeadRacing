@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testbottrickle"]
+
+[ext_resource type="Script" path="res://tools/test_bot_trickle.gd" id="1_testbt"]
+
+[node name="TestBotTrickle" type="Node3D"]
+script = ExtResource("1_testbt")

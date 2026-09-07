@@ -217,6 +217,7 @@ var _grounded_wheels := 0
 var _jump_cd := 0.0
 var _wall_align_time := 0.0     # окно доворота после касания стены, с
 var _wall_spark_time := 0.0     # до следующего снопа искр о стену, с
+var _death_xf := Transform3D.IDENTITY   # место взрыва: тело держим тут всю паузу
 var _wall_near := false         # кузов у грани ограждения (аналитически)
 var _wall_body: Node3D = null   # тело стен, с которым снято столкновение
 var _bump_spin_time := 0.0      # окно после тарана: руль не глушит закрутку
@@ -977,6 +978,16 @@ func _physics_process(delta: float) -> void:
 	# (в них же и обратный отсчёт появления).
 	if _respawn_wait > 0.0:
 		_tick_effects(delta)
+		# Тело — ЖЁСТКО на месте взрыва (07.09). Замороженное тело всё же
+		# сдвигалось: сетевой стенд TestNetCam ловил уходы своей машины на
+		# 0.5–12 м за паузу (частью — отбросы решателя, частью — не
+		# найденный источник), камера уезжала за невидимой машиной и потом
+		# прыгала обратно к точке появления — «камера прыгает на того, кто
+		# уничтожил, и возвращается». Пин снимает все варианты разом.
+		if _respawn_own:
+			global_transform = _death_xf
+			linear_velocity = Vector3.ZERO
+			angular_velocity = Vector3.ZERO
 		return
 	# Кап «депенетрации» от марионетки. Чужая машина по сети — замороженное
 	# кинематическое тело, которое ТЕЛЕПОРТИРУЕТСЯ к снимкам; шагнув в наш
@@ -2838,7 +2849,10 @@ func destroy() -> void:
 	# чужой виток кольца. Вынос вперёд НУЛЕВОЙ — появление ровно там, где
 	# уничтожили.
 	if track:
-		_respawn_xf = track.respawn_transform_at(track_offset, 0.0)
+		# С сохранением бокового смещения (07.09): появление на оси полотна
+		# уводило машину до 7-8 м вбок от места взрыва — см. TrackBuilder.
+		_respawn_xf = track.respawn_transform_keep_side(track_offset,
+				global_position)
 	else:
 		# Футбол: трассы нет, поднимаем машину на колёса на месте взрыва.
 		var fwd := -global_transform.basis.z
@@ -2848,6 +2862,7 @@ func destroy() -> void:
 		_respawn_xf = Transform3D(basis, global_position + Vector3.UP * 0.3)
 	linear_velocity = Vector3.ZERO
 	angular_velocity = Vector3.ZERO
+	_death_xf = global_transform   # где стоять на паузе (см. _physics_process)
 	reset_speed_memory()
 	_freeze_time = 0.0
 	_slip_time = 0.0

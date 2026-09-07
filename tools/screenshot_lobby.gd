@@ -20,6 +20,17 @@ func _ready() -> void:
 	_lobby = Lobby.new()
 	add_child(_lobby)
 	_lobby.show_screen()
+	# Ключ `--pending`: лобби ПОСРЕДИ сбора (07.09): я, один «подключившийся»
+	# бот, живой игрок, чья машина ещё не приехала («Подключается…»), и
+	# пустой слот «Ждём игрока…».
+	if args.has("--pending"):
+		_lobby.set_status("Игроков: 2/4
+Ждём игроков: 3…")
+		_lobby.set_slot(0, true, "fastback", true, false, "Андрей")
+		_lobby.set_slot(1, false, "diablo", false, true, "Жека_777")
+		_lobby.set_slot(2, true, "chevelle", false, false, "", true)
+		_lobby.set_slot(3, false, "", false, false, "")
+		return
 	# Ровно то, что видит игрок, когда людей на все слоты не нашлось: два
 	# человека, свободные слоты забрали боты — с 01.09 бот на экране
 	# неотличим от живого игрока (ник, машина, оранжевый цвет).
@@ -40,6 +51,8 @@ func _physics_process(_d: float) -> void:
 		await RenderingServer.frame_post_draw
 		var img := get_viewport().get_texture().get_image()
 		var name := "lobby8.png" if Net.race_size > 4 else "lobby.png"
+		if OS.get_cmdline_user_args().has("--pending"):
+			name = "lobby_mid.png"
 		img.save_png(_out + "/" + name)
 		print("SHOT " + name)
 		get_tree().quit(0)

@@ -1115,6 +1115,31 @@ func respawn_transform(world_pos: Vector3) -> Transform3D:
 ## 6 м (чтобы не вернуть машину в ту же ловушку, где она застряла), а
 ## появлению после взрыва — 0: уничтоженная машина должна появиться ТАМ
 ## ЖЕ, где её уничтожили, а не «немного впереди» (жалоба 03.09).
+## Появление после взрыва — ТОЧНО там, где уничтожили (07.09): как
+## respawn_transform_at(off, 0), но боковое смещение от оси берётся из
+## world_pos (место взрыва), а не обнуляется. Раньше машина после паузы
+## появлялась на ОСИ полотна — до 7-8 м вбок от места взрыва, и камера,
+## уже сошедшаяся на невидимую машину, прыгала за ней (по сетевому стенду
+## TestNetCam — это и есть «камера прыгает и возвращается»). Смещение
+## ограничено полушириной минус 1.6 м, чтобы не появиться в ограждении.
+func respawn_transform_keep_side(off: float, world_pos: Vector3) -> Transform3D:
+	var length := _curve.get_baked_length()
+	var offset := fposmod(off, length)
+	var pos := _curve.sample_baked(offset)
+	var ahead := _curve.sample_baked(fposmod(offset + 3.0, length))
+	var tangent := ahead - pos
+	tangent.y = 0.0
+	if tangent.length_squared() < 1e-6:
+		return respawn_transform_at(off, 0.0)
+	tangent = tangent.normalized()
+	var right := tangent.cross(Vector3.UP).normalized()
+	var side := (world_pos - pos).dot(right)
+	var limit := maxf(half_width_at_offset(offset) - 1.6, 0.0)
+	side = clampf(side, -limit, limit)
+	var basis := Basis.looking_at(tangent)
+	return Transform3D(basis, pos + right * side + Vector3(0, 0.62, 0))
+
+
 func respawn_transform_at(off: float, lead := 6.0) -> Transform3D:
 	var length := _curve.get_baked_length()
 	var offset := fposmod(off + lead, length)

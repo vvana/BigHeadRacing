@@ -126,11 +126,27 @@ func hide_screen() -> void:
 ## машины; слот бота показывается КАК СЛОТ ЖИВОГО ИГРОКА (ник, машина,
 ## оранжевый цвет): по просьбе 01.09 бот не должен отличаться от человека,
 ## слово «БОТ» с экрана убрано.
+## pending — слот занял живой игрок, но его машина и имя ещё не приехали
+## (сервер объявляет слот занятым при ENet-подключении, ростер и имя — после
+## hello): показываем «Подключается…» без машины, а не чужую машину бота
+## с его ником, которую через секунду подменит настоящая.
 func set_slot(slot: int, taken: bool, car_id: String, is_me: bool,
-		is_bot := false, pname := "") -> void:
+		is_bot := false, pname := "", pending := false) -> void:
 	if slot < 0 or slot >= _slots:
 		return
 	var name_l := _name_labels[slot]
+	var wait_l := _wait_labels[slot]
+	if pending and not is_me:
+		name_l.text = ""
+		wait_l.text = "Подключается…"
+		wait_l.add_theme_color_override("font_color", UiKit.ORANGE_RIVAL)
+		_views[slot].visible = false
+		wait_l.visible = true
+		_car_labels[slot].text = ""
+		_clear_car(slot)
+		return
+	wait_l.text = "Ждём игрока…"
+	wait_l.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
 	# Имя видно, только когда в слоте кто-то есть: ники ботов приходят с
 	# сервера заранее (_rx_names) и над пустым «Ждём игрока…» выдавали бы,
 	# кто именно приедет ботом.
@@ -147,15 +163,12 @@ func set_slot(slot: int, taken: bool, car_id: String, is_me: bool,
 	elif taken or is_bot:
 		color = UiKit.ORANGE_RIVAL
 	name_l.add_theme_color_override("font_color", color)
-	var show_car := taken or is_bot
+	var show_car := taken or is_bot or is_me
 	_views[slot].visible = show_car
-	_wait_labels[slot].visible = not show_car
+	wait_l.visible = not show_car
 	if not show_car:
 		_car_labels[slot].text = ""
-		if _slot_ids[slot] != "":
-			_slot_ids[slot] = ""
-			for old in _turntables[slot].get_children():
-				old.queue_free()
+		_clear_car(slot)
 		return
 	# id приходит ПОЛНЫЙ (со скином/комплектацией) — имя по базе.
 	var base := CarModelLibrary.base_id(car_id)
@@ -168,6 +181,14 @@ func set_slot(slot: int, taken: bool, car_id: String, is_me: bool,
 		var model := CarModelLibrary.build(car_id, 3.2, 0.02)
 		if model:
 			table.add_child(model)
+
+
+## Убрать машину с подиума (слот опустел или ещё «подключается»).
+func _clear_car(slot: int) -> void:
+	if _slot_ids[slot] != "":
+		_slot_ids[slot] = ""
+		for old in _turntables[slot].get_children():
+			old.queue_free()
 
 
 ## Панель одного слота: имя игрока, вьюпорт с подиумом и вращающейся

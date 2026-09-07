@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_checkarcadelines"]
+
+[ext_resource type="Script" path="res://tools/check_arcade_lines.gd" id="1_chkal"]
+
+[node name="CheckArcadeLines" type="Node"]
+script = ExtResource("1_chkal")

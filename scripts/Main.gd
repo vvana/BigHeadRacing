@@ -34,6 +34,24 @@ const JOIN_GRACE := 5.0
 # Сколько лобби показывает «слоты заняли боты», прежде чем начать отсчёт.
 # Без паузы игрок не успевает увидеть, с кем едет: отсчёт прячет лобби.
 const BOTS_SHOW := 2.2
+# Если к моменту старта все боты уже «подключились» по одному (см.
+# _tick_bot_plan), долгий показ ни к чему — короткая пауза на «Все в сборе».
+const BOTS_SHOW_SHORT := 1.0
+# БОТЫ ПРИХОДЯТ ПО ОДНОМУ (07.09). Раньше все свободные слоты разом
+# занимали боты в момент старта — было видно, что это боты. Теперь при
+# открытии лобби для каждого свободного слота назначается случайный
+# момент «подключения» в окне BOT_FIRST..LOBBY_WAIT−BOT_TAIL (слоты в
+# случайном порядке, между приходами не меньше BOT_GAP), и слот с ником и
+# машиной загорается в лобби, как будто зашёл живой игрок. Живой игрок,
+# зашедший за это время, получает слот, где бота ещё нет, а если таких
+# нет — слот бота (Net._free_slot): человек важнее.
+const BOT_FIRST := 0.8
+const BOT_TAIL := 0.6
+const BOT_GAP := 0.35
+# Ушёл игрок из лобби (другие остались) — его слот займёт бот через
+# столько секунд (случайно в окне): как будто зашёл кто-то другой.
+const BOT_REJOIN_MIN := 1.0
+const BOT_REJOIN_MAX := 3.0
 # НАЧАВШИЙСЯ ЗАЕЗД НОВЫХ НЕ БЕРЁТ (31.08). Раньше первые 25 секунд можно
 # было «подсесть», забрав машину у бота, — и подсевший появлялся там, куда
 # бот успел уехать, то есть далеко впереди уже играющих. Теперь опоздавшему
@@ -212,9 +230,28 @@ var _lobby: Lobby                   # полноэкранное лобби на
 # Клиент: какие слоты заняты живыми игроками (для экрана лобби).
 # Размер задаёт _spawn_cars — слотов столько, сколько машин в заезде.
 var _slot_taken: Array[bool] = []
-# Клиент: битовая маска слотов, которые перед стартом забрали боты (сервер
-# шлёт её в _rx_bots) — лобби показывает их машины вместо «ждём игрока…».
+# Битовая маска слотов, которые в лобби заняли боты. Сервер ведёт её
+# (_tick_bot_plan, _set_bots) и рассылает клиентам (_rx_bots) — лобби
+# показывает их машины и ники вместо «ждём игрока…».
 var _bot_mask := 0
+# Сервер: план прихода ботов в лобби — слот → секунда лобби (_lobby_clock),
+# на которой он «подключится». Заполняется при открытии лобби
+# (_plan_bots), слот живого игрока из плана вычёркивается.
+var _bot_plan := {}
+var _lobby_clock := 0.0             # сервер: секунд с открытия лобби
+# RNG плана ботов — своя: глобальный поток случайных чисел не трогаем,
+# иначе сдвинулись бы детерминированные раскладки регрессионных стендов.
+var _bot_rng := RandomNumberGenerator.new()
+# Клиент: слоты, занятые живым игроком, чьи машина и имя ещё не приехали
+# (между _rx_slot_taken при подключении и ростером после его hello) —
+# лобби показывает «Подключается…», а не чужую машину бота.
+var _slot_pending := {}
+# Уровень сложности ботов этого заезда 0..1 (BotSkill): оффлайн — по имени
+# игрока, на сервере — среднее по живым игрокам на момент старта.
+var _bot_level := 0.0
+# Сервер: сколько живых игроков было на старте заезда. Итоги для
+# BotSkill.record засчитываются только заездам «один против ботов».
+var _race_humans := 0
 # Клиент: сцена доживает последний кадр перед перестройкой (_rx_track с
 # чужой трассой/размером, _rx_reset). Смена сцены случается в конце кадра,
 # а RPC, приехавшие с нею в одном пакете, исполняются ещё В СТАРОЙ сцене:
@@ -294,6 +331,10 @@ func _ready() -> void:
 	if Net.is_server():
 		Net.player_joined.connect(_on_peer_joined)
 		Net.player_left.connect(_on_peer_left)
+		# Сцена новая — ботов в лобби ещё нет (маска переживает перезапуск
+		# сцены в автозагрузке Net, а план — нет).
+		Net.bot_mask = 0
+		_bot_rng.randomize()
 		print("[net] трасса готова, ждём игроков%s" % _mem_note())
 		# Сцена могла быть перезагружена после прошлого заезда — тогда
 		# игроки УЖЕ подключены, и peer_connected по ним больше не придёт.
@@ -313,6 +354,9 @@ func _ready() -> void:
 		Net.join_failed.connect(_on_join_failed_in_race, CONNECT_ONE_SHOT)
 		if _lobby:
 			_lobby.show_screen()
+			# Своя машина — с первого кадра лобби: слот подсказан прошлой
+			# сценой (Net.slot_hint), welcome лишь подтвердит.
+			_update_lobby_slots()
 		var peer := multiplayer.multiplayer_peer
 		if peer != null and peer.get_connection_status() 				== MultiplayerPeer.CONNECTION_CONNECTED:
 			_say_hello()
@@ -338,6 +382,15 @@ func _spawn_cars() -> void:
 	var right := st.basis.x
 	var count := _car_count()
 	var ids := _pick_car_ids(count)
+	# Оффлайн уровень сложности известен сразу — по имени игрока; по сети
+	# его посчитает сервер на старте (_apply_bot_level), когда все живые
+	# игроки представились.
+	if not Net.is_online():
+		_bot_level = BotSkill.level_of(GameState.display_name())
+		if _bot_level > 0.0:
+			print("[боты] уровень сложности %.2f для «%s»"
+					% [_bot_level, GameState.display_name()])
+	var skill := BotSkill.skill_range(_bot_level)
 
 	for i in count:
 		var is_p := i == 0 and not Net.is_online()
@@ -356,7 +409,9 @@ func _spawn_cars() -> void:
 			car.engine_power += randf_range(-8.0, 8.0)
 			# Боты слабее игрока: «класс» режет темп на 6-14% (жалоба
 			# «противники едут очень хорошо» — игра должна быть попроще).
-			car.ai_skill = randf_range(0.86, 0.94)
+			# Диапазон растёт с уровнем сложности (BotSkill): игрок, который
+			# всё время побеждает ботов, получает ботов посильнее.
+			car.ai_skill = randf_range(skill.x, skill.y)
 
 		var row := i / 2
 		var col := i % 2
@@ -645,10 +700,13 @@ func _physics_process(_delta: float) -> void:
 		if Net.is_online():
 			for i in _cars.size():
 				ref = maxf(ref, _progress[i])
+		# Нижний кламп растёт с уровнем сложности (BotSkill): сильным ботам
+		# незачем ждать убегающего от них игрока.
+		var rub_min := BotSkill.rubber_min(_bot_level)
 		for i in _cars.size():
 			if _cars[i].net_role == Car.NetRole.LOCAL and not _cars[i].is_player:
 				_cars[i].ai_rubber = _cars[i].ai_skill * clampf(
-						1.0 + (ref - _progress[i]) / 120.0, 0.8, 1.15)
+						1.0 + (ref - _progress[i]) / 120.0, rub_min, 1.15)
 
 	if Net.is_server():
 		_server_tick(_delta)
@@ -812,11 +870,23 @@ func _car_finished(i: int) -> void:
 	var place := _finish_order.size()
 	if Net.is_server():
 		_rx_car_finished.rpc(i, place)
+		_record_human_result(i, place)
 	elif i == 0:
 		_show_finish(place)
 	# Все доехали — заезд окончен целиком.
 	if _finish_order.size() >= _cars.size():
 		_finish_race()
+
+
+## Сервер: итог живого игрока в слоте i — в счёт адаптивной сложности
+## (BotSkill). Только за заезды «один против ботов» (_race_humans == 1):
+## в гонке с другими людьми боты — не главные соперники.
+func _record_human_result(i: int, place: int) -> void:
+	if not Net.is_server() or _race_humans != 1:
+		return
+	if not Net.slot_of_peer.values().has(i) or i >= _names.size():
+		return
+	BotSkill.record(_names[i], place, _cars.size())
 
 
 ## Баннер «ФИНИШ! Место N». Место зафиксировано в момент пересечения —
@@ -829,6 +899,10 @@ func _show_finish(place: int) -> void:
 	_my_finished = true
 	if _count_label:
 		_count_label.visible = false
+	# Оффлайн-заезд — всегда «один против ботов»: итог в счёт адаптивной
+	# сложности (по сети это делает сервер — _record_human_result).
+	if not Net.is_online():
+		BotSkill.record(GameState.display_name(), place, _cars.size())
 	var gained: int = GameState.place_xp(place) + _my_kills * GameState.KILL_XP
 	var coins: int = GameState.place_money(place) \
 			+ _my_kills * GameState.KILL_MONEY
@@ -865,6 +939,10 @@ func _finish_race() -> void:
 		c.race_over = true
 	if Net.is_server():
 		_rx_finish.rpc()
+		# Не доехавшие к таймауту живые игроки — место по прогрессу.
+		for i in _cars.size():
+			if not _finish_order.has(i):
+				_record_human_result(i, _place_of(i))
 		_reset_server_after_race()
 		return
 	# Сам не доехал, а заезд кончился (таймаут) — место по прогрессу.
@@ -1461,27 +1539,34 @@ func _on_peer_joined(_id: int, slot: int) -> void:
 	# не загоралась. Поймано двухклиентским прогоном теста.
 	_rx_slot_taken.rpc(slot, true)
 	if _net_started:
-		_rx_lobby.rpc(Net.slot_of_peer.size(), 0)
+		_rx_lobby.rpc(_lobby_players(), 0)
 		return
+	# Слот теперь за человеком: из плана ботов вычёркиваем, а если бот в
+	# нём уже «сидел» (свободных не осталось — Net._free_slot) — уступает.
+	_bot_plan.erase(slot)
+	if _bot_mask & (1 << slot):
+		_set_bots(_bot_mask & ~(1 << slot))
 	# Зашёл человек, пока лобби показывало ботов, — отменяем эту попытку
-	# старта: слот отдаём ему, а не боту (см. _start_with_bots).
+	# старта: слот отдаём ему, а не боту (см. _start_with_bots). Уже
+	# «подключившиеся» боты остаются на местах.
 	if _starting:
 		_starting = false
 		_start_gen += 1
-		_rx_bots.rpc(0)
 	# Стартовать ЗДЕСЬ нельзя, даже если все слоты заняты: подключение —
 	# это ENet-рукопожатие, а сцена у игрока может ещё грузиться (первый
 	# вход = компиляция шейдеров). Старт — только когда все загрузились
 	# (прислали hello), см. _maybe_start.
-	# Первый игрок: даём LOBBY_WAIT секунд на то, чтобы подтянулись остальные.
+	# Первый игрок: даём LOBBY_WAIT секунд на то, чтобы подтянулись остальные,
+	# и назначаем ботам моменты «подключения» (_plan_bots).
 	if _lobby_wait < 0.0:
 		_lobby_wait = LOBBY_WAIT
+		_plan_bots()
 	# Пришёл ещё один — продлеваем ожидание до JOIN_GRACE, если оставалось
 	# меньше. Друзья жмут «играть» не по секундомеру: один заходит на
 	# двадцатой секунде чужого ожидания, и без продления заезд стартовал бы
 	# у него под носом, а он подсел бы к идущей гонке.
 	_lobby_wait = maxf(_lobby_wait, JOIN_GRACE)
-	_rx_lobby.rpc(Net.slot_of_peer.size(), ceili(_lobby_wait))
+	_rx_lobby.rpc(_lobby_players(), ceili(_lobby_wait))
 
 
 ## Сервер: игрок ушёл — его машину снова ведёт бот, гонка продолжается.
@@ -1502,8 +1587,13 @@ func _on_peer_left(_id: int, slot: int) -> void:
 	if not _net_started and slot < _names.size():
 		_names[slot] = PlayerNames.pick_one(_names)
 		_rx_names.rpc(_names)
-	_rx_lobby.rpc(Net.slot_of_peer.size(), maxi(ceili(_lobby_wait), 0))
 	_rx_slot_taken.rpc(slot, false)
+	# Остальные ждут в лобби — освободившийся слот вскоре «займёт» бот,
+	# как будто зашёл кто-то другой (_tick_bot_plan).
+	if not _net_started and not Net.slot_of_peer.is_empty():
+		_bot_plan[slot] = _lobby_clock \
+				+ _bot_rng.randf_range(BOT_REJOIN_MIN, BOT_REJOIN_MAX)
+	_rx_lobby.rpc(_lobby_players(), maxi(ceili(_lobby_wait), 0))
 	# Ушли все — заезд некому доигрывать. Перезапускаем трассу, чтобы
 	# следующая пара получила чистую гонку, а не догоняла ботов.
 	if Net.slot_of_peer.is_empty() and _net_started:
@@ -1518,6 +1608,11 @@ func _on_peer_left(_id: int, slot: int) -> void:
 		_lobby_wait = -1.0
 		_want_start = false
 		_loading_told = false
+		# Лобби опустело — боты «расходятся»: следующему игроку они снова
+		# будут подключаться по одному.
+		_bot_plan.clear()
+		_lobby_clock = 0.0
+		_set_bots(0)
 		# Ушёл ВО ВРЕМЯ показа ботов (BOTS_SHOW) — отменяем и эту попытку
 		# старта, как _on_peer_joined отменяет её при входе. Без этого await
 		# в _start_with_bots дотикивал и заезд стартовал ПУСТЫМ (VDS 27.08
@@ -1627,7 +1722,7 @@ func _maybe_start() -> void:
 		# Ждём загрузку: скажем игрокам, чего именно ждём (secs = −1).
 		# Один раз, не каждый тик — _tick_lobby зовёт нас каждый кадр.
 		_loading_told = true
-		_rx_lobby.rpc(Net.slot_of_peer.size(), -1)
+		_rx_lobby.rpc(_lobby_players(), -1)
 
 
 func _start_net_race() -> void:
@@ -1641,14 +1736,36 @@ func _start_net_race() -> void:
 		print("[net] старт отменён: игроков не осталось")
 		return
 	_net_started = true
+	_race_humans = Net.slot_of_peer.size()
+	_apply_bot_level()
 	print("[net] старт заезда, игроков: %d" % Net.slot_of_peer.size())
 	_countdown()
+
+
+## Сервер: уровень сложности ботов заезда — среднее по живым игрокам
+## (BotSkill, по именам из hello) — и «класс» каждому боту под него.
+func _apply_bot_level() -> void:
+	var names := PackedStringArray()
+	for sl: int in Net.slot_of_peer.values():
+		if sl < _names.size():
+			names.append(_names[sl])
+	_bot_level = BotSkill.mean_level(names)
+	var skill := BotSkill.skill_range(_bot_level)
+	for sl in _cars.size():
+		if Net.slot_of_peer.values().has(sl):
+			continue
+		_cars[sl].ai_skill = _bot_rng.randf_range(skill.x, skill.y)
+	if _bot_level > 0.0:
+		print("[боты] уровень сложности %.2f (класс %.2f..%.2f) для %s"
+				% [_bot_level, skill.x, skill.y, ", ".join(names)])
 
 
 ## Живых игроков хватило не на все слоты — свободные берут боты. Прежде
 ## чем начинать отсчёт, показываем это в лобби: слот перестаёт быть «ждём
 ## игрока…» и становится ботом с его машиной. Пауза BOTS_SHOW — чтобы
-## игрок успел разглядеть, с кем едет (отсчёт лобби уже прячет).
+## игрок успел разглядеть, с кем едет (отсчёт лобби уже прячет). Обычно
+## боты к этому моменту уже «подключились» по одному (_tick_bot_plan), и
+## тогда пауза короткая — только на «Все в сборе — поехали!».
 func _start_with_bots() -> void:
 	if _net_started or _starting:
 		return
@@ -1659,15 +1776,87 @@ func _start_with_bots() -> void:
 	_starting = true
 	_start_gen += 1
 	var gen := _start_gen
-	print("[net] свободные слоты заняли боты (маска %d)" % bot_mask)
-	_rx_bots.rpc(bot_mask)
-	await get_tree().create_timer(BOTS_SHOW).timeout
+	var fresh := bot_mask & ~_bot_mask
+	_bot_plan.clear()
+	print("[net] свободные слоты заняли боты (маска %d, новых %d)"
+			% [bot_mask, fresh])
+	_set_bots(bot_mask)
+	_rx_lobby.rpc(_lobby_players(), 0)
+	await get_tree().create_timer(BOTS_SHOW if fresh != 0
+			else BOTS_SHOW_SHORT).timeout
 	# Успел зайти живой игрок — попытка отменена (см. _on_peer_joined):
 	# человек лучше бота, ждём его загрузку и стартуем заново.
 	if not is_inside_tree() or gen != _start_gen:
 		return
 	_starting = false
 	_start_net_race()
+
+
+## Сервер: назначить каждому свободному слоту момент «подключения» бота
+## (см. BOT_FIRST/BOT_TAIL/BOT_GAP). Порядок слотов случайный.
+func _plan_bots() -> void:
+	_bot_plan.clear()
+	_lobby_clock = 0.0
+	var free: Array[int] = []
+	var taken := _taken_mask()
+	for s in Net.race_size:
+		if (taken & (1 << s)) == 0:
+			free.append(s)
+	if free.is_empty():
+		return
+	for i in range(free.size() - 1, 0, -1):
+		var j := _bot_rng.randi_range(0, i)
+		var t := free[i]
+		free[i] = free[j]
+		free[j] = t
+	var last := LOBBY_WAIT - BOT_TAIL
+	var times: Array[float] = []
+	for s in free:
+		times.append(_bot_rng.randf_range(BOT_FIRST, last))
+	times.sort()
+	# Не чаще BOT_GAP: два «подключения» в один кадр выдают ботов.
+	for i in range(1, times.size()):
+		times[i] = maxf(times[i], times[i - 1] + BOT_GAP)
+	for i in free.size():
+		_bot_plan[free[i]] = times[i]
+	print("[net] план ботов: %s" % str(_bot_plan))
+
+
+## Сервер: пришло время — бот «подключается» в свой слот (лобби у клиентов
+## зажигает его ник и машину, счёт игроков растёт).
+func _tick_bot_plan(delta: float) -> void:
+	_lobby_clock += delta
+	if _bot_plan.is_empty():
+		return
+	var mask := _bot_mask
+	var taken := _taken_mask()
+	for s: int in _bot_plan.keys():
+		if float(_bot_plan[s]) > _lobby_clock:
+			continue
+		_bot_plan.erase(s)
+		if (taken & (1 << s)) == 0:
+			mask |= 1 << s
+	if mask != _bot_mask:
+		_set_bots(mask)
+		_rx_lobby.rpc(_lobby_players(), maxi(ceili(_lobby_wait), 0))
+
+
+## Сервер: маска ботов в лобби — себе, в Net (для раздачи слотов) и клиентам.
+func _set_bots(mask: int) -> void:
+	_bot_mask = mask
+	Net.bot_mask = mask
+	_rx_bots.rpc(mask)
+
+
+## Сервер: «игроков в лобби» для статуса — живые плюс уже подключившиеся
+## боты (бот неотличим от игрока — 01.09).
+func _lobby_players() -> int:
+	var n := Net.slot_of_peer.size()
+	var m := _bot_mask
+	while m != 0:
+		n += m & 1
+		m >>= 1
+	return n
 
 
 ## Сервер: раз в 1/SNAP_HZ рассылаем состояние всех машин.
@@ -1711,6 +1900,9 @@ func _server_tick(delta: float) -> void:
 func _tick_lobby(delta: float) -> void:
 	if _net_started or _starting:
 		return
+	# Боты «подключаются» по своему плану, пока лобби открыто (и пока
+	# ждём чью-то загрузку тоже).
+	_tick_bot_plan(delta)
 	# Старт уже запрошен, но кто-то ещё грузится — проверяем каждый тик:
 	# hello может прийти в любой момент, а молчуна отпустит HELLO_GRACE.
 	if _want_start:
@@ -1726,7 +1918,7 @@ func _tick_lobby(delta: float) -> void:
 		_want_start = true
 		_maybe_start()
 	elif ceili(_lobby_wait) != before:
-		_rx_lobby.rpc(Net.slot_of_peer.size(), ceili(_lobby_wait))
+		_rx_lobby.rpc(_lobby_players(), ceili(_lobby_wait))
 
 
 ## Клиент: каждый кадр физики шлёт серверу СОСТОЯНИЕ своей машины — она
@@ -1987,7 +2179,11 @@ func _rx_hello(car_id: String, proto: int, want_size := 4,
 		# и его HUD (круг, место) врал бы до конца заезда.
 		_rx_progress.rpc_id(id, PackedFloat32Array(_progress),
 				PackedInt32Array(_laps_done))
-	_rx_lobby.rpc(Net.slot_of_peer.size(),
+	# Уже «подключившиеся» боты — новичку (остальные их видели по мере
+	# прихода, _tick_bot_plan).
+	if _bot_mask != 0:
+		_rx_bots.rpc_id(id, _bot_mask)
+	_rx_lobby.rpc(_lobby_players(),
 			0 if _net_started else maxi(ceili(_lobby_wait), 0))
 	# hello приходит из ГОТОВОЙ сцены клиента — значит, он загрузился и не
 	# пропустит отсчёт. Только теперь его слот перестаёт блокировать старт.
@@ -2252,6 +2448,7 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	if _rebuilding:
 		return
 	Net.my_slot = slot
+	Net.slot_hint = slot
 	# Мы приняты в заезд — счёт прыжков перенаправлений (Rooms) обнуляется.
 	Net.redirect_hops = 0
 	# Канал меряем заново: могли переехать в другую комнату (Rooms) или
@@ -2259,6 +2456,9 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	Car.net_reset_buf_delay()
 	for s in _slot_taken.size():
 		_slot_taken[s] = (taken & (1 << s)) != 0
+	# Ростер welcome — со всеми машинами занятых слотов: «подключается…»
+	# больше никому не нужно.
+	_slot_pending.clear()
 	_apply_roster(roster)   # заодно обновит машины на экране лобби
 	if slot < 0 or slot >= _cars.size():
 		return
@@ -2318,6 +2518,8 @@ func _apply_roster(roster: PackedStringArray) -> void:
 			continue
 		_set_car_model(_cars[i], roster[i])
 	_roster = roster
+	# Ростер сервер шлёт после hello подключившегося — его машина уже тут.
+	_slot_pending.clear()
 	_update_lobby_slots()
 
 
@@ -2439,6 +2641,11 @@ func _rx_lobby(players: int, secs: int) -> void:
 		_lobby.hide_screen()
 		return
 	_lobby.show_screen()
+	# Все слоты заняты (людьми и «подключившимися» ботами) и ожидание
+	# кончилось — сервер вот-вот начнёт отсчёт (см. _start_with_bots).
+	if secs == 0 and players >= _cars.size():
+		_lobby.set_status("Все в сборе — поехали!")
+		return
 	var txt := "Игроков: %d/%d" % [players, _cars.size()]
 	if secs > 0:
 		txt += "
@@ -2777,20 +2984,15 @@ func _rx_fx(kind: int, args: Array) -> void:
 ## Живых игроков на все слоты не нашлось — свободные забрали боты. Лобби
 ## показывает их машины и ники КАК ОБЫЧНЫХ ИГРОКОВ: бот не должен
 ## отличаться от человека (01.09), поэтому ни слова «бот» на экране.
-## mask = 0 — попытка старта отменена (подключился человек), слоты снова
-## ждут людей.
+## Боты «подключаются» по одному (_tick_bot_plan), маска растёт; бит
+## пропадает, когда слот бота отдан живому игроку. Статус лобби сервер
+## шлёт следом (_rx_lobby) — здесь только подиумы.
 @rpc("authority", "call_remote", "reliable")
 func _rx_bots(mask: int) -> void:
 	_bot_mask = mask
 	if _lobby == null:
 		return
 	_update_lobby_slots()
-	if mask == 0:
-		_lobby.set_status("Игроков: %d/%d\nПодключился игрок — ждём его…"
-				% [_taken_count(), _cars.size()])
-		return
-	_lobby.show_screen()
-	_lobby.set_status("Все в сборе — поехали!")
 
 
 ## Сколько слотов занято живыми игроками (по нашей маске _slot_taken).
@@ -2808,9 +3010,21 @@ func _taken_count() -> int:
 ## живого игрока _rx_state берёт метку часов сервера).
 @rpc("authority", "call_remote", "reliable")
 func _rx_slot_taken(slot: int, taken: bool) -> void:
-	if slot >= 0 and slot < _slot_taken.size():
-		_slot_taken[slot] = taken
-		_update_lobby_slots()
+	if slot < 0 or slot >= _slot_taken.size():
+		return
+	_slot_taken[slot] = taken
+	if taken:
+		# Слот занят в момент ENet-подключения — машина и имя игрока
+		# приедут после его hello. Свой слот ещё не выдан и подсказки нет —
+		# это, скорее всего, МЫ (сервер объявляет наш слот сразу при нашем
+		# подключении): рисуем свою машину, а не «подключается…».
+		if Net.my_slot < 0 and Net.slot_hint < 0:
+			Net.slot_hint = slot
+		elif slot != Net.my_slot and slot != Net.slot_hint:
+			_slot_pending[slot] = true
+	else:
+		_slot_pending.erase(slot)
+	_update_lobby_slots()
 
 
 ## Сервер отказал (несовпадение версий и т.п.) — показываем причину и
@@ -2911,6 +3125,10 @@ func _rx_reset() -> void:
 	if _net_lost or _kicked or not is_inside_tree():
 		return
 	print("[net] сервер начал новый заезд — перезагружаем сцену%s" % _mem_note())
+	# Слот за нашим пиром остаётся тот же — лобби новой сцены сразу покажет
+	# нашу машину в нём (welcome подтвердит).
+	if Net.my_slot >= 0:
+		Net.slot_hint = Net.my_slot
 	Net.my_slot = -1
 	_rebuilding = true
 	get_tree().reload_current_scene()
@@ -3014,10 +3232,20 @@ func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3,
 func _update_lobby_slots() -> void:
 	if _lobby == null:
 		return
+	# Пока welcome не пришёл, свой слот — по подсказке (Net.slot_hint), и в
+	# нём СВОЯ машина с СВОИМ именем (ростер и имена сервера ещё не наши).
+	var mine := Net.my_slot if Net.my_slot >= 0 else Net.slot_hint
 	for s in _slot_taken.size():
 		var id := _roster[s] if s < _roster.size() else ""
-		_lobby.set_slot(s, _slot_taken[s], id, s == Net.my_slot,
-				(_bot_mask & (1 << s)) != 0, car_label(s))
+		var is_me := s == mine
+		var pname := car_label(s)
+		if is_me and (Net.my_slot < 0 or s >= _names.size()
+				or _names[s] == ""):
+			id = GameState.selected_car_id
+			pname = GameState.display_name()
+		_lobby.set_slot(s, _slot_taken[s], id, is_me,
+				(_bot_mask & (1 << s)) != 0, pname,
+				_slot_pending.has(s))
 
 
 # ════════════════════ ЛЕНТА СОБЫТИЙ ОРУЖИЯ ════════════════════
