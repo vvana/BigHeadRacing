@@ -49,6 +49,16 @@ const STATUS_ICON_SIZE := 1.7           # ширина значка, м
 const STATUS_ICON_Y := 2.35             # высота над центром машины, м
 const STATUS_ICON_PLAYER_Y := 3.25      # у игрока — выше маркера-стрелки
 
+# Пристенок (см. _wall_slide). Ограждение ведёт вдоль себя без потери
+# хода, но доворачивает кузов лишь пока нос стоит поперёк — по изгибам
+# трассы вдоль борта машина сама не едет, рулить надо.
+const WALL_ALIGN_FREE := deg_to_rad(10.0)  # угол к оси, который стена не правит
+const WALL_SPARK_PERIOD := 0.07         # искры о стену: сноп раз в столько с
+
+# Откуда вылетает оружие (см. muzzle_at): передняя кромка машины.
+const MUZZLE_AHEAD := 1.6               # нос от центра, м (длина модели 3.2)
+const MUZZLE_UP := 0.45                 # высота ствола над центром, м
+
 # Точки подвески в локальных координатах (x — вправо, z — назад).
 const WHEEL_POINTS: Array[Vector3] = [
 	Vector3(-0.85, 0.0, -1.3),  # перед-лево
@@ -143,6 +153,9 @@ var _snap_prev_vel := Vector3.ZERO
 var _snap_prev_stamp := -1.0
 # Модель (CarModel) — кэш ссылки, чтобы не искать узел по имени каждый кадр.
 var _model: Node3D = null
+# Пятно неона под днищем (Underglow/Glow модели) — его каждый кадр
+# кладут на дорогу, см. _fit_underglow. Нет неона — null.
+var _underglow: Node3D = null
 # Мои недавние ЛОКАЛЬНЫЕ рикошеты о марионеток: instance id -> ticks_msec.
 # Приехавший следом толчок-событие (_rx_fx SHOVE) о том же контакте
 # отбрасывается — иначе при тёрке бок-о-бок машину било бы дважды (свой
@@ -203,6 +216,7 @@ var _grounded_wheels := 0
 # срабатывал по уже освобождённой машине (перезапуск заезда).
 var _jump_cd := 0.0
 var _wall_align_time := 0.0     # окно доворота после касания стены, с
+var _wall_spark_time := 0.0     # до следующего снопа искр о стену, с
 var _wall_near := false         # кузов у грани ограждения (аналитически)
 var _wall_body: Node3D = null   # тело стен, с которым снято столкновение
 var _bump_spin_time := 0.0      # окно после тарана: руль не глушит закрутку
@@ -517,38 +531,82 @@ static func _emissive_anchor(model: Node3D, model_xf: Transform3D) -> Dictionary
 		return {}
 	# Только передняя половина кузова (нос в -Z).
 	var mid := (z_min + z_max) * 0.5
-	var fx := 0.0
-	var fy := 0.0
-	var fz := 1e9
 	var n_f := 0
-	var x_lo := 1e9
-	var x_hi := -1e9
+	for i in xs.size():
+		if zs[i] <= mid:
+			n_f += 1
+	if n_f < 1:
+		return {}
+	# Светящихся пятен спереди бывает НЕСКОЛЬКО (фара + подфарник/
+	# габарит на крыле у Нивы vz08/vz09): среднее по всем ложилось между
+	# ними, в воздух на 12 см от кузова («фары висят в воздухе», жалоба
+	# 07.09). Берём главное пятно: медоид (точку с наименьшей суммой
+	# расстояний до остальных) и всё в 15 см вокруг него, — и центр, и
+	# кромку считаем по нему.
+	var best_i := -1
+	var best_sum := 1e18
 	for i in xs.size():
 		if zs[i] > mid:
 			continue
-		var ax := absf(xs[i])
-		fx += ax
-		fy += ys[i]
-		fz = minf(fz, zs[i])
-		x_lo = minf(x_lo, ax)
-		x_hi = maxf(x_hi, ax)
-		n_f += 1
-	if n_f < 1:
-		return {}
-	var lamp_w := clampf((x_hi - x_lo) + 0.06, 0.14, 0.34)
-	return {"x": fx / n_f, "y": fy / n_f, "z": fz, "w": lamp_w}
+		var sum := 0.0
+		for j in xs.size():
+			if zs[j] > mid:
+				continue
+			sum += Vector3(absf(xs[i]), ys[i], zs[i]).distance_to(
+					Vector3(absf(xs[j]), ys[j], zs[j]))
+		if sum < best_sum:
+			best_sum = sum
+			best_i = i
+	var med := Vector3(absf(xs[best_i]), ys[best_i], zs[best_i])
+	var cx := 0.0
+	var cy := 0.0
+	var cz := 0.0
+	var c_lo := 1e9
+	var c_hi := -1e9
+	var n_c := 0
+	for i in xs.size():
+		if zs[i] > mid:
+			continue
+		var q := Vector3(absf(xs[i]), ys[i], zs[i])
+		if q.distance_to(med) > 0.15:
+			continue
+		cx += q.x
+		cy += q.y
+		# Кромка — СРЕДНЯЯ z пятна, а не самая передняя: на скошенной
+		# фаре (Нива, Копейка) передний край пятна на 5-6 см впереди его
+		# середины, и лампа, посаженная по краю, торчала из кузова.
+		cz += q.z
+		c_lo = minf(c_lo, q.x)
+		c_hi = maxf(c_hi, q.x)
+		n_c += 1
+	var lamp_w := clampf((c_hi - c_lo) + 0.06, 0.14, 0.34)
+	return {"x": cx / n_c, "y": cy / n_c, "z": cz / n_c, "w": lamp_w}
 
 
-## Самая передняя вершина в окошке вокруг точки (|x| = x_at, y = y_at).
+## Кромка кузова в окошке вокруг точки (|x| = x_at, y = y_at): средняя z
+## вершин окошка в первых 10 см от самой передней. Брали ровно минимум:
+## на скошенном носу единственная вершина у края окошка выносила лампу на
+## 5-8 см перед поверхностью — «фара в воздухе» (07.09). Окошко тянется
+## вдоль всего борта, поэтому усреднять можно только у самого носа.
 ## 1e9 — в окошке пусто.
 static func _front_z(pts: PackedVector3Array, x_at: float, x_tol: float,
 		y_at: float, y_tol: float) -> float:
-	var z := 1e9
+	var zs := PackedFloat32Array()
+	var z_min := 1e9
 	for p in pts:
 		if absf(absf(p.x) - x_at) > x_tol or absf(p.y - y_at) > y_tol:
 			continue
-		z = minf(z, p.z)
-	return z
+		zs.append(p.z)
+		z_min = minf(z_min, p.z)
+	if zs.is_empty():
+		return 1e9
+	var sum := 0.0
+	var n := 0
+	for z in zs:
+		if z <= z_min + 0.10:
+			sum += z
+			n += 1
+	return sum / n
 
 
 ## Вершины модели в осях МАШИНЫ, без колёс (колесо в пивоте с мета
@@ -655,11 +713,15 @@ static func make_smoke() -> CPUParticles3D:
 	growth.add_point(Vector2(1.0, 1.45))
 	var p := CPUParticles3D.new()
 	p.emitting = false
-	# 04.09: было 16 клубов по 0.5 с и одного размера — читалось как ряд
-	# одинаковых картинок. Теперь клубов вдвое меньше, они крупнее, живут
-	# дольше и заметно разного размера; каждый ещё и крутится по-своему.
-	p.amount = 7
-	p.lifetime = 0.8
+	# 04.09 (утро): было 16 клубов по 0.5 с и одного размера — читалось как
+	# ряд одинаковых картинок; крупные и разные оставили, но их стало 7 на
+	# 0.8 с, и на скорости (эмиттер мировой, машина уезжает) клубы легли с
+	# метровыми промежутками — «маленькие тучки с большими промежутками»
+	# (жалоба 04.09, вечер). Частота вернулась (18 на 0.6 с ≈ 30 клубов в
+	# секунду — как было), но клубы остались КРУПНЫМИ и разными: след
+	# сплошной. Жизнь короче — шлейф не растягивается на пол-трассы.
+	p.amount = 18
+	p.lifetime = 0.6
 	p.local_coords = false   # клубы остаются позади машины
 	p.direction = Vector3.UP
 	p.spread = 35.0
@@ -769,11 +831,14 @@ func _build_boost_flame() -> void:
 	shrink.add_point(Vector2(1.0, 0.05))
 	var p := CPUParticles3D.new()
 	p.emitting = false
-	# 04.09: 30 языков по 0.13 с выстраивались в цепочку одинаковых
-	# картинок. Языков втрое меньше, каждый крупнее, живёт дольше и
-	# крутится — струя читается как одно пляшущее пламя, а не ряд кадров.
-	p.amount = 10
-	p.lifetime = 0.2
+	# 04.09 (утро): 30 языков по 0.13 с выстраивались в цепочку одинаковых
+	# картинок; их сделали крупнее и оставили 10 — и на скорости струя
+	# рассыпалась на отдельные тучки с промежутками (жалоба 04.09, вечер:
+	# эмиттер мировой, за 0.02 с между языками машина уезжает на полметра).
+	# 24 языка на 0.18 с — те же крупные кадры, но вплотную: сопло горит
+	# сплошной струёй, а короткая жизнь держит её длину прежней.
+	p.amount = 24
+	p.lifetime = 0.18
 	p.local_coords = false   # струя остаётся позади машины
 	# Почти горизонтально назад (+Z): струя из выхлопной трубы, а не костёр
 	# на бампере — подъём убран, скорость выше, конус узкий.
@@ -787,8 +852,8 @@ func _build_boost_flame() -> void:
 	# сама анимация кадров и разброс размера.
 	p.angle_min = -12.0
 	p.angle_max = 12.0
-	p.scale_amount_min = 0.36
-	p.scale_amount_max = 0.6
+	p.scale_amount_min = 0.42
+	p.scale_amount_max = 0.7
 	p.scale_amount_curve = shrink
 	# Случайный стартовый кадр атласа + прокрутка кадров по жизни частицы.
 	p.anim_offset_min = 0.0
@@ -1124,8 +1189,8 @@ func _tick_effects(delta: float) -> void:
 	if _boost_flame:
 		# С плиты — узкий короткий язык, от турбины — полный.
 		var narrow := _boost_from_pad and _boost_time > 0.0
-		_boost_flame.scale_amount_min = 0.24 if narrow else 0.36
-		_boost_flame.scale_amount_max = 0.4 if narrow else 0.6
+		_boost_flame.scale_amount_min = 0.3 if narrow else 0.42
+		_boost_flame.scale_amount_max = 0.48 if narrow else 0.7
 		_boost_flame.spread = 3.0 if narrow else 4.0
 		_boost_flame.emitting = alive and (_boost_time > 0.0
 				or (_status_time > 0.0 and _status_kind == Weapons.BOOST)
@@ -1157,6 +1222,11 @@ func _process(delta: float) -> void:
 	if _model == null or not is_instance_valid(_model) \
 			or _model.get_parent() != self:
 		_model = get_node_or_null("CarModel") as Node3D
+		# Пятно неона ищем ровно тогда, когда сменилась модель (у машин
+		# без неона узла нет — искать его каждый кадр незачем).
+		_underglow = null
+		if _model != null:
+			_underglow = _model.get_node_or_null("Underglow/Glow") as Node3D
 	var model := _model
 	if model != null:
 		if not model.top_level:
@@ -2197,16 +2267,18 @@ func _wall_slide(delta: float) -> void:
 	# памяти до полной — машину «выстреливало» в случайную сторону
 	# («внезапно меняет направление»). Фантомные броски гасят капы ниже.
 	if guiding and (v_out > 0.0 or h.length() < 0.1):
-		# Вся горизонтальная скорость — вдоль стены, но со штрафом:
-		# ограждение направляет и ГАСИТ удар — 40% скорости сближения
-		# при перехвате + слабый скрежет, пока есть контакт. Скользящий
-		# удар почти не теряет (v_out мал), перпендикулярный — ощутимо.
+		# Вся горизонтальная скорость — вдоль стены, БЕЗ потери хода:
+		# ограждение только направляет и гасит сам удар (40% скорости
+		# сближения при перехвате; скользящий удар почти не теряет,
+		# перпендикулярный — ощутимо). Скрежета вдоль стены НЕТ — просьба
+		# 07.09 «пусть скорость об стену вообще не снижается, только
+		# искры» (вариант с торможением у борта показался слишком
+		# жёстким); чтобы у борта нельзя было ехать без руля, стена
+		# больше не доворачивает кузов по кривизне полотна — см. ниже.
 		# Перепрыгнуть стену по-прежнему можно: выше кромки ведение
 		# отключается (см. проверку высоты выше).
 		var s := maxf(h.length(), _recent_hspeed)
 		s -= 0.4 * maxf(v_out, 0.0)
-		if touching:
-			s -= 2.5 * delta
 		s = maxf(s, 0.0)
 		# Память скорости срезаем вслед — иначе она вернёт штраф обратно.
 		_recent_hspeed = minf(_recent_hspeed, s)
@@ -2277,6 +2349,16 @@ func _wall_slide(delta: float) -> void:
 		var spin := angular_velocity
 		spin.y = 0.0
 		apply_torque((up.cross(Vector3.UP) * 14.0 - spin * 2.5) * mass * 0.1)
+		# Искры о борт (просьба 07.09): снопы из точки касания на грани
+		# ограждения, пока машина трётся о него на ходу. Сила — от
+		# скорости; на сервере FxKit их и так не рисует.
+		_wall_spark_time -= delta
+		var hspeed := h.length()
+		if _wall_spark_time <= 0.0 and hspeed > 3.0:
+			_wall_spark_time = WALL_SPARK_PERIOD
+			var at := axis_pos + n * wall_face
+			at.y = global_position.y + 0.15
+			SparksFx.spawn(get_parent(), at, hspeed * 0.35)
 
 	# Если руль прямо сейчас просит рысканье ПРОЧЬ от стены — не мешаем:
 	# ни доворота, ни гашения (иначе у стены нельзя отрулить). Занос от
@@ -2285,10 +2367,17 @@ func _wall_slide(delta: float) -> void:
 	# — машину должно ЗАМЕТНО разворачивать в ограждение).
 	if steering_away or _slip_time > 0.0:
 		return
-	# Иначе — доворот вдоль стены и полное гашение рысканья: без руля
-	# любое вращение здесь — закрутка от удара углом, а не руление.
+	# Иначе — доворот вдоль стены, но ТОЛЬКО пока нос заметно поперёк:
+	# ограждение разворачивает уткнувшийся кузов вдоль себя и на этом
+	# останавливается (WALL_ALIGN_FREE). Раньше доворот шёл до нуля, до
+	# самой касательной — а она в повороте поворачивается вместе с
+	# трассой: машина у борта ехала по изгибам сама, без руля (жалоба
+	# 04.09). Теперь у стены руль по-прежнему нужен.
 	var ang := fwd.signed_angle_to(tangent, Vector3.UP)
-	rotate(Vector3.UP, ang * minf(1.0, wall_align_speed * delta))
+	if absf(ang) <= WALL_ALIGN_FREE:
+		return
+	rotate(Vector3.UP, (ang - signf(ang) * WALL_ALIGN_FREE)
+			* minf(1.0, wall_align_speed * delta))
 	angular_velocity.y = 0.0
 
 
@@ -2417,6 +2506,21 @@ func notify_hit_by(attacker: Car, kind: int) -> void:
 		race.report_weapon_hit(attacker, self, kind)
 
 
+## Откуда вылетает оружие: ПЕРЕДНЯЯ КРОМКА машины, а не её середина
+## (просьба 04.09 — «выстрелы должны выходить от переднего края»). Все
+## модели приведены к длине 3.2 м (CarModelLibrary.build), значит нос —
+## в 1.6 м от центра; высота — по фарам, чуть выше бампера.
+## from — «середина», от которой считаем: тело (стрельба) или ВИДИМОЕ
+## положение машины (картинка луча, LaserFx).
+static func muzzle_at(from: Vector3, fwd: Vector3) -> Vector3:
+	return from + fwd * MUZZLE_AHEAD + Vector3.UP * MUZZLE_UP
+
+
+## Точка вылета оружия у этой машины (по телу — так считает выстрел).
+func muzzle_point(fwd: Vector3) -> Vector3:
+	return muzzle_at(global_position, fwd)
+
+
 ## Применить текущее оружие (у машины в руках всегда не больше одного;
 ## новое берётся из боксов на трассе). Оружие тратится при использовании.
 func use_weapon() -> void:
@@ -2448,7 +2552,7 @@ func use_weapon() -> void:
 			p.lag = net_shot_lag()
 			p.freeze = kind == Weapons.FREEZE
 			get_parent().add_child(p)
-			p.global_position = global_position + fwd * 2.3 + Vector3.UP * 0.55
+			p.global_position = muzzle_point(fwd)
 			FxKit.muzzle_flash(get_parent(), p.global_position,
 					Color(0.6, 0.85, 1.0) if p.freeze else Color(1.0, 0.8, 0.35))
 		Weapons.OIL:
@@ -2469,7 +2573,7 @@ func use_weapon() -> void:
 			# экрану (протокол 13).
 			w.lag = net_shot_lag()
 			get_parent().add_child(w)
-			w.global_position = global_position + fwd * 2.3 + Vector3.UP * 0.55
+			w.global_position = muzzle_point(fwd)
 			FxKit.muzzle_flash(get_parent(), w.global_position,
 					Color(0.4, 0.95, 1.0))
 			# Горизонтальная волна от машины в момент выстрела — сразу видно
@@ -2666,8 +2770,7 @@ func _use_laser(fwd: Vector3) -> void:
 	# текущему миру: их картина и есть правда.
 	_laser_lag = net_shot_lag()
 	_laser_left = LaserFx.LIFETIME
-	var from := global_position + Vector3.UP * 0.5
-	LaserFx.spawn(get_parent(), from, fwd, LASER_RANGE, self)
+	LaserFx.spawn(get_parent(), muzzle_point(fwd), fwd, LASER_RANGE, self)
 	_laser_sweep(fwd)
 
 
@@ -3209,6 +3312,10 @@ func _animate_wheels(delta: float) -> void:
 	var forward := -global_transform.basis.z
 	var speed := linear_velocity.dot(forward)
 	var space := get_world_3d().direct_space_state
+	# Заодно собираем высоту ДОРОГИ под колёсами — по ней ложится пятно
+	# неона (см. _fit_underglow).
+	var road_sum := 0.0
+	var road_hits := 0
 	# Машины луч не ловит и так: они на слое 0b100, маска — 1 (дорога).
 	for pivot in _wheel_pivots:
 		var radius: float = pivot.get_meta("wheel_radius")
@@ -3241,6 +3348,8 @@ func _animate_wheels(delta: float) -> void:
 		var pen := 0.0
 		if not hit.is_empty():
 			pen = (hit["position"] as Vector3).y - (hub.y - radius)
+			road_sum += (hit["position"] as Vector3).y
+			road_hits += 1
 		# Упреждение на пару шагов решателя: точка колеса сближается с
 		# опорой ещё ПОСЛЕ нашего замера. Считаем по НОРМАЛИ опоры, а не
 		# только по vy: при посадке носом колесо ныряет быстрее центра
@@ -3264,6 +3373,22 @@ func _animate_wheels(delta: float) -> void:
 		pivot.set_meta("lift", lift)
 		if lift > 0.001:
 			pivot.global_position = hub + Vector3.UP * lift
+	if road_hits > 0:
+		_fit_underglow(road_sum / float(road_hits))
+
+
+## Пятно неона кладём НА ДОРОГУ, а не на низ модели: кузов — жёсткое
+## тело, на прожатой подвеске он оседает, а колёса остаются на асфальте
+## (см. кламп выше). Пятно, прибитое к модели, гуляло вместе с кузовом и
+## резало колёса поперёк на уровне ступицы (жалоба 04.09 «опустить неон
+## до нижней грани колёс»). Теперь оно всегда на 2 см над полотном —
+## ровно там, где колёса его касаются. Наклон пятна остаётся от кузова:
+## по крену видно, что подсветка едет с машиной.
+func _fit_underglow(road_y: float) -> void:
+	if _underglow == null or not is_instance_valid(_underglow):
+		return
+	var p := _underglow.global_position
+	_underglow.global_position = Vector3(p.x, road_y + 0.02, p.z)
 
 
 ## Закрыть текущую ленту следа колеса (если была): дальше она лежит,

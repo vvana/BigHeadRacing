@@ -63,7 +63,9 @@ func _process(_delta: float) -> void:
 		_dir = fwd.normalized()
 	# От ВИДИМОГО положения машины: тело шагает с частотой физики, и луч,
 	# посаженный на него, дрожал бы относительно модели.
-	_aim(_source.visual_origin() + Vector3.UP * 0.5)
+	# От ПЕРЕДНЕЙ КРОМКИ, а не от середины кузова (просьба 04.09): стержень
+	# начинался в центре машины и «прошивал» её насквозь.
+	_aim(Car.muzzle_at(_source.visual_origin(), _dir))
 
 
 func _aim(from: Vector3) -> void:

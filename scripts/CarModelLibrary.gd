@@ -1306,11 +1306,11 @@ static func _attach_underglow(m: Node3D, color: String, base_y: float) -> void:
 	mat.albedo_texture = _glow_texture()
 	glow.material_override = mat
 	glow.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	# У самого низа колёс (+4 см). Было +12 см — на машинах с высокими
-	# колёсами (Нива, Копейка) пятно резало шины поперёк на уровне ступицы
-	# (жалоба 04.09 «неон поперёк колёс лежит»). Дорога в заезде при
-	# обычном прогибе на 0–5 см выше низа модели — пятно всё ещё над ней.
-	glow.position = Vector3(0.0, base_y + 0.04, 0.0)
+	# По самой нижней грани колёс (+2 см). Это высота ДЛЯ ПОДИУМА и лобби,
+	# где машина стоит и низ модели = низ колёс; в заезде кузов оседает на
+	# подвеске, и пятно каждый кадр кладут на дорогу (Car._fit_underglow),
+	# иначе оно резало шины поперёк на уровне ступицы (жалобы 04.09).
+	glow.position = Vector3(0.0, base_y + 0.02, 0.0)
 	holder.add_child(glow)
 
 	var light := OmniLight3D.new()

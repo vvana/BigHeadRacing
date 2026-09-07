@@ -44,7 +44,7 @@ var _stuck_time: Array[float] = []
 var _escape_time: Array[float] = []
 var _want_move: Array[bool] = []
 
-var _focus: Focus           # точка между игроком и мячом — цель камеры
+var _ball_arrow: BallArrow  # стрелка к мячу у края экрана, когда он за кадром
 var _ball_marker: Node3D
 var _player_marker: Node3D
 var _marker_time := 0.0
@@ -70,12 +70,33 @@ var _last_weapon := -2
 var _announcer: Announcer
 
 
-## Камере нужен target с visual_origin(): держим точку между машиной и мячом,
-## чтобы в кадре были оба (сам мяч может укатиться за экран).
-class Focus extends Node3D:
-	var point := Vector3.ZERO
-	func visual_origin() -> Vector3:
-		return point
+## Стрелка к мячу (07.09): камера теперь держит СВОЮ машину (раньше —
+## точку между машиной и мячом, и машина «уезжала» из центра), а если
+## мяч ушёл за кадр, у края экрана в его сторону рисуется стрелка с
+## кружком-мячом. Рисуем сами (_draw): треугольник + круг, без картинок.
+class BallArrow extends Control:
+	const MARGIN := 46.0        # отступ стрелки от края экрана, px
+	var dir := Vector2.RIGHT    # куда показывает (единичный)
+	var at := Vector2.ZERO      # где рисовать (центр кружка)
+
+	func _draw() -> void:
+		var tip := at + dir * 36.0
+		var side := dir.orthogonal() * 15.0
+		var back := at + dir * 14.0
+		var shadow := Color(0, 0, 0, 0.55)
+		# Тень (смещённая копия) — читается и на светлом газоне.
+		draw_colored_polygon(PackedVector2Array([tip + Vector2(2, 2),
+				back + side + Vector2(2, 2), back - side + Vector2(2, 2)]), shadow)
+		draw_circle(at + Vector2(2, 2), 16.0, shadow)
+		draw_colored_polygon(PackedVector2Array([tip, back + side, back - side]),
+				Color(1.0, 0.95, 0.3))
+		draw_circle(at, 16.0, Color.WHITE)
+		# Пятиугольник футбольного мяча — чтобы кружок читался как мяч.
+		var pent := PackedVector2Array()
+		for i in 5:
+			var a := -PI * 0.5 + TAU * i / 5.0
+			pent.append(at + Vector2(cos(a), sin(a)) * 7.0)
+		draw_colored_polygon(pent, Color(0.1, 0.1, 0.12))
 
 
 func _ready() -> void:
@@ -92,13 +113,12 @@ func _ready() -> void:
 
 	_spawn_cars()
 
-	_focus = Focus.new()
-	add_child(_focus)
-	_focus.point = _car.global_position
 	var cam := IsoCamera.new()
 	cam.name = "IsoCamera"
 	cam.ortho_size = 30.0
-	cam.target = _focus
+	# Камера — за СВОЕЙ машиной (просьба 07.09); мяч за кадром показывает
+	# стрелка (_update_ball_arrow).
+	cam.target = _car
 	add_child(cam)
 	cam.make_current()
 
@@ -280,7 +300,6 @@ func _set_controls(on: bool) -> void:
 
 
 func _physics_process(delta: float) -> void:
-	_focus_camera()
 	match _state:
 		State.PLAY:
 			_time_left = maxf(0.0, _time_left - delta)
@@ -307,11 +326,35 @@ func _physics_process(delta: float) -> void:
 			pass
 
 
-## Цель камеры: между игроком и мячом, с перевесом к игроку.
-func _focus_camera() -> void:
-	if _car == null or _ball == null:
+## Стрелка к мячу: мяч спроецирован на экран; если он вне кадра (с
+## запасом под размер самого мяча), стрелка встаёт у края экрана на луче
+## «центр экрана → мяч» и смотрит на него. Считаем в кадре рендера, по
+## видимому положению мяча — как и камера.
+func _update_ball_arrow() -> void:
+	if _ball_arrow == null or _ball == null:
 		return
-	_focus.point = _car.visual_origin().lerp(_ball.visual_origin(), 0.38)
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		_ball_arrow.visible = false
+		return
+	var rect := get_viewport().get_visible_rect()
+	var p := cam.unproject_position(_ball.visual_origin())
+	if not p.is_finite() or rect.grow(-24.0).has_point(p):
+		_ball_arrow.visible = false
+		return
+	var center := rect.get_center()
+	var d := (p - center).normalized()
+	# Пересечение луча из центра с прямоугольником экрана минус отступ.
+	var half := rect.size * 0.5 - Vector2.ONE * BallArrow.MARGIN
+	var k := INF
+	if absf(d.x) > 1e-4:
+		k = minf(k, half.x / absf(d.x))
+	if absf(d.y) > 1e-4:
+		k = minf(k, half.y / absf(d.y))
+	_ball_arrow.dir = d
+	_ball_arrow.at = center + d * k
+	_ball_arrow.visible = true
+	_ball_arrow.queue_redraw()
 
 
 func _on_goal(team: int) -> void:
@@ -776,6 +819,7 @@ func _process(delta: float) -> void:
 	if _ball_marker and _ball != null:
 		_ball_marker.global_position = _ball.visual_origin() \
 				+ Vector3.UP * (bob + 0.4)
+	_update_ball_arrow()
 	if _speed_label and _car != null:
 		_speed_label.text = str(int(_car.speed_kmh()))
 		if _car.weapon != _last_weapon:
@@ -918,3 +962,10 @@ func _setup_hud() -> void:
 
 	_announcer = Announcer.new()
 	canvas.add_child(_announcer)
+
+	# Стрелка к мячу за кадром — поверх всего HUD, на весь экран.
+	_ball_arrow = BallArrow.new()
+	_ball_arrow.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_ball_arrow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ball_arrow.visible = false
+	canvas.add_child(_ball_arrow)

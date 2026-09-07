@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testwallfree"]
+
+[ext_resource type="Script" path="res://tools/test_wallfree.gd" id="1_testwallfree"]
+
+[node name="TestWallFree" type="Node3D"]
+script = ExtResource("1_testwallfree")

@@ -422,8 +422,9 @@ func _build_slot(slot: String) -> void:
 			% [SLOT_NAMES[slot], owned, total, SLOT_EFFECT[slot],
 					prices[0], prices[1], prices[2]], 14, Color.WHITE))
 
-	var icons := HBoxContainer.new()
-	icons.add_theme_constant_override("separation", 4)
+	var icons := HFlowContainer.new()
+	icons.add_theme_constant_override("h_separation", 4)
+	icons.add_theme_constant_override("v_separation", 4)
 	_box.add_child(icons)
 	var real := GameState.tuning_of(_base)
 	for idx in options:
@@ -522,8 +523,9 @@ func _build_part_color(part: String) -> void:
 	row.add_child(_mode_button(none, cur.is_empty(),
 			func() -> void: _set_free(key, "")))
 	for shade in [1, 2, 3]:
-		var line := HBoxContainer.new()
-		line.add_theme_constant_override("separation", 4)
+		var line := HFlowContainer.new()
+		line.add_theme_constant_override("h_separation", 4)
+		line.add_theme_constant_override("v_separation", 4)
 		_box.add_child(line)
 		for color in CarModelLibrary.ARCADE_COLORS:
 			var spec := "%s%d" % [color, shade]
@@ -567,8 +569,9 @@ func _build_paint() -> void:
 	var glitter: bool = int(cfg["glitter"]) == 1 and not _preview.has("glitter")
 	_box.add_child(_label("КРАСКА   12 цветов × 3 оттенка — бесплатно", 14, Color.WHITE))
 	for shade in [1, 2, 3]:
-		var line := HBoxContainer.new()
-		line.add_theme_constant_override("separation", 4)
+		var line := HFlowContainer.new()
+		line.add_theme_constant_override("h_separation", 4)
+		line.add_theme_constant_override("v_separation", 4)
 		_box.add_child(line)
 		for color in CarModelLibrary.ARCADE_COLORS:
 			var paints: Array = CarModelLibrary.ARCADE_PAINTS[color]
@@ -586,8 +589,9 @@ func _build_paint() -> void:
 	_box.add_child(_label("МЕТАЛЛИК  %d из %d   по %s за цвет · зеркальный блик и лак"
 			% [owned, CarModelLibrary.ARCADE_COLORS.size(),
 					_fmt(GameState.item_price(_base, "metal:red"))], 14, Color.WHITE))
-	var mline := HBoxContainer.new()
-	mline.add_theme_constant_override("separation", 4)
+	var mline := HFlowContainer.new()
+	mline.add_theme_constant_override("h_separation", 4)
+	mline.add_theme_constant_override("v_separation", 4)
 	_box.add_child(mline)
 	var shade_now: int = clampi(int(shown["shade"]), 1, 3)
 	for color in CarModelLibrary.ARCADE_COLORS:
@@ -641,8 +645,9 @@ func _build_simple_paint() -> void:
 		return
 	_box.add_child(_label("КРАСКА   %d цветов — бесплатно" % colors.size(),
 			14, Color.WHITE))
-	var line := HBoxContainer.new()
-	line.add_theme_constant_override("separation", 6)
+	var line := HFlowContainer.new()
+	line.add_theme_constant_override("h_separation", 6)
+	line.add_theme_constant_override("v_separation", 6)
 	_box.add_child(line)
 	var current: String = GameState.color_of(_base)
 	for color in colors:
@@ -715,8 +720,9 @@ func _build_stickers() -> void:
 	_box.add_child(_label("НАКЛЕЙКИ  %d из %d   по %s за штуку" % [owned,
 			CarModelLibrary.PART_COUNT, _fmt(GameState.item_price(_base, "sticker:1"))],
 			14, Color.WHITE))
-	var icons := HBoxContainer.new()
-	icons.add_theme_constant_override("separation", 4)
+	var icons := HFlowContainer.new()
+	icons.add_theme_constant_override("h_separation", 4)
+	icons.add_theme_constant_override("v_separation", 4)
 	_box.add_child(icons)
 	for idx in range(0, CarModelLibrary.PART_COUNT + 1):
 		var key := "sticker:%d" % idx
@@ -750,8 +756,9 @@ func _build_fx_row(key: String) -> void:
 	var cur := str(cfg[key])
 	var owned := GameState.items_owned_count(_base, key + ":")
 	# Шапка ряда: подпись + кнопка «без эффекта». Кнопка НЕ в ряду цветов:
-	# 12 клеток по 42 px и так занимают всю ширину панели (как металлик),
-	# с кнопкой ряд был 656 px и панель уезжала за край (снимок tuning_fx).
+	# клетки по 42 px и так занимают всю ширину панели (как металлик).
+	# Сам ряд — HFlowContainer: цветов стало 14, и жёсткий HBox выезжал за
+	# правый край панели и экрана (жалоба 04.09) — теперь перенос по ширине.
 	var head := HBoxContainer.new()
 	head.add_theme_constant_override("separation", 8)
 	_box.add_child(head)
@@ -765,8 +772,9 @@ func _build_fx_row(key: String) -> void:
 	head.add_child(_mode_button(String(row_info[1]), none_on, func() -> void:
 		_preview.erase(key)
 		_set_free(key, "")))
-	var line := HBoxContainer.new()
-	line.add_theme_constant_override("separation", 4)
+	var line := HFlowContainer.new()
+	line.add_theme_constant_override("h_separation", 4)
+	line.add_theme_constant_override("v_separation", 4)
 	_box.add_child(line)
 	for color in CarModelLibrary.FX_COLORS:
 		var item := "%s:%s" % [key, color]

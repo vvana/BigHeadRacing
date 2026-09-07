@@ -85,7 +85,6 @@ var _first_finish_time := -1.0      # когда финишировал перв
 const FINISH_TIMEOUT := 40.0
 
 var _player_marker: Node3D          # стрелка-указатель над своей машиной
-var _rival_markers := {}            # слот → стрелка живого соперника
 var _marker_time := 0.0
 
 var _net_started := false           # сервер: гонка идёт (иначе лобби)
@@ -439,26 +438,21 @@ func _set_car_model(car: Car, id: String) -> void:
 	car.apply_fx(id)
 
 
-## Стрелка-указатель над машиной: своя — зелёная, соперник — оранжевая.
-## По сети стрелки у ВСЕХ соперников, включая ботов: бот не должен
-## отличаться от живого игрока (просьба 01.09).
-func _attach_marker(index: int, rival := false) -> void:
+## Зелёная стрелка-указатель над СВОЕЙ машиной. Над соперниками стрелок
+## нет (04.09): оранжевые конусы над каждой машиной загромождали кадр.
+func _attach_marker(index: int) -> void:
 	# Повторный welcome (hello идёт раз в секунду) вешал вторую стрелку, а
 	# первая, top_level, повисала в воздухе на месте последнего кадра.
 	if index < 0 or index >= _cars.size() or _cars[index].has_marker:
 		return
-	var marker := _build_player_marker(
-			Color(1.0, 0.55, 0.1) if rival else Color(0.15, 0.95, 0.25))
+	var marker := _build_player_marker(Color(0.15, 0.95, 0.25))
 	_cars[index].add_child(marker)
 	# Стрелка top_level, то есть за машиной сама не едет — её ставит _process.
 	# Но первый кадр он ещё не отработал, и стрелка мигнула бы в начале
 	# координат: ставим её на место сразу.
 	marker.global_position = _cars[index].global_position + Vector3.UP * 2.4
 	_cars[index].has_marker = true
-	if rival:
-		_rival_markers[index] = marker
-	else:
-		_player_marker = marker
+	_player_marker = marker
 
 
 ## Боксы с оружием: ПО ОДНОМУ на отметку. Бокс не исчезает, каждый
@@ -697,10 +691,6 @@ func _process(delta: float) -> void:
 	var bob := 2.4 + 0.12 * sin(_marker_time * 3.0)
 	if _player_marker and _car != null:
 		_player_marker.global_position = _car.visual_origin() + Vector3.UP * bob
-	for slot: int in _rival_markers:
-		if slot < _cars.size():
-			var m: Node3D = _rival_markers[slot]
-			m.global_position = _cars[slot].visual_origin() + Vector3.UP * bob
 	if _car and _speed_label:
 		# Строки HUD форматируем только при смене числа: set_text равные
 		# строки и так отсекает, а три формата в кадр делались впустую.
@@ -2303,17 +2293,16 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	var cam := get_node_or_null("IsoCamera") as IsoCamera
 	if cam:
 		cam.target = _car
-	# Маркеры: своя машина зелёная, ВСЕ соперники — оранжевые. Раньше
-	# стрелка была только над живыми игроками, но по просьбе 01.09 бот не
-	# должен отличаться от человека — стрелка над каждым и ничего не выдаёт.
+	# Стрелка — ТОЛЬКО над своей машиной (зелёная). Оранжевые конусы над
+	# соперниками убраны по просьбе 04.09: они загромождали кадр, а чужие
+	# машины и так видны точками на карте.
 	_attach_marker(slot)
 	for rival in _cars.size():
 		if rival == slot:
 			continue
-		_attach_marker(rival, true)
 		if _minimap:
 			_minimap.rivals[rival] = true
-	# На карте — те же цвета: своя точка зелёная, соперники оранжевые.
+	# На карте цвета прежние: своя точка зелёная, соперники оранжевые.
 	if _minimap:
 		_minimap.my_index = slot
 

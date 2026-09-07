@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_checkheadlightfit"]
+
+[ext_resource type="Script" path="res://tools/check_headlight_fit.gd" id="1_chkhl"]
+
+[node name="CheckHeadlightFit" type="Node"]
+script = ExtResource("1_chkhl")
