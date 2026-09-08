@@ -26,6 +26,12 @@ func _place(car: Car, pos: Vector3, look: Vector3) -> void:
 	car.linear_velocity = Vector3.ZERO
 	car.angular_velocity = Vector3.ZERO
 	car.reset_speed_memory()
+	# ТЕЛЕПОРТ: отметку на трассе считаем заново. Без этого track_offset
+	# остаётся от прошлой фазы (он ведётся по НЕПРЕРЫВНОСТИ), и всё, что
+	# меряется от оси — сторона стены для заноса от масла, ведение у
+	# борта — считается от чужой точки трассы. Стенд ловил это как
+	# плавающий FAIL «занос у стены крутит в стену» (08.09).
+	car.reset_track_offset()
 
 
 ## Парковка за картой: alive=false, чтобы автовозврат Main._check_recovery

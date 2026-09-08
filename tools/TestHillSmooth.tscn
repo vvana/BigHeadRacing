@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testhillsmooth"]
+
+[ext_resource type="Script" path="res://tools/test_hill_smooth.gd" id="1_testhillsmooth"]
+
+[node name="TestHillSmooth" type="Node3D"]
+script = ExtResource("1_testhillsmooth")

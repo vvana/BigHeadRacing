@@ -142,7 +142,7 @@ func _physics_process(delta: float) -> void:
 			if car == null or car == shooter \
 					or not car.alive or car.is_ghost():
 				continue
-			var target := car.past_position(lag) if lag > 0.0 \
+			var target := car.past_position(Car.aim_lag(lag, car)) if lag > 0.0 \
 					else car.global_position
 			if _touches_body(prev, global_position, target, car.true_forward()):
 				_hit_car(car)

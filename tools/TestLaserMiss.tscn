@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testlasermiss"]
+
+[ext_resource type="Script" path="res://tools/test_laser_miss.gd" id="1_testlasermiss"]
+
+[node name="TestLaserMiss" type="Node3D"]
+script = ExtResource("1_testlasermiss")

@@ -1947,11 +1947,15 @@ func _client_tick(_delta: float) -> void:
 	# Раньше лазер отматывал на глазок 0.4 c, а снаряды не отматывались
 	# вовсе и «пролетали сквозь». Буфер теперь адаптивный (60-350 мс), так
 	# что догадка не годится — шлём измеренное.
+	# 08.09 (протокол 19): шлём не голый буфер, а Car.net_view_lag() —
+	# буфер ПЛЮС дорога от сервера к нам МИНУС упреждение картинки. Голый
+	# буфер был короче правды: отмотка недотягивала, и лазер, пущенный
+	# ПЕРЕД соперником, всё равно его убивал.
 	var cur := PackedFloat32Array([
 			p.x, p.y, p.z, q.x, q.y, q.z, q.w, v.x, v.y, v.z,
 			float((Engine.get_physics_frames() - _tick_base) % STAMP_WRAP),
 			_car.freeze_left(),
-			Car.net_buf_delay])
+			Car.net_view_lag()])
 	# ИЗБЫТОЧНОСТЬ (протокол 18): к состоянию прикладываем ПРОШЛОЕ. Потери на
 	# канале почти все одиночные (замер 28.08), и пропавший пакет теперь
 	# восстанавливается из следующего — у сервера и, через историю снимка,
@@ -2247,7 +2251,8 @@ func _seat_joiner_at_tail(slot: int) -> void:
 func _rx_pstate(xf: PackedFloat32Array) -> void:
 	if not Net.is_server() or xf.size() < 11:
 		return
-	var slot: int = Net.slot_of_peer.get(multiplayer.get_remote_sender_id(), -1)
+	var sender := multiplayer.get_remote_sender_id()
+	var slot: int = Net.slot_of_peer.get(sender, -1)
 	if slot < 0 or slot >= _cars.size():
 		return
 	var car := _cars[slot]
@@ -2261,6 +2266,10 @@ func _rx_pstate(xf: PackedFloat32Array) -> void:
 	# поздоровался В ЭТОЙ сцене, его состояние устарело — выбрасываем.
 	if not _hello_done.has(slot):
 		return
+	# Полпути владельца до нас — вторая половина его отставания картинки
+	# (первую он доложил сам). Меряем на КАЖДОМ состоянии: ENet держит
+	# оценку RTT свежей, а канал у игрока по ходу заезда меняется.
+	car.net_wire_lag = Net.half_rtt(sender)
 	# ПРОШЛОЕ состояние владельца (протокол 18, числа 14..26) — только если
 	# мы его не видели: потерянный пакет восстанавливается из следующего и
 	# уезжает историей в снимок (см. _pack_state).
@@ -2331,7 +2340,8 @@ func _rx_shove(victim_slot: int, dir: Vector3, closing: float,
 	var attacker := _cars[s]
 	var d_now := attacker.global_position.distance_to(victim.global_position)
 	var d_past := attacker.global_position.distance_to(
-			victim.past_position(attacker.net_shot_lag()))
+			victim.past_position(Car.aim_lag(attacker.net_shot_lag(),
+					victim)))
 	if minf(d_now, d_past) > 8.0:
 		return
 	var now := Time.get_ticks_msec() / 1000.0

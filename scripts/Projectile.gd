@@ -147,7 +147,10 @@ func _physics_process(delta: float) -> void:
 			# чиркнувший по носу или корме, проходил от ЦЕНТРА дальше HIT_R —
 			# «оружие пролетело сквозь» (жалоба 31.08). Три пробы (центр и
 			# ±1.1 м по курсу) с радиусом 1.6 покрывают кузов без зазоров.
-			var center := car.past_position(lag)
+			# Отмотка — С УЧЁТОМ дороги владельца цели до сервера
+			# (Car.aim_lag): стрелявший видел её ещё и на эту половину
+			# позже, чем она себя.
+			var center := car.past_position(Car.aim_lag(lag, car))
 			var f := car.true_forward()
 			for k: float in [0.0, 1.1, -1.1]:
 				if _segment_gap(prev, global_position,
