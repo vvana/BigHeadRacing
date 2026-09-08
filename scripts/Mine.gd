@@ -195,6 +195,11 @@ func _try_trigger(body: Node3D) -> void:
 		if car == null or not car.alive or car.is_ghost():
 			continue
 		var away := car.global_position - global_position
+		# Щит (08.09): защищённую взрыв не трогает — ни гибели, ни толчка.
+		if car.is_shielded():
+			if away.length() <= blast_r:
+				car.shield_block_fx()
+			continue
 		away.y = 0.0
 		var dist := away.length()
 		if dist > blast_r:

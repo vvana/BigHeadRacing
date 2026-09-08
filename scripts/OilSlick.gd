@@ -74,6 +74,9 @@ func _on_body(body: Node3D) -> void:
 		return
 	if car == dropper and _arm > 0.0:
 		return
+	# Щит (08.09): под щитом пятно не действует — ни заноса, ни замедления.
+	if car.is_shielded():
+		return
 	if slow_only:
 		# Ниже II ступени — только замедление, без закрутки.
 		if car.oil_slow_left() <= 0.0:

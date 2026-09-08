@@ -35,12 +35,38 @@ func _physics_process(_d: float) -> void:
 	var me: Car = cars[0]
 	match _frame:
 		250:   # отсчёт прошёл, машины едут; буст — огонь из выхлопа
+			# `--shock` (08.09): турбина III ступени — волна перед носом.
+			if "--shock" in OS.get_cmdline_user_args():
+				var st := PackedByteArray()
+				st.resize(Weapons.COUNT)
+				st[Weapons.BOOST] = 3
+				me.weapon_steps = st
 			me.apply_boost()
 			# `--smoke` (08.09): и дым из-под колёс НА ХОДУ — на стоящей
 			# машине (ShotParticles) зазоры между клубами не видны.
 			me.debug_smoke = "--smoke" in OS.get_cmdline_user_args()
+			# `--shield` (08.09): щит на своей машине — три уровня подряд
+			# (голубой / жёлтый / красный), кадры fx_shield_1..3.png.
+			if "--shield" in OS.get_cmdline_user_args():
+				me.apply_shield(1, 9.0)
 		262:
 			_shot("fx_boost_flame.png")
+			if "--shield" in OS.get_cmdline_user_args():
+				_shot("fx_shield_1.png")
+		264:
+			# Уровень переключаем НА СЛЕДУЮЩЕМ кадре: _shot ждёт отрисовки
+			# асинхронно, и смена уровня сразу за ним попала бы в тот же кадр.
+			if "--shield" in OS.get_cmdline_user_args():
+				me.apply_shield(2, 9.0)
+		268:
+			if "--shield" in OS.get_cmdline_user_args():
+				_shot("fx_shield_2.png")
+		270:
+			if "--shield" in OS.get_cmdline_user_args():
+				me.apply_shield(3, 9.0)
+		274:
+			if "--shield" in OS.get_cmdline_user_args():
+				_shot("fx_shield_3.png")
 		278:   # ракета: вспышка у дула + огненный шлейф
 			me.weapon = Weapons.ROCKET
 			me.use_weapon()

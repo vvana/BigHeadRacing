@@ -569,6 +569,8 @@ func report_weapon_hit(_attacker: Car, victim: Car, kind: int) -> void:
 			_announcer.small("Вас заморозили!", "teal")
 		Weapons.MAGNET:
 			_announcer.small("Вас притянуло магнитом!", "steel")
+		Weapons.SHIELD:
+			_announcer.small("Вас разбил красный щит!", "red")
 
 
 ## Боты применяют подобранное оружие: прицельное — по сопернику в конусе
@@ -599,6 +601,9 @@ func _tick_bot_weapons(delta: float) -> void:
 				car.use_weapon()
 			Weapons.BOOST:
 				car.use_weapon()
+			Weapons.SHIELD:
+				if _nearest_enemy_dist(car, team) < 12.0 or randf() < 0.2:
+					car.use_weapon()
 
 
 func _enemy_cars(team: int) -> Array[Car]:

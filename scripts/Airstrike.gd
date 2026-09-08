@@ -295,7 +295,12 @@ func _physics_process(delta: float) -> void:
 			var d := car.global_position - pos
 			d.y = 0.0
 			if d.length() <= HIT_RADIUS * hit_mult:
-				if not inert:
-					car.notify_hit_by(attacker, Weapons.AIRSTRIKE)
-					car.destroy()
+				if inert:
+					continue
+				# Щит (08.09): ракета сверху разбивается о сферу.
+				if car.is_shielded():
+					car.shield_block_fx()
+					continue
+				car.notify_hit_by(attacker, Weapons.AIRSTRIKE)
+				car.destroy()
 	queue_free()

@@ -189,7 +189,8 @@ func _home(delta: float) -> void:
 	var best_score := INF
 	for node in get_tree().get_nodes_in_group("cars"):
 		var car := node as Car
-		if car == null or car == shooter or not car.alive or car.is_ghost():
+		if car == null or car == shooter or not car.alive or car.is_ghost() \
+				or car.is_shielded():
 			continue
 		var rel := car.global_position - global_position
 		rel.y = 0.0
@@ -276,6 +277,10 @@ func _on_body_entered(body: Node3D) -> void:
 
 
 func _hit_car(car: Car) -> void:
+	# Щит (08.09): снаряд гаснет о сферу, машина цела.
+	if car.is_shielded():
+		car.shield_block_fx()
+		return
 	car.notify_hit_by(shooter, Weapons.FREEZE if freeze else Weapons.ROCKET)
 	if freeze:
 		car.apply_freeze(freeze_time)

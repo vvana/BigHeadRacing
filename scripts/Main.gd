@@ -294,7 +294,7 @@ var _announcer: Announcer
 # Летальное оружие (жертву уничтожает с одного попадания) — только такие
 # попадания считаются «убийствами» для серий и первой крови.
 const LETHAL_KINDS := [Weapons.ROCKET, Weapons.LASER, Weapons.AIRSTRIKE,
-		Weapons.MINE]
+		Weapons.MINE, Weapons.SHIELD]   # щит — только красный (III), см. Car._shield_touch
 const KILL_STREAK_WINDOW := 1.2   # окно серии, с (лазер бьёт всех за кадр)
 var _kill_streak := {}            # атакующий -> {count, time}
 var _first_blood_done := false
@@ -2021,7 +2021,8 @@ func _client_tick(_delta: float) -> void:
 
 
 ## Снимок: на машину 11 float (позиция, кватернион, скорость, метка тика
-## автора состояния — см. net_apply_snapshot) и 4 байта
+## автора состояния — см. net_apply_snapshot) и 6 байт (место в гонке —
+## протокол 13, щит — протокол 21) вслед за четырьмя исходными
 ## (оружие+1, живость с «призраком», значок эффекта+2, остаток заморозки
 ## в десятых секунды). Кватернион, а не базис: 4 числа вместо 9 и
 ## корректная интерполяция поворота.
@@ -2087,6 +2088,9 @@ func _pack_state() -> Array:
 		# 28.08: «я еду первым, а на его экране — вторым»). У сервера все
 		# положения одного времени, поэтому места раздаёт он.
 		flags.append(clampi(_place_of(ci), 0, 255))
+		# ЩИТ (протокол 21): уровень и остаток — по нему марионетка рисует
+		# сферу нужного цвета и знает, что оружие о неё гаснет.
+		flags.append(c.shield_byte())
 	_xf_prev = xf
 	return [xf, flags, hist]
 
@@ -2811,8 +2815,8 @@ func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray,
 	_last_state_time = now
 	for i in _cars.size():
 		var o := i * 11
-		var f := i * 5
-		if o + 10 >= xf.size() or f + 4 >= flags.size():
+		var f := i * 6
+		if o + 10 >= xf.size() or f + 5 >= flags.size():
 			break
 		# Место — с сервера: у него все машины одного времени (см. _pack_state).
 		if i < _net_place.size():
@@ -2840,6 +2844,8 @@ func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray,
 			# ниоткуда не берётся. Своей машины это не касается — она
 			# клиент-авторитетна, её замораживает _rx_fx.
 			c.net_set_freeze(float(flags[f + 3]) * 0.1)
+			# Щит соперника (протокол 21): сфера и её цвет — по снимку.
+			c.net_set_shield(int(flags[f + 5]))
 		var w := int(flags[f]) - 1
 		# ПОДБОР БОКСА виден и на клиенте (03.09): раньше оружие менялось в
 		# снимке МОЛЧА — ни вспышки, ни искр, и игрок не понимал, взял ли
@@ -3014,6 +3020,11 @@ func _rx_fx(kind: int, args: Array) -> void:
 			_car.apply_oil_slip()
 		Car.NetFx.OIL_SLOW:
 			_car.apply_oil_slow()
+		Car.NetFx.SHIELD:
+			if args.size() >= 2:
+				_car.apply_shield(int(args[0]), float(args[1]))
+		Car.NetFx.SHIELD_SLOW:
+			_car.apply_shield_slow()
 		Car.NetFx.BOOST:
 			_car.apply_boost(args.size() >= 1 and args[0])
 		Car.NetFx.SLOW:
@@ -3289,6 +3300,13 @@ func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3,
 			FlashFx.spawn(self, pos + Vector3.UP * 0.5, 1.2,
 					Color(0.3, 0.9, 1.0))
 			FxKit.ring(self, pos, 2.2, Color(0.3, 0.9, 1.0))
+		Weapons.SHIELD:
+			# Сама сфера у марионетки берётся из снимка (net_set_shield), у
+			# своей машины — из NetFx.SHIELD; здесь только вспышка включения
+			# цветом уровня (0/I — голубой, II — жёлтый, III — красный).
+			var sc: Color = Car.SHIELD_COLORS[clampi(maxi(1, step), 0, 3)]
+			FlashFx.spawn(self, pos + Vector3.UP * 0.5, 1.6, sc)
+			FxKit.ring(self, pos, 3.0, sc)
 
 
 ## Обновить экран лобби: какие слоты заняты живыми игроками и на каких

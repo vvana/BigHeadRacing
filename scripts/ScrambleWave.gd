@@ -229,6 +229,11 @@ func _on_body_entered(_body: Node3D) -> void:
 
 
 func _hit_car(car: Car) -> void:
+	# Щит (08.09): волна гаснет о сферу (hit_any у вызывающего — да),
+	# управление цело.
+	if car.is_shielded():
+		car.shield_block_fx()
+		return
 	car.notify_hit_by(shooter, Weapons.SCRAMBLE)
 	car.apply_scramble(stun_time)
 

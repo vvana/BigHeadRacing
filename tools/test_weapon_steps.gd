@@ -197,7 +197,17 @@ func _physics_process(_d: float) -> void:
 			_fire(attacker, Weapons.BOOST, 2)
 			var b2: float = attacker._boost_time
 			_ok["буст II дольше"] = b2 > b0 * 1.4
+			# Волна перед носом (08.09): на II ступени её нет, на III — есть.
+			attacker._tick_effects(0.016)
+			_ok["буст II: волны перед носом нет"] = attacker._shock_fx != null \
+					and not attacker._shock_fx.visible
+			_fire(attacker, Weapons.BOOST, 3)
+			attacker._tick_effects(0.016)
+			_ok["буст III: волна перед носом"] = attacker._shock_fx != null \
+					and attacker._shock_fx.visible
 			attacker._boost_time = 0.0
+			attacker._tick_effects(0.016)
+			_ok["волна гаснет с бустом"] = not attacker._shock_fx.visible
 			# МАГНИТ II: жертва впереди теряет всю скорость (её несёт назад).
 			_place(v1, _base + _tan * 8.0, _tan)
 			v1.linear_velocity = _tan * 14.0

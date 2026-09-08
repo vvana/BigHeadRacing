@@ -1,7 +1,7 @@
 class_name WeaponShopPanel
 extends PanelContainer
 ## МАГАЗИН ОРУЖИЯ в гараже (08.09): на месте доски «АВТОПАРК», как
-## TuningPanel. Девять видов, у каждого три ступени I/II/III — покупаются
+## TuningPanel. Десять видов, у каждого три ступени I/II/III — покупаются
 ## ПО ПОРЯДКУ за монеты, каждая открывается уровнем профиля (таблица —
 ## Weapons.STEP_LEVELS / STEP_PRICES, экономика — ЭКОНОМИКА.md разд. 7).
 ## Что даёт ступень — Weapons.STEP_DESC. Это единственная прокачка,
@@ -14,7 +14,7 @@ signal closed
 ## экономики: раньше и дешевле → позже и дороже).
 const ORDER := [
 	Weapons.MINE, Weapons.OIL, Weapons.BOOST,
-	Weapons.MAGNET, Weapons.FREEZE, Weapons.SCRAMBLE,
+	Weapons.MAGNET, Weapons.FREEZE, Weapons.SCRAMBLE, Weapons.SHIELD,
 	Weapons.ROCKET, Weapons.LASER, Weapons.AIRSTRIKE,
 ]
 const ICON := 46

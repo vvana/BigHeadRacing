@@ -1,12 +1,12 @@
 extends Node
 ## Фоновая музыка (autoload «Music»). В гараже играет свой трек, в заезде
-## и в футболе — случайный из трёх; трек меняется короткой склейкой
+## и в футболе — случайный из четырёх; трек меняется короткой склейкой
 ## (затухание FADE секунд), autoload переживает смену сцены и не начинает
 ## музыку заново на каждом экране.
 ##
 ## Файлы — assets/audio (mp3, лицензия Pixabay: menu — «The Mountain,
-## action rock»; гоночные — два heavy metal от strawberry_candy и
-## energetic indie rock от alexgrohl).
+## action rock»; гоночные — два heavy metal от strawberry_candy,
+## «Metal Dark Matter» от alexgrohl и «Adrenaline Dose» от ivan_luzan).
 ##
 ## На выделенном сервере и в headless-стендах молчим: звукового устройства
 ## там нет, а mp3 всё равно пришлось бы декодировать каждый кадр.
@@ -15,7 +15,8 @@ const MENU := "res://assets/audio/menu.mp3"
 const RACE: Array[String] = [
 	"res://assets/audio/race_adrenaline.mp3",
 	"res://assets/audio/race_force.mp3",
-	"res://assets/audio/race_jump.mp3",
+	"res://assets/audio/race_dark_matter.mp3",
+	"res://assets/audio/race_dose.mp3",
 ]
 ## Музыка — фон: поверх неё ещё поедут анонсы и взрывы.
 const VOLUME_DB := -11.0

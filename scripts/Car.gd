@@ -131,8 +131,24 @@ var net_fire := false           # сервер: клиент просил выс
 ## Эффекты оружия, пересылаемые сервером владельцу машины (Main._rx_fx):
 ## физику эффекта (толчок, разворот, телепорт) применяет клиент-владелец.
 enum NetFx { DESTROY, BLAST, FREEZE, OIL, BOOST, SLOW, SHOVE, SCRAMBLE,
-	OIL_SLOW }   # OIL_SLOW — масло ниже II ступени: только замедление
+	OIL_SLOW,    # масло ниже II ступени: только замедление
+	SHIELD,      # щит включён: [уровень, длительность] (см. apply_shield)
+	SHIELD_SLOW }   # коснулся жёлтого щита II: потеря скорости
 var _oil_slow_time := 0.0       # замедление от масла без заноса (ступени < II)
+## ЩИТ (бонус Weapons.SHIELD, 08.09): сфера вокруг машины, пока
+## _shield_time > 0 чужое оружие и бонусы на машину не действуют (см.
+## is_shielded и проверки в узлах оружия). Уровень щита — по ступени
+## владельца: 1 — только защита (голубой), 2 — коснувшийся соперник теряет
+## скорость (жёлтый), 3 — коснувшийся соперник уничтожен (красный).
+## Марионетке по сети уровень и остаток привозит снимок (net_set_shield).
+var _shield_time := 0.0
+var _shield_level := 1
+var _shield_age := 0.0          # для пульсации сферы
+var _shield_mesh: MeshInstance3D = null
+var _shield_mat: StandardMaterial3D = null
+var _shield_base := Transform3D.IDENTITY   # сфера в осях машины (top_level)
+const SHIELD_COLORS := [Color(0.35, 0.75, 1.0), Color(0.35, 0.75, 1.0),
+		Color(1.0, 0.82, 0.2), Color(1.0, 0.2, 0.15)]
 var has_marker := false         # над машиной висит стрелка-указатель
 ## Отметка машины на оси трассы, м. Считается с оглядкой на предыдущую
 ## (TrackBuilder.closest_offset_near): улетевшая за ограждение машина
@@ -268,6 +284,10 @@ var _skid_trails := {}          # пивот заднего колеса -> те
 var _boost_flame: CPUParticles3D        # огонь из выхлопа при ускорении
 var _boost_flame_base := Transform3D.IDENTITY   # сопло в осях машины (top_level)
 var _boost_from_pad := false    # текущий буст — с плиты (см. apply_boost)
+var _shock_fx: Node3D           # волна перед носом — III ступень буста (_build_shock_fx)
+var _shock_rings: Array[MeshInstance3D] = []   # кольца ударной волны, в противофазе
+var _shock_cone: MeshInstance3D                # конус уплотнения остриём вперёд
+var _shock_phase := 0.0         # ход первого кольца, 0..SHOCK_PERIOD
 var _wheel_pivots: Array[Node3D] = []
 var _steer_visual := 0.0
 var _ai_fire_cd := 2.0
@@ -309,8 +329,10 @@ func _ready() -> void:
 	if Net.is_server():
 		return
 	_build_ice_shell()
+	_build_shield()
 	_build_smoke()
 	_build_boost_flame()
+	_build_shock_fx()
 	_build_status_icon()
 	# Фары — только на тёмных трассах: ночной город и космос (track
 	# ставит Main ДО add_child, как и для пыли на песке).
@@ -514,7 +536,8 @@ static func _emissive_anchor(model: Node3D, model_xf: Transform3D) -> Dictionary
 		var item: Array = stack.pop_back()
 		var node: Node3D = item[0]
 		var xf: Transform3D = item[1]
-		if node.has_meta("wheel_radius") or CarModelLibrary.is_tuning_part(node):
+		if node.has_meta("wheel_radius") or CarModelLibrary.is_tuning_part(node) \
+				or _is_decoration(node):
 			continue
 		for child in node.get_children():
 			if child is Node3D:
@@ -645,6 +668,18 @@ static func _front_z(pts: PackedVector3Array, x_at: float, x_tol: float,
 ## Вершины модели в осях МАШИНЫ, без колёс (колесо в пивоте с мета
 ## wheel_radius — его целиком пропускаем, иначе «нос» ловит переднее
 ## колесо и лампы уезжают вниз и вбок).
+## Украшения, которые НЕ кузов и в замер фар не входят (08.09): неоновая
+## подсветка — квад 2.7 × 4.3 м ПОД машиной (кузов 3.2 м), он выступал на
+## полметра перед бампером, «нос» считался по нему на высоте пола, и лампы
+## Малыша с неоном лежали на дороге перед машиной («фары по-прежнему
+## впереди машины»); дубль кузова с полосой ("<кузов>_line") — тот же
+## кузов, вынесенный по нормали, кромку он лишь чуть сдвигает.
+static func _is_decoration(node: Node) -> bool:
+	var n := String(node.name)
+	return n == "Underglow" or n == "Glow" or n == "NeonLight" \
+			or n.ends_with("_line")
+
+
 static func model_points(model: Node3D, model_xf: Transform3D
 		) -> PackedVector3Array:
 	var out := PackedVector3Array()
@@ -653,7 +688,8 @@ static func model_points(model: Node3D, model_xf: Transform3D
 		var item: Array = stack.pop_back()
 		var node: Node3D = item[0]
 		var xf: Transform3D = item[1]
-		if node.has_meta("wheel_radius") or CarModelLibrary.is_tuning_part(node):
+		if node.has_meta("wheel_radius") or CarModelLibrary.is_tuning_part(node) \
+				or _is_decoration(node):
 			continue
 		var mi := node as MeshInstance3D
 		if mi != null and mi.mesh != null:
@@ -715,6 +751,48 @@ func _build_ice_shell() -> void:
 	add_child(_ice_shell)
 
 
+## Сфера ЩИТА (08.09): полупрозрачный пузырь вокруг машины, виден, пока
+## действует щит; цвет — по уровню (SHIELD_COLORS, см. _tick_shield).
+## Как скорлупа льда — top_level и едет с картинкой машины (_process).
+func _build_shield() -> void:
+	_shield_mesh = MeshInstance3D.new()
+	_shield_mesh.name = "Shield"
+	var sphere := SphereMesh.new()
+	sphere.radius = 2.3
+	sphere.height = 4.6
+	sphere.radial_segments = 32
+	sphere.rings = 16
+	_shield_mesh.mesh = sphere
+	_shield_mesh.position.y = 0.55
+	# Кузов 3.2 × 1.7 м: пузырь чуть вытянут по курсу и приплюснут.
+	_shield_mesh.scale = Vector3(0.95, 0.72, 1.15)
+	_shield_base = _shield_mesh.transform
+	_shield_mesh.top_level = true
+	_shield_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_shield_mat = StandardMaterial3D.new()
+	_shield_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_shield_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_shield_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_shield_mat.emission_enabled = true
+	_shield_mat.emission_energy_multiplier = 1.2
+	_shield_mesh.material_override = _shield_mat
+	_shield_mesh.visible = false
+	add_child(_shield_mesh)
+	_tick_shield_look()
+
+
+## Цвет и прозрачность сферы по уровню щита и остатку времени: пульсирует
+## и гаснет в последние полсекунды.
+func _tick_shield_look() -> void:
+	if _shield_mat == null:
+		return
+	var c: Color = SHIELD_COLORS[clampi(_shield_level, 0, 3)]
+	var pulse := 0.22 + 0.08 * sin(_shield_age * 9.0)
+	var fade: float = clampf(_shield_time / 0.5, 0.0, 1.0)
+	_shield_mat.albedo_color = Color(c.r, c.g, c.b, pulse * fade)
+	_shield_mat.emission = c * (0.6 + 0.4 * fade)
+
+
 ## Дым из-под задних колёс — виден при сильном заносе (ручник в повороте,
 ## масло). Два CPUParticles3D у задних колёс; включаются в _physics_process.
 ## Клуб — билборд с мультяшной текстурой облачка (Epic Toon FX, атлас
@@ -722,6 +800,7 @@ func _build_ice_shell() -> void:
 ## Случайный поворот и рост клуба со временем жизни.
 const SMOKE_TEX: Texture2D = preload("res://assets/fx/smoke_cloud_2x2.png")
 const FIRE_TEX: Texture2D = preload("res://assets/fx/fire_6x3.png")
+const RING_TEX: Texture2D = preload("res://assets/fx/ring_shockwave.png")
 
 
 func _build_smoke() -> void:
@@ -938,6 +1017,90 @@ func _build_boost_flame() -> void:
 	# За картинкой машины, а не за телом — ставится в _process.
 	p.top_level = true
 	_boost_flame = p
+
+
+## Волна уплотнения перед носом — только III ступень турбины (08.09:
+## «эффект, типа перед носом машины образуется волна как при переходе
+## на гиперзвук»). Как конус Прандтля-Глоерта у самолёта: полупрозрачный
+## белёсый конус остриём вперёд, и сквозь него от носа назад раз за
+## разом уходят растущие кольца ударной волны (ring_shockwave из Epic
+## Toon FX). Смешивание MIX, не аддитивное: белая волна на светлом
+## полотне (песок, снег) аддитивно пропала бы вовсе. Узел top_level и,
+## как пламя и фары, едет за КАРТИНКОЙ машины (см. _process); включает и
+## гонит кольца _tick_effects. С плиты-ускорителя волны нет — плита не
+## оружие игрока (см. apply_boost).
+const SHOCK_PERIOD := 0.42   # с — одно кольцо от носа до растворения
+const SHOCK_NOSE := Vector3(0.0, 0.55, -1.7)   # нос: кузова пака 3.2 м (-1.6)
+
+func _build_shock_fx() -> void:
+	var root := Node3D.new()
+	root.name = "ShockWave"
+	root.visible = false
+	add_child(root)
+	root.top_level = true
+	# Конус: CylinderMesh стоит вдоль Y, остриё (top_radius 0) — вверх;
+	# поворот на -90° по X кладёт остриё на -Z, вперёд по ходу.
+	var cone := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = 0.0
+	cm.bottom_radius = 0.6
+	cm.height = 0.9
+	cm.radial_segments = 24
+	cm.rings = 1
+	cm.cap_bottom = false
+	var cmat := StandardMaterial3D.new()
+	cmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	cmat.blend_mode = BaseMaterial3D.BLEND_MODE_MIX
+	cmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	cmat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	cmat.albedo_color = Color(0.8, 0.95, 1.0, 0.2)
+	cm.material = cmat
+	cone.mesh = cm
+	cone.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# Весь конус ПЕРЕД машиной: основание на плоскости бампера, остриё в
+	# 0.9 м впереди — машина «толкает» волну носом. Первый вариант (база
+	# 0.95 м, конус до середины капота) на снимке читался куполом над
+	# кабиной, а не волной перед носом.
+	cone.position = SHOCK_NOSE + Vector3(0.0, 0.0, 0.1 - cm.height * 0.5)
+	cone.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
+	root.add_child(cone)
+	_shock_cone = cone
+	# Два кольца в противофазе — волна идёт непрерывно, без пауз.
+	for i in 2:
+		var ring := MeshInstance3D.new()
+		var quad := QuadMesh.new()
+		quad.size = Vector2(2.0, 2.0)   # квад в XY — поперёк хода
+		var mat := StandardMaterial3D.new()
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.blend_mode = BaseMaterial3D.BLEND_MODE_MIX
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		mat.albedo_texture = RING_TEX
+		mat.albedo_color = Color(0.85, 0.96, 1.0, 0.0)
+		quad.material = mat
+		ring.mesh = quad
+		ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		ring.position = SHOCK_NOSE
+		root.add_child(ring)
+		_shock_rings.append(ring)
+	_shock_fx = root
+
+
+## Гонит волну перед носом: кольца от носа назад, растут и тают; конус
+## слегка дышит. Вызывается из _tick_effects, пока волна включена.
+func _tick_shock(delta: float) -> void:
+	_shock_phase = fmod(_shock_phase + delta, SHOCK_PERIOD)
+	for i in _shock_rings.size():
+		var t := fmod(_shock_phase / SHOCK_PERIOD + 0.5 * i, 1.0)
+		var ring := _shock_rings[i]
+		# Кольцо рождается у острия конуса полуметровым, за жизнь растёт до
+		# 1.8 м и доходит до бампера/капота — волна идёт по конусу назад.
+		ring.scale = Vector3.ONE * (0.3 + 0.6 * t)
+		ring.position = SHOCK_NOSE + Vector3(0.0, 0.05 * t, -0.8 + 1.2 * t)
+		var mat := (ring.mesh as QuadMesh).material as StandardMaterial3D
+		mat.albedo_color.a = (1.0 - t) * (1.0 - 0.5 * t)
+	var cmat := (_shock_cone.mesh as CylinderMesh).material as StandardMaterial3D
+	cmat.albedo_color.a = 0.2 + 0.06 * sin(_shock_phase / SHOCK_PERIOD * TAU)
 
 
 ## Подвинуть отметку на оси вслед за машиной. Раз за кадр физики: её просит
@@ -1234,6 +1397,14 @@ func _tick_effects(delta: float) -> void:
 	_slip_time = maxf(0.0, _slip_time - delta)
 	_oil_slow_time = maxf(0.0, _oil_slow_time - delta)
 	_scramble_time = maxf(0.0, _scramble_time - delta)
+	_shield_time = maxf(0.0, _shield_time - delta)
+	_shield_age += delta
+	if _shield_mesh:
+		_shield_mesh.visible = alive and _shield_time > 0.0
+	# Сервер: марионетка (машина живого игрока) со щитом II/III сама
+	# _bounce_off_cars не считает — касания ищем здесь (см. _shield_sweep).
+	if Net.is_server() and net_role == NetRole.PUPPET and shield_level() >= 2:
+		_shield_sweep()
 	# Лазер жжёт, пока виден луч: коридор перепроверяется каждый тик от
 	# ТЕКУЩЕГО носа (луч едет со стрелявшим — LaserFx._process делает то же
 	# с картинкой). Взводится только там, где применяли оружие (сервер или
@@ -1263,6 +1434,17 @@ func _tick_effects(delta: float) -> void:
 		_boost_flame.emitting = alive and (_boost_time > 0.0
 				or (_status_time > 0.0 and _status_kind == Weapons.BOOST)
 				or debug_smoke)
+	# Волна перед носом — только турбина III ступени (у марионетки ступени
+	# хозяина приезжают в hello, а признак буста — тем же значком).
+	if _shock_fx:
+		var shock_on := alive and not _boost_from_pad \
+				and wstep(Weapons.BOOST) >= 3 and (_boost_time > 0.0
+				or (_status_time > 0.0 and _status_kind == Weapons.BOOST))
+		_shock_fx.visible = shock_on
+		if shock_on:
+			_tick_shock(delta)
+		else:
+			_shock_phase = 0.0
 	if _ghost_time > 0.0:
 		_ghost_age += delta
 		_ghost_time -= delta
@@ -1311,11 +1493,17 @@ func _process(delta: float) -> void:
 	# на теле она на ходу дрожала бы относительно кузова на шаг физики.
 	if _boost_flame != null:
 		_boost_flame.global_transform = xf * _boost_flame_base
+	if _shock_fx != null:
+		_shock_fx.global_transform = xf
 	# Скорлупа льда — тоже с картинкой, а не с телом: ребёнком тела она
 	# отставала от собственного кузова на шаг физики и ехала «отдельно
 	# от машины» (жалоба 07.09).
 	if _ice_shell != null and _ice_shell.visible:
 		_ice_shell.global_transform = xf * _ice_shell_base
+	# Сфера щита — там же, за картинкой, и с пульсацией цвета.
+	if _shield_mesh != null and _shield_mesh.visible:
+		_shield_mesh.global_transform = xf * _shield_base
+		_tick_shield_look()
 	_animate_wheels(delta)
 	_tick_status_icon(delta)
 	if _respawn_wait > 0.0:
@@ -1429,9 +1617,17 @@ func _bounce_off_cars() -> void:
 					global_position += away_o * minf(overlap, step_out)
 		# Заморозка заразна: коснулся «синей» машины — перенял остаток
 		# её дебафа (и дальше передаёшь сам).
-		if other._freeze_time > 0.2 and _freeze_time <= 0.0:
+		if other._freeze_time > 0.2 and _freeze_time <= 0.0 \
+				and not is_shielded():
 			_freeze_time = other._freeze_time
 			FxKit.snow_burst(get_parent(), global_position + Vector3.UP * 0.6)
+		# МОЙ щит II/III бьёт коснувшегося (08.09). Применяет ДЕРЖАТЕЛЬ щита
+		# к сопернику, жертва себя не трогает — иначе оффлайн удар был бы
+		# двойным. На клиенте не считаем вовсе: попадания решает сервер
+		# (у него бот-держатель ловит марионеток здесь же, держатель-
+		# марионетка — в _shield_sweep).
+		if not Net.is_client() and _shield_touch(other):
+			continue
 		var away := global_position - other.global_position
 		away.y = 0.0
 		var dist := away.length()
@@ -1922,6 +2118,34 @@ static func net_reset_buf_delay() -> void:
 ## данных на дыру. Кончился буфер совсем — короткая экстраполяция и, если
 ## дыра затянулась, честное замирание (см. историю в _follow_snapshot:
 ## далеко угадывать хуже, чем стоять).
+## Точка марионетки, зажатая внутри ограждений трассы (см. _follow_buffered).
+## Без трассы или без стен (песок, футбол) — как есть. Не путать с
+## _clamp_inside_walls() — страховкой ФИЗИКИ тела ниже.
+func _clamp_view_inside_walls(p: Vector3) -> Vector3:
+	if track == null or not track.has_walls or track._curve == null:
+		return p
+	var length: float = track._curve.get_baked_length()
+	if length <= 0.0:
+		return p
+	var off := fposmod(track_offset, length)
+	var axis: Vector3 = track._curve.sample_baked(off)
+	var right: Vector3 = track.right_at_offset(off)
+	right.y = 0.0
+	if right.length_squared() < 1e-6:
+		return p
+	right = right.normalized()
+	var rel := p - axis
+	rel.y = 0.0
+	var side := rel.dot(right)
+	# Полкузова 0.85 м плюс щепотка: картинка бортом касается стены, но
+	# не входит в неё.
+	var limit: float = track.half_width_at_offset(off) \
+			- TrackBuilder.WALL_THICKNESS * 0.5 - 0.95
+	if limit <= 0.0 or absf(side) <= limit:
+		return p
+	return p - right * (side - signf(side) * limit)
+
+
 func _follow_buffered(delta: float) -> void:
 	if _play_t < 0.0:
 		_play_t = _buf_t - net_buf_delay
@@ -1993,6 +2217,15 @@ func _follow_buffered(delta: float) -> void:
 			span_t = 2.0 * sin(ang * 0.5) / _lead_yaw
 		target += _lead_vel.rotated(Vector3.UP, ang * 0.5) * span_t
 		target_rot = Quaternion(Vector3.UP, ang) * target_rot
+	# ВНУТРИ ОГРАЖДЕНИЙ (08.09): упреждение и догадка по скорости на пустом
+	# буфере в повороте уводят цель НАРУЖУ, за борт, а следующий снимок
+	# возвращает её обратно — «боты и соперник по сети на поворотах частично
+	# вылетают за ограждения и сразу возвращаются». Настоящая машина за
+	# борт не проходит (её держит физика у автора состояния), так что цель
+	# картинки зажимаем в полотне: боковое смещение от оси не больше
+	# полуширины минус стенка и полкузова. Отметка на оси — по
+	# непрерывности (track_offset), как у всех расчётов от полотна.
+	target = _clamp_view_inside_walls(target)
 	# Тело к цели: телепорт при большой невязке, иначе быстрая подтяжка
 	# (запись сама гладкая — сглаживание лишь прячет стыки после недоборов)
 	# и страховка «назад против хода не едем».
@@ -2048,6 +2281,8 @@ func net_make_puppet() -> void:
 		p.emitting = false
 	if _boost_flame:
 		_boost_flame.emitting = false
+	if _shock_fx:
+		_shock_fx.visible = false
 
 
 ## Твёрдость к ДРУГИМ МАШИНАМ в решателе физики (дорога и стены не
@@ -2152,6 +2387,11 @@ func _ai_control(delta: float, on_ground: bool) -> void:
 			Weapons.BOOST:
 				if throttle > 0.5:
 					use_weapon()
+			Weapons.SHIELD:
+				# Щит — когда соперник рядом (есть от кого закрываться и
+				# кого задеть), иначе изредка просто так.
+				if _enemy_near(10.0) or randf() < 0.2:
+					use_weapon()
 
 
 ## Сколько ИИ можно ехать прямо сейчас, чтобы вписаться во всё, что впереди.
@@ -2219,8 +2459,9 @@ func _drive(
 	elif _oil_slow_time > 0.0:
 		fx_mult = 0.6   # масло без заноса (ступень < II): только тише
 	elif _boost_time > 0.0:
-		# III ступень ускорения — сильнее (спецификация игрока 04.09).
-		fx_mult = 1.65 if wstep(Weapons.BOOST) >= 3 else 1.45
+		# III ступень ускорения — сильнее (спецификация игрока 04.09;
+		# 08.09: 1.65 → 1.55, «третий уровень чуть поменьше»).
+		fx_mult = 1.55 if wstep(Weapons.BOOST) >= 3 else 1.45
 	# Рыхлый песок за полотном (песчаная трасса): тяга и потолок скорости
 	# заметно ниже — срезать по песку невыгодно, ограждений там нет.
 	# 0.55 -> 0.40 (31.08: «пески нужно сделать более замедляющими»).
@@ -2817,6 +3058,12 @@ func use_weapon() -> void:
 					Color(0.3, 0.9, 1.0))
 			FxKit.ring(get_parent(), global_position, 2.2,
 					Color(0.3, 0.9, 1.0))
+		Weapons.SHIELD:
+			apply_shield()
+			var sc: Color = SHIELD_COLORS[clampi(_shield_level, 0, 3)]
+			FlashFx.spawn(get_parent(),
+					global_position + Vector3.UP * 0.5, 1.6, sc)
+			FxKit.ring(get_parent(), global_position, 3.0, sc)
 	var _wd := Time.get_ticks_msec() - _wd0
 	if _wd > 100:
 		print("[slow] use_weapon(%d) занял %d мс" % [kind, _wd])
@@ -2863,6 +3110,10 @@ func _use_magnet() -> void:
 	for node in get_tree().get_nodes_in_group("cars"):
 		var other := node as Car
 		if other == self or not other.alive or other.is_ghost():
+			continue
+		# Щит (08.09): магнит защищённого не тянет и не осаживает.
+		if other.is_shielded():
+			other.shield_block_fx()
 			continue
 		# ДАЛЬНОСТЬ мерим по картине стрелявшего (он видит соперников с
 		# отставанием своего буфера, протокол 13), а НАПРАВЛЕНИЕ рывка — по
@@ -3060,6 +3311,10 @@ func _laser_sweep(fwd: Vector3) -> void:
 			if (to - fwd * along).length() <= half:
 				hit = true
 				break
+		if hit and other.is_shielded():
+			# Щит (08.09): луч упирается в сферу — вспышка, машина цела.
+			other.shield_block_fx()
+			continue
 		if hit:
 			other.notify_hit_by(self, Weapons.LASER)
 			# Разряд на жертве — луч «прошивает» её электричеством.
@@ -3102,6 +3357,12 @@ func _use_airstrike() -> void:
 func destroy() -> void:
 	if not alive or is_ghost():
 		return
+	# Под щитом машина не гибнет (08.09): узлы оружия сами обходят
+	# защищённых, это страховка на путь через сеть (эффект владельцу
+	# долетает позже, чем у него самого включился щит).
+	if is_shielded():
+		shield_block_fx()
+		return
 	var _wd0 := Time.get_ticks_msec()
 	_forward_fx(NetFx.DESTROY)
 	# И ВСЕМ ОСТАЛЬНЫМ — чтобы взрыв увидел не только владелец машины.
@@ -3136,6 +3397,7 @@ func destroy() -> void:
 	_oil_slow_time = 0.0
 	_boost_time = 0.0
 	_scramble_time = 0.0
+	_shield_time = 0.0
 	# Свой лазер гаснет: машина уходит с трассы до появления, и добивать
 	# соперников «хвостом» луча было бы нечестно.
 	_laser_left = 0.0
@@ -3319,7 +3581,9 @@ func _tick_status_icon(delta: float) -> void:
 	var kind := status_icon_kind()
 	# Разовый эффект приоритетнее буста (см. status_icon_kind) — остаток
 	# времени берём той же веткой.
-	var left := _status_time if _status_time > 0.0 else _boost_time
+	var left := _status_time
+	if left <= 0.0:
+		left = _shield_time if kind == Weapons.SHIELD else _boost_time
 	if kind < 0:
 		_status_icon.visible = false
 		_status_shown = -2
@@ -3358,6 +3622,10 @@ func status_icon_kind() -> int:
 		return -1
 	if _status_time > 0.0:
 		return _status_kind
+	# Щит важнее буста: он же и пакуется в снимок значком (сфера
+	# марионетки берёт уровень и остаток отдельным байтом, net_set_shield).
+	if _shield_time > 0.0:
+		return Weapons.SHIELD
 	if _boost_time > 0.0 and not _boost_from_pad:
 		return Weapons.BOOST
 	return -1
@@ -3396,7 +3664,7 @@ func apply_boost(from_pad := false) -> void:
 ## (_recent_hspeed) срезается вслед — иначе защита приземления или ведение
 ## у стены вернули бы срезанное обратно.
 func apply_speed_cut(factor: float) -> void:
-	if not alive:
+	if not alive or is_shielded():
 		return
 	_forward_fx(NetFx.SLOW, [factor])
 	linear_velocity.x *= factor
@@ -3407,7 +3675,7 @@ func apply_speed_cut(factor: float) -> void:
 ## Заморозка: машина «синеет» и едет медленнее. Дебаф ЗАРАЗЕН — при
 ## контакте машин передаётся остаток времени (см. _bounce_off_cars).
 func apply_freeze(duration: float) -> void:
-	if not alive:
+	if not alive or is_shielded():
 		return
 	_forward_fx(NetFx.FREEZE, [duration])
 	_freeze_time = maxf(_freeze_time, duration)
@@ -3420,7 +3688,7 @@ func apply_freeze(duration: float) -> void:
 ## По сети машина живого игрока клиент-авторитетна: рулит её ВЛАДЕЛЕЦ, и
 ## без пересылки (NetFx.SCRAMBLE) эффекта он бы не почувствовал вовсе.
 func apply_scramble(duration: float) -> void:
-	if not alive:
+	if not alive or is_shielded():
 		return
 	_forward_fx(NetFx.SCRAMBLE, [duration])
 	_scramble_time = maxf(_scramble_time, duration)
@@ -3439,7 +3707,7 @@ func scramble_left() -> float:
 ## потери сцепления. По сети — владельцу (NetFx.OIL_SLOW), как занос.
 func apply_oil_slow() -> void:
 	const OIL_SLOW_TIME := 1.8
-	if not alive or _oil_slow_time > 0.0:
+	if not alive or _oil_slow_time > 0.0 or is_shielded():
 		return
 	_forward_fx(NetFx.OIL_SLOW)
 	_oil_slow_time = OIL_SLOW_TIME
@@ -3451,6 +3719,128 @@ func apply_oil_slow() -> void:
 
 func oil_slow_left() -> float:
 	return _oil_slow_time
+
+
+# ════════════════════ ЩИТ (бонус Weapons.SHIELD, 08.09) ════════════════════
+## Включить щит. Уровень — по ступени щита у хозяина (0 и I — 1: только
+## защита; II — 2: коснувшийся теряет скорость; III — 3: коснувшийся
+## уничтожен), длительность Weapons.SHIELD_TIME (I ступень — на 15 %
+## дольше). По сети применяет сервер на марионетке и пересылает владельцу
+## (NetFx.SHIELD с готовыми уровнем и длительностью) — как буст: своя
+## машина клиент-авторитетна, и без пересылки владелец щита не увидел бы.
+func apply_shield(level := -1, duration := -1.0) -> void:
+	if not alive:
+		return
+	if level < 0:
+		var step := wstep(Weapons.SHIELD)
+		level = maxi(1, step)
+		duration = Weapons.SHIELD_TIME * (1.15 if step >= 1 else 1.0)
+	level = clampi(level, 1, 3)
+	duration = clampf(duration, 0.0, 10.0)
+	_forward_fx(NetFx.SHIELD, [level, duration])
+	_shield_level = level
+	_shield_time = maxf(_shield_time, duration)
+	_shield_age = 0.0
+	if _shield_mesh:
+		_shield_mesh.visible = true
+		_tick_shield_look()
+
+
+## Машина сейчас под щитом: чужое оружие и бонусы на неё не действуют.
+func is_shielded() -> bool:
+	return alive and _shield_time > 0.0
+
+
+## Уровень действующего щита (0 — щита нет).
+func shield_level() -> int:
+	return _shield_level if is_shielded() else 0
+
+
+func shield_left() -> float:
+	return _shield_time
+
+
+## Байт снимка (протокол 21): уровень в старших двух битах, остаток в
+## десятых секунды (с округлением вверх — щит на последних сотых не должен
+## «мигать» отсутствием) в младших шести (потолок 6.3 с при щите ≤ 5.75).
+func shield_byte() -> int:
+	if _shield_time <= 0.0:
+		return 0
+	var tenths := clampi(ceili(_shield_time * 10.0), 1, 63)
+	return (clampi(_shield_level, 1, 3) << 6) | tenths
+
+
+## Щит ПРИЕХАЛ В СНИМКЕ (Main._rx_state) — марионетке. Как net_set_freeze:
+## автор состояния один (сервер), его значение — замена, не максимум.
+func net_set_shield(b: int) -> void:
+	var was := _shield_time
+	_shield_level = clampi(b >> 6, 1, 3)
+	_shield_time = float(b & 63) * 0.1
+	if _shield_time > 0.0 and was <= 0.0:
+		_shield_age = 0.0
+	if _shield_mesh:
+		_shield_mesh.visible = alive and _shield_time > 0.0
+
+
+## Оружие упёрлось в щит: вспышка на сфере, чтобы было видно, что блок
+## сработал (машина цела). Зовут узлы оружия вместо попадания.
+func shield_block_fx() -> void:
+	var c: Color = SHIELD_COLORS[clampi(_shield_level, 0, 3)]
+	FlashFx.spawn(get_parent(), global_position + Vector3.UP * 0.8, 1.3, c)
+	FxKit.ring(get_parent(), global_position, 2.6, c)
+
+
+## Соперник коснулся МОЕГО щита II/III. Возвращает true, если он
+## уничтожен (рикошет с призраком дальше не считать). Оба под щитом —
+## ничего: щиты друг друга не пробивают.
+func _shield_touch(other: Car) -> bool:
+	var lvl := shield_level()
+	if lvl < 2 or other == null or other == self or not other.alive \
+			or other.is_ghost() or other.is_shielded():
+		return false
+	if lvl >= 3:
+		other.notify_hit_by(self, Weapons.SHIELD)
+		FxKit.lightning_burst(get_parent(),
+				other.global_position + Vector3.UP * 0.7,
+				Color(1.0, 0.35, 0.3), 6, 1.2)
+		other.destroy()
+		return true
+	other.apply_shield_slow()
+	return false
+
+
+## Сервер, держатель щита — марионетка (машина живого игрока): её
+## _bounce_off_cars не идёт, касания меряем капсулами, как рикошет о
+## марионетку (см. _bounce_off_cars).
+func _shield_sweep() -> void:
+	if is_ghost():
+		return
+	for node in get_tree().get_nodes_in_group("cars"):
+		var other := node as Car
+		if other == null or other == self:
+			continue
+		if absf(other.global_position.y - global_position.y) > 1.3:
+			continue
+		if _capsule_gap(other) < 1.7:
+			_shield_touch(other)
+
+
+## Коснулся жёлтого щита (II): скорость сразу режется вдвое и на
+## SHIELD_SLOW_TIME тяга и потолок придушены — тем же путём, что масло
+## ниже II ступени (_oil_slow_time / fx_mult в _drive). Повторное касание
+## во время замедления ничего не продлевает. По сети — владельцу
+## (NetFx.SHIELD_SLOW).
+func apply_shield_slow() -> void:
+	const SHIELD_SLOW_TIME := 1.8
+	if not alive or _oil_slow_time > 0.0 or is_shielded():
+		return
+	_forward_fx(NetFx.SHIELD_SLOW)
+	_oil_slow_time = SHIELD_SLOW_TIME
+	linear_velocity.x *= 0.5
+	linear_velocity.z *= 0.5
+	_recent_hspeed *= 0.5
+	show_effect_icon(Weapons.SHIELD, SHIELD_SLOW_TIME)
+	FxKit.ring(get_parent(), global_position, 2.4, Color(1.0, 0.82, 0.2))
 
 
 ## Сколько заморозки осталось. Наружу — для сети: этим числом сервер
@@ -3483,7 +3873,7 @@ func net_set_freeze(left: float) -> void:
 ## гашение рысканья у стены ОТПУЩЕНЫ (см. _clamp_heading, _wall_slide):
 ## машину честно разворачивает и утыкает в отбойник.
 func apply_oil_slip() -> void:
-	if not alive or _slip_time > 0.0:
+	if not alive or _slip_time > 0.0 or is_shielded():
 		return
 	_forward_fx(NetFx.OIL)
 	_slip_time = slip_duration
@@ -3539,7 +3929,7 @@ func _spin_away_from_wall() -> float:
 ##    закрутку в тот же кадр, и разворота от взрыва не будет.
 func push_from_blast(dir: Vector3, power: float, spin := 0.0,
 		lift := 0.35) -> void:
-	if not alive:
+	if not alive or is_shielded():
 		return
 	_forward_fx(NetFx.BLAST, [dir, power, spin, lift])
 	_ext_push_time = maxf(_ext_push_time, 0.7)
