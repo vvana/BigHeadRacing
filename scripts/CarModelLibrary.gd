@@ -148,6 +148,10 @@ const COLOR_KEYS := {
 ## Геометрия кузовов из префабов Unity (координаты относительно кузова):
 ## wheel_f/wheel_r — правое переднее/заднее колесо (левое — зеркально),
 ## ws_f/ws_r — масштаб колёс; engine/spoiler/exhaust — [позиция, масштаб].
+## lamp (необязательно) — где фара: x — доля полуширины носа, y — доля
+## высоты носа (без него 0.60 / 0.55; см. Car.headlight_anchor). Подобрано
+## по снимкам ShotHeadlights 07.09: у Малыша, Багги и ac7 круглые фары
+## нарисованы выше и дальше от середины, чем ставила общая эвристика.
 const ARCADE_BODIES := {
 	"ac1": {"mesh": "Car 1",
 		"wheel_f": Vector3(0.9, 0.22, 1.923), "wheel_r": Vector3(0.9, 0.286, -1.868),
@@ -162,12 +166,14 @@ const ARCADE_BODIES := {
 		"spoiler": [Vector3(0, 1.7, -2.224), Vector3(0.754, 1, 1)],
 		"exhaust": [Vector3(0, 0.21, -2.613), Vector3(0.93, 1, 1)]},
 	"ac3": {"mesh": "Car 3",
+		"lamp": Vector2(0.80, 0.82),
 		"wheel_f": Vector3(0.9, 0.209, 2.345), "wheel_r": Vector3(0.88, 0.243, -2.111),
 		"ws_f": Vector3(0.912, 0.912, 0.912), "ws_r": Vector3.ONE,
 		"engine": [Vector3(0, 0.48, 1.749), Vector3(1.318, 1.318, 1.318)],
 		"spoiler": [Vector3(0, 0.984, -2.339), Vector3(0.969, 1, 1)],
 		"exhaust": [Vector3(0, 0.0, -2.673), Vector3(0.95, 1, 1)]},
 	"ac4": {"mesh": "Car 4",
+		"lamp": Vector2(0.66, 0.78),
 		"wheel_f": Vector3(0.95, 0.217, 1.666), "wheel_r": Vector3(0.95, 0.25, -1.817),
 		"ws_f": Vector3(0.95, 0.932, 0.932), "ws_r": Vector3(0.982, 0.982, 0.982),
 		"engine": [Vector3(0, 1.056, 1.467), Vector3.ONE],
@@ -186,6 +192,7 @@ const ARCADE_BODIES := {
 		"spoiler": [Vector3(0, 1.945, -2.479), Vector3(1.176, 1.176, 1.176)],
 		"exhaust": [Vector3(0, 0.747, -2.402), Vector3(1.141, 1, 1)]},
 	"ac7": {"mesh": "Car 7",
+		"lamp": Vector2(0.62, 0.70),
 		"wheel_f": Vector3(0.9, 0.199, 1.772), "wheel_r": Vector3(0.9, 0.252, -1.756),
 		"ws_f": Vector3(1, 0.93, 0.93), "ws_r": Vector3(1.062, 1.062, 1.062),
 		"engine": [Vector3(0, 0.927, 2.017), Vector3.ONE],
@@ -714,6 +721,7 @@ static func build(
 	elif is_arcade(base):
 		model = _build_arcade(arcade_parse(id), id, target_length, base_y)
 	if model:
+		model.set_meta("car_id", id)   # кому принадлежит (фары — Car.headlight_anchor)
 		var fx := parse_cfg(id)
 		# Полоса вдоль кузова у НЕаркадных машин (04.09): у аркадных она в
 		# UV-развёртке ("sticker line"), у советских и Unity рисуется
@@ -1435,6 +1443,12 @@ static func _hidden_material() -> StandardMaterial3D:
 	return hid
 
 
+## Приставная деталь тюнинга — узлы Engine/Spoiler/Exhaust аркадного и
+## советского паков (в замер фар и верха кузова не входят).
+static func is_tuning_part(node: Node) -> bool:
+	return ["Engine", "Spoiler", "Exhaust"].has(String(node.name))
+
+
 ## Меши КУЗОВА модели (без колёс в пивотах и без приставных деталей).
 ## Полоса по умолчанию для кузова цвета body: "" — штатная тёмно-серая,
 ## иначе светлая краска пака (яркость кузова ниже 0.2 — чёрный, синий,
@@ -1544,8 +1558,13 @@ static func _top_tint(model: Node3D) -> Color:
 static func _body_meshes(m: Node3D) -> Array[MeshInstance3D]:
 	var out: Array[MeshInstance3D] = []
 	for c in m.get_children():
+		# Дубль кузова с полосой ("<кузов>_line", см. _attach_line) — тоже не
+		# кузов: тонировка стёкол шла по этому списку ПОСЛЕ полосы и
+		# перебивала шейдер полосы материалом стекла — у Пятёрки Спорт с
+		# тонировкой полоса пропадала вовсе (жалоба 07.09).
 		if c is MeshInstance3D and (c as MeshInstance3D).mesh != null \
-				and not ["Engine", "Spoiler", "Exhaust", "Wheel"].has(String(c.name)):
+				and not ["Engine", "Spoiler", "Exhaust", "Wheel"].has(String(c.name)) \
+				and not String(c.name).ends_with("_line"):
 			out.append(c as MeshInstance3D)
 	return out
 

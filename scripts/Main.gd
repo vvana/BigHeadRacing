@@ -3166,11 +3166,8 @@ func net_broadcast_weapon(car: Car, kind: int) -> void:
 	var idx := _cars.find(car)
 	if idx < 0:
 		return
-	var fwd := -car.global_transform.basis.z
-	fwd.y = 0.0
-	if fwd.length_squared() < 1e-6:
-		fwd = Vector3.FORWARD
-	_rx_weapon_fx.rpc(idx, kind, car.global_position, fwd.normalized())
+	# По сырым данным владельца — как сам выстрел (Car.use_weapon).
+	_rx_weapon_fx.rpc(idx, kind, car.true_position(), car.true_forward())
 
 
 ## Клиентская КОПИЯ выстрела — только картинка. Мины, масло и снаряды

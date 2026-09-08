@@ -30,6 +30,7 @@ const HIT_R := 1.6
 var _speed := 55.0
 var _life := 2.2
 var _first_check := true   # первый кадр: отрезок тянется от носа стрелявшего
+var _spent := false        # уже погас (_boom): касания дальше не считаются
 
 
 func _ready() -> void:
@@ -192,15 +193,19 @@ func _segment_gap(a: Vector3, b: Vector3, p: Vector3) -> float:
 func _on_body_entered(body: Node3D) -> void:
 	if body == shooter:
 		return
+	if _spent:
+		return
 	var car := body as Car
-	# Машины с отмоткой считаются вручную выше — иначе снаряд живого игрока
-	# сработал бы ДВАЖДЫ: по отмотанному положению и по нынешнему.
-	# О мир и ограждения (они не Car) снаряд гаснет как прежде.
+	# Машина под снарядом СЕЙЧАС — тоже попадание, и при отмотке: раньше с
+	# lag > 0 касание тела пропускалось (боялись двойного срабатывания), и
+	# при недооценённой отмотке ракета проходила сквозь машину, в которую
+	# упёрлась на экране сервера (жалоба 07.09). Двойного удара нет: после
+	# _boom снаряд «истрачен» (_spent) и больше никого не трогает.
 	if car != null:
-		if lag > 0.0:
-			return
 		if car.alive and not car.is_ghost():
 			_hit_car(car)
+		elif lag > 0.0:
+			return   # «призрак» при отмотке: летим дальше
 	# Футбольный мяч (он на слое машин): взрыв ощутимо пинает его по ходу
 	# полёта снаряда — ракетой можно бить по воротам.
 	var ball := body as SoccerBall
@@ -224,6 +229,9 @@ func _hit_car(car: Car) -> void:
 
 
 func _boom() -> void:
+	if _spent:
+		return
+	_spent = true
 	# Сервер: клиентам — точку гашения, чтобы их инертные копии не летели
 	# дальше сквозь уже поражённую машину (Main._rx_proj_fx).
 	if not inert and shooter != null and is_instance_valid(shooter) \

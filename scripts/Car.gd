@@ -156,6 +156,7 @@ var _model: Node3D = null
 # Пятно неона под днищем (Underglow/Glow модели) — его каждый кадр
 # кладут на дорогу, см. _fit_underglow. Нет неона — null.
 var _underglow: Node3D = null
+var _underglow_rest := Vector3.ZERO   # штатное место пятна в модели (см. _fit_underglow)
 # Мои недавние ЛОКАЛЬНЫЕ рикошеты о марионеток: instance id -> ticks_msec.
 # Приехавший следом толчок-событие (_rx_fx SHOVE) о том же контакте
 # отбрасывается — иначе при тёрке бок-о-бок машину било бы дважды (свой
@@ -204,6 +205,7 @@ var _status_time := 0.0         # и сколько ему осталось
 var _status_shown := -2         # что сейчас лежит в текстуре (-2 = ничего)
 var _status_age := 0.0          # возраст показа: «выпрыгивание» и покачивание
 var _ice_shell: MeshInstance3D  # визуал заморозки (голубая скорлупа)
+var _ice_shell_base := Transform3D.IDENTITY   # её место в осях машины (см. _process)
 # Фары ночного города. Держатель top_level — как модель, стрелка и значок:
 # ставится по ВИДИМОМУ положению машины (см. _process). Списки — по паре
 # [левая, правая], нужны для посадки на нос конкретной модели.
@@ -442,7 +444,17 @@ static func headlight_anchor(model: Node3D, model_xf: Transform3D) -> Dictionary
 		return {}
 	# Чуть выше середины носа: у грузовика фара окажется высоко, у
 	# «плоской» машины низко — доля работает на обеих.
-	var lamp_y := y_min + (y_max - y_min) * 0.55
+	# Доли — общие, у аркадных машин с нарисованными круглыми фарами —
+	# свои (ARCADE_BODIES["lamp"]): id модели лежит в мета car_id.
+	var fy := 0.55
+	var fx := 0.60
+	if model.has_meta("car_id"):
+		var geo: Dictionary = CarModelLibrary.ARCADE_BODIES.get(
+				CarModelLibrary.base_id(str(model.get_meta("car_id"))), {})
+		if geo.has("lamp"):
+			fx = (geo["lamp"] as Vector2).x
+			fy = (geo["lamp"] as Vector2).y
+	var lamp_y := y_min + (y_max - y_min) * fy
 	# Полуширина носа на высоте фары.
 	var half := 0.0
 	for p in pts:
@@ -453,7 +465,7 @@ static func headlight_anchor(model: Node3D, model_xf: Transform3D) -> Dictionary
 		return {}
 	# Лампа целиком внутри этой полуширины: центр на 0.60, половина
 	# ширины 0.275 — край на 0.875 полуширины, до борта ещё есть запас.
-	var lamp_x := half * 0.60
+	var lamp_x := half * fx
 	var lamp_w := minf(half * 0.55, 0.26)
 	# Кромка кузова у ВНЕШНЕГО края лампы, а не в середине носа: нос
 	# скруглён, к краям поверхность уходит назад, и по середине лампа
@@ -486,7 +498,7 @@ static func _emissive_anchor(model: Node3D, model_xf: Transform3D) -> Dictionary
 		var item: Array = stack.pop_back()
 		var node: Node3D = item[0]
 		var xf: Transform3D = item[1]
-		if node.has_meta("wheel_radius"):
+		if node.has_meta("wheel_radius") or CarModelLibrary.is_tuning_part(node):
 			continue
 		for child in node.get_children():
 			if child is Node3D:
@@ -610,6 +622,10 @@ static func _front_z(pts: PackedVector3Array, x_at: float, x_tol: float,
 	return sum / n
 
 
+## Приставные детали тюнинга (мотор на капоте, спойлер, выхлоп) в замер
+## фар не входят — см. CarModelLibrary.is_tuning_part: у Стрелы (ac1) мотор
+## №5 торчал перед бампером, «нос» считался по нему, и лампы висели
+## впереди машины (жалоба 07.09).
 ## Вершины модели в осях МАШИНЫ, без колёс (колесо в пивоте с мета
 ## wheel_radius — его целиком пропускаем, иначе «нос» ловит переднее
 ## колесо и лампы уезжают вниз и вбок).
@@ -621,7 +637,7 @@ static func model_points(model: Node3D, model_xf: Transform3D
 		var item: Array = stack.pop_back()
 		var node: Node3D = item[0]
 		var xf: Transform3D = item[1]
-		if node.has_meta("wheel_radius"):
+		if node.has_meta("wheel_radius") or CarModelLibrary.is_tuning_part(node):
 			continue
 		var mi := node as MeshInstance3D
 		if mi != null and mi.mesh != null:
@@ -669,6 +685,9 @@ func _build_ice_shell() -> void:
 	box.size = Vector3(2.0, 1.1, 3.4)
 	_ice_shell.mesh = box
 	_ice_shell.position.y = 0.45
+	_ice_shell_base = _ice_shell.transform
+	# Едет с КАРТИНКОЙ машины, а не с телом (см. _process).
+	_ice_shell.top_level = true
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.45, 0.7, 1.0, 0.45)
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -1238,6 +1257,8 @@ func _process(delta: float) -> void:
 		_underglow = null
 		if _model != null:
 			_underglow = _model.get_node_or_null("Underglow/Glow") as Node3D
+			if _underglow != null:
+				_underglow_rest = _underglow.position
 	var model := _model
 	if model != null:
 		if not model.top_level:
@@ -1248,6 +1269,11 @@ func _process(delta: float) -> void:
 	# собственного кузова на шаг физики (см. _build_headlights).
 	if _headlights != null:
 		_headlights.global_transform = xf
+	# Скорлупа льда — тоже с картинкой, а не с телом: ребёнком тела она
+	# отставала от собственного кузова на шаг физики и ехала «отдельно
+	# от машины» (жалоба 07.09).
+	if _ice_shell != null and _ice_shell.visible:
+		_ice_shell.global_transform = xf * _ice_shell_base
 	_animate_wheels(delta)
 	_tick_status_icon(delta)
 	if _respawn_wait > 0.0:
@@ -2544,16 +2570,20 @@ func use_weapon() -> void:
 	# просим менеджера гонки разослать событие (вне сети — пустышка).
 	if race != null and race.has_method("net_broadcast_weapon"):
 		race.net_broadcast_weapon(self, kind)
-	var fwd := -global_transform.basis.z
-	fwd.y = 0.0
-	fwd = fwd.normalized() if fwd.length_squared() > 1e-6 else Vector3.FORWARD
+	# Откуда и куда стреляем — по СЫРЫМ данным владельца (true_position /
+	# true_forward), а не по телу: на сервере машина живого игрока —
+	# сглаженная марионетка, в повороте её курс отстаёт от настоящего на
+	# буфер подтяжки, и ракета уходила на градусы в сторону от того, куда
+	# игрок целился, — «пролетела сквозь машину противника» (жалоба 07.09).
+	# Вне сети и у ботов это то же самое тело.
+	var origin := true_position()
+	var fwd := true_forward()
 	match kind:
 		Weapons.MINE:
 			var m := Mine.new()
 			m.dropper = self
 			get_parent().add_child(m)
-			m.global_position = global_position \
-					+ global_transform.basis.z * 2.4 + Vector3.UP * 0.1
+			m.global_position = origin - fwd * 2.4 + Vector3.UP * 0.1
 		Weapons.ROCKET, Weapons.FREEZE:
 			var p := Projectile.new()
 			p.shooter = self
@@ -2563,15 +2593,14 @@ func use_weapon() -> void:
 			p.lag = net_shot_lag()
 			p.freeze = kind == Weapons.FREEZE
 			get_parent().add_child(p)
-			p.global_position = muzzle_point(fwd)
+			p.global_position = muzzle_at(origin, fwd)
 			FxKit.muzzle_flash(get_parent(), p.global_position,
 					Color(0.6, 0.85, 1.0) if p.freeze else Color(1.0, 0.8, 0.35))
 		Weapons.OIL:
 			var oil := OilSlick.new()
 			oil.dropper = self
 			get_parent().add_child(oil)
-			oil.global_position = global_position \
-					+ global_transform.basis.z * 3.0 + Vector3.UP * 0.12
+			oil.global_position = origin - fwd * 3.0 + Vector3.UP * 0.12
 		Weapons.MAGNET:
 			_use_magnet()
 		Weapons.LASER:
@@ -2584,7 +2613,7 @@ func use_weapon() -> void:
 			# экрану (протокол 13).
 			w.lag = net_shot_lag()
 			get_parent().add_child(w)
-			w.global_position = muzzle_point(fwd)
+			w.global_position = muzzle_at(origin, fwd)
 			FxKit.muzzle_flash(get_parent(), w.global_position,
 					Color(0.4, 0.95, 1.0))
 			# Горизонтальная волна от машины в момент выстрела — сразу видно
@@ -3402,8 +3431,22 @@ func _animate_wheels(delta: float) -> void:
 func _fit_underglow(road_y: float) -> void:
 	if _underglow == null or not is_instance_valid(_underglow):
 		return
+	# Каждый кадр — ОТ ШТАТНОГО места (_underglow_rest), а не от того, где
+	# пятно оказалось в прошлый раз. Правка global_position меняет ЛОКАЛЬНОЕ
+	# смещение пятна в кузове, и при крене/перевороте вертикальный сдвиг
+	# раскладывался в боковой: за кувырок сдвиги копились, и после
+	# возврата на колёса пятно ехало позади и сбоку от машины (жалоба
+	# 07.09 «после переворота пятно неона не под машиной»).
+	_underglow.position = _underglow_rest
+	# На крыше/боку дорога «сверху» относительно кузова — пятно на неё не
+	# тянем, пусть остаётся у днища.
+	if global_transform.basis.y.y < 0.5:
+		return
 	var p := _underglow.global_position
-	_underglow.global_position = Vector3(p.x, road_y + 0.02, p.z)
+	# Не дальше полуметра от штатного места: пятно на дороге, а не в яме
+	# рядом с трамплином.
+	var dy := clampf(road_y + 0.02 - p.y, -0.5, 0.5)
+	_underglow.global_position = Vector3(p.x, p.y + dy, p.z)
 
 
 ## Закрыть текущую ленту следа колеса (если была): дальше она лежит,

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testrocketaim"]
+
+[ext_resource type="Script" path="res://tools/test_rocket_aim.gd" id="1_testrocketaim"]
+
+[node name="TestRocketAim" type="Node3D"]
+script = ExtResource("1_testrocketaim")

@@ -3,9 +3,10 @@ extends Node3D
 ## носа с передне-бокового ракурса. Модели подставляются НАСИЛЬНО (в
 ## заезде они случайные) — с 2026-09-02 в игре ровно 8 машин Unity-пака,
 ## берём все: от низкого дракстера до высокого внедорожника.
-## Запуск: godot --path . res://tools/ShotHeadlights.tscn -- <папка>
+## Запуск: godot --path . res://tools/ShotHeadlights.tscn -- <папка> [id…]
+## (id — любые, в т.ч. полные с тюнингом: ac1-cyan2-g1-w2-e5-s10-x3-k0-l1).
 
-const CARS: Array[String] = [
+var CARS: Array[String] = [
 	"fastback", "godfather", "lemans", "superbird",
 	"chevelle", "diablo", "dragster", "safari",
 ]
@@ -20,6 +21,12 @@ func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
 	if args.size() > 0:
 		_out = args[0]
+	# Дальше — id машин (07.09: аркадные ac1…ac8, полные id с тюнингом);
+	# без них — восьмёрка Unity-пака.
+	if args.size() > 1:
+		CARS = []
+		for i in range(1, args.size()):
+			CARS.append(args[i])
 	DirAccess.make_dir_recursive_absolute(_out)
 	GameState.track_kind = TrackBuilder.KIND_NEON
 	_main = (load("res://scenes/Main.tscn") as PackedScene).instantiate()
