@@ -69,6 +69,10 @@ const WHEEL_POINTS: Array[Vector3] = [
 
 # Состояние боя/гонки.
 var weapon := -1                # текущее оружие (Weapons.*), -1 — пусто
+## Ступени оружия ХОЗЯИНА машины (магазин, 08.09): байт на вид, см.
+## Weapons.STEPS. Игроку ставит Main из GameState.weapon_steps() (оффлайн и
+## своей машине на клиенте), на сервере — из hello; у ботов пусто (нули).
+var weapon_steps := PackedByteArray()
 var alive := true
 var controls_enabled := false   # включает менеджер гонки после отсчёта
 var race_over := false          # финиш: газа нет, машина плавно тормозит
@@ -126,7 +130,9 @@ var net_role := NetRole.LOCAL
 var net_fire := false           # сервер: клиент просил выстрел (гасится сразу)
 ## Эффекты оружия, пересылаемые сервером владельцу машины (Main._rx_fx):
 ## физику эффекта (толчок, разворот, телепорт) применяет клиент-владелец.
-enum NetFx { DESTROY, BLAST, FREEZE, OIL, BOOST, SLOW, SHOVE, SCRAMBLE }
+enum NetFx { DESTROY, BLAST, FREEZE, OIL, BOOST, SLOW, SHOVE, SCRAMBLE,
+	OIL_SLOW }   # OIL_SLOW — масло ниже II ступени: только замедление
+var _oil_slow_time := 0.0       # замедление от масла без заноса (ступени < II)
 var has_marker := false         # над машиной висит стрелка-указатель
 ## Отметка машины на оси трассы, м. Считается с оглядкой на предыдущую
 ## (TrackBuilder.closest_offset_near): улетевшая за ограждение машина
@@ -260,6 +266,7 @@ var debug_smoke := false        # стенды: дымить и гореть в�
 var _skid_active := false       # сильный занос: задние колёса чертят следы
 var _skid_trails := {}          # пивот заднего колеса -> текущая SkidTrail
 var _boost_flame: CPUParticles3D        # огонь из выхлопа при ускорении
+var _boost_flame_base := Transform3D.IDENTITY   # сопло в осях машины (top_level)
 var _boost_from_pad := false    # текущий буст — с плиты (см. apply_boost)
 var _wheel_pivots: Array[Node3D] = []
 var _steer_visual := 0.0
@@ -737,7 +744,7 @@ func _build_smoke() -> void:
 static func make_smoke() -> CPUParticles3D:
 	# Клуб рождается небольшим, быстро набухает и слегка дорастает.
 	var growth := Curve.new()
-	growth.add_point(Vector2(0.0, 0.35))
+	growth.add_point(Vector2(0.0, 0.5))
 	growth.add_point(Vector2(0.3, 1.0))
 	growth.add_point(Vector2(1.0, 1.45))
 	var p := CPUParticles3D.new()
@@ -749,7 +756,12 @@ static func make_smoke() -> CPUParticles3D:
 	# (жалоба 04.09, вечер). Частота вернулась (18 на 0.6 с ≈ 30 клубов в
 	# секунду — как было), но клубы остались КРУПНЫМИ и разными: след
 	# сплошной. Жизнь короче — шлейф не растягивается на пол-трассы.
-	p.amount = 18
+	# 08.09 («между облачками большой зазор»): 18 → 40 на те же 0.6 с
+	# (≈ 67 клубов/с на колесо) — на 20 м/с между соседними клубами 0.3 м
+	# вместо 0.67, клубы (0.7 м × рост) перекрываются с рождения.
+	# Тем же днём «ещё плотнее»: 40 → 70 (≈ 117 клубов/с, шаг 0.17 м) и
+	# клуб рождается крупнее (кривая роста стартует с 0.5, а не 0.35).
+	p.amount = 70
 	p.lifetime = 0.6
 	p.local_coords = false   # клубы остаются позади машины
 	p.direction = Vector3.UP
@@ -864,36 +876,48 @@ func _build_boost_flame() -> void:
 	# картинок; их сделали крупнее и оставили 10 — и на скорости струя
 	# рассыпалась на отдельные тучки с промежутками (жалоба 04.09, вечер:
 	# эмиттер мировой, за 0.02 с между языками машина уезжает на полметра).
-	# 24 языка на 0.18 с — те же крупные кадры, но вплотную: сопло горит
-	# сплошной струёй, а короткая жизнь держит её длину прежней.
-	p.amount = 24
-	p.lifetime = 0.18
-	p.local_coords = false   # струя остаётся позади машины
+	# 08.09 («выхлоп плотнее и короче»): струя теперь В ОСЯХ МАШИНЫ
+	# (local_coords) — при мировых координатах на ходу 25 м/с хвост
+	# тянулся на 0.18 с × 25 = 4.5 м и на скорости редел; в осях машины
+	# длина струи — только собственная скорость языков (≈ 0.7-1 м) и от
+	# хода не зависит. Узел top_level и едет за КАРТИНКОЙ машины (см.
+	# _process, как фары), иначе на теле он бы дрожал на шаг физики.
+	p.amount = 36
+	p.lifetime = 0.16
+	p.local_coords = true
 	# Почти горизонтально назад (+Z): струя из выхлопной трубы, а не костёр
-	# на бампере — подъём убран, скорость выше, конус узкий.
+	# на бампере — подъём убран, конус узкий.
 	p.direction = Vector3(0.0, 0.04, 1.0)
 	p.spread = 4.0
 	p.gravity = Vector3.ZERO
-	p.initial_velocity_min = 5.0
-	p.initial_velocity_max = 8.0
+	p.initial_velocity_min = 3.5
+	p.initial_velocity_max = 5.5
 	# Кадры огня в атласе направленные (языки вверх): случайный поворот
 	# превращал струю в россыпь «осколков» — поворот не трогаем, пляшет
 	# сама анимация кадров и разброс размера.
 	p.angle_min = -12.0
 	p.angle_max = 12.0
-	p.scale_amount_min = 0.42
-	p.scale_amount_max = 0.7
+	p.scale_amount_min = 0.5
+	p.scale_amount_max = 0.8
 	p.scale_amount_curve = shrink
-	# Случайный стартовый кадр атласа + прокрутка кадров по жизни частицы.
+	# Атлас fire_6x3 — анимация ДОГОРАНИЯ: крупные языки только в верхнем
+	# ряду (кадры 0-5), два нижних ряда — мелкие крошки. Раньше кадры
+	# листались по всему атласу (offset 0..1, скорость 1-2), и 2/3 времени
+	# каждый язык был крошкой — струя выходила рваной. Теперь язык живёт
+	# в верхнем ряду: старт в кадрах 0-1, за жизнь доходит до кадра 5-6
+	# (offset + speed × жизнь ≈ 0.33 — ровно ряд).
 	p.anim_offset_min = 0.0
-	p.anim_offset_max = 1.0
-	p.anim_speed_min = 1.0
-	p.anim_speed_max = 2.0
+	p.anim_offset_max = 0.05
+	p.anim_speed_min = 0.24
+	p.anim_speed_max = 0.3
 	var quad := QuadMesh.new()
 	quad.size = Vector2(0.6, 0.6)
 	var mat := StandardMaterial3D.new()
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD   # свечение огня
+	# 08.09: смешивание вместо аддитивного — на светлом дне (трава,
+	# асфальт в солнце) аддитивный оранжевый просвечивал и выглядел
+	# жидким; непрозрачные языки читаются как плотное мультяшное пламя.
+	mat.blend_mode = BaseMaterial3D.BLEND_MODE_MIX
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
 	mat.particles_anim_h_frames = 6
@@ -907,8 +931,12 @@ func _build_boost_flame() -> void:
 	p.color_ramp = flame_ramp(_smoke_color)
 	# Ниже и ЗА бампером (кузов 3.2 м, корма на 1.6): при сопле на самом
 	# бампере половина струи в изометрии ложилась на багажник — «зад горит».
-	p.position = Vector3(0.0, 0.3, 1.85)
+	# 08.09: сопло опущено 0.3 → 0.2 м («огонь при ускорении пониже»).
+	p.position = Vector3(0.0, 0.2, 1.85)
+	_boost_flame_base = p.transform
 	add_child(p)
+	# За картинкой машины, а не за телом — ставится в _process.
+	p.top_level = true
 	_boost_flame = p
 
 
@@ -1204,6 +1232,7 @@ func _tick_effects(delta: float) -> void:
 	_status_time = maxf(0.0, _status_time - delta)
 	_boost_time = maxf(0.0, _boost_time - delta)
 	_slip_time = maxf(0.0, _slip_time - delta)
+	_oil_slow_time = maxf(0.0, _oil_slow_time - delta)
 	_scramble_time = maxf(0.0, _scramble_time - delta)
 	# Лазер жжёт, пока виден луч: коридор перепроверяется каждый тик от
 	# ТЕКУЩЕГО носа (луч едет со стрелявшим — LaserFx._process делает то же
@@ -1228,8 +1257,8 @@ func _tick_effects(delta: float) -> void:
 	if _boost_flame:
 		# С плиты — узкий короткий язык, от турбины — полный.
 		var narrow := _boost_from_pad and _boost_time > 0.0
-		_boost_flame.scale_amount_min = 0.3 if narrow else 0.42
-		_boost_flame.scale_amount_max = 0.48 if narrow else 0.7
+		_boost_flame.scale_amount_min = 0.36 if narrow else 0.5
+		_boost_flame.scale_amount_max = 0.55 if narrow else 0.8
 		_boost_flame.spread = 3.0 if narrow else 4.0
 		_boost_flame.emitting = alive and (_boost_time > 0.0
 				or (_status_time > 0.0 and _status_kind == Weapons.BOOST)
@@ -1278,6 +1307,10 @@ func _process(delta: float) -> void:
 	# собственного кузова на шаг физики (см. _build_headlights).
 	if _headlights != null:
 		_headlights.global_transform = xf
+	# Струя выхлопа — в осях машины (local_coords), и тоже за картинкой:
+	# на теле она на ходу дрожала бы относительно кузова на шаг физики.
+	if _boost_flame != null:
+		_boost_flame.global_transform = xf * _boost_flame_base
 	# Скорлупа льда — тоже с картинкой, а не с телом: ребёнком тела она
 	# отставала от собственного кузова на шаг физики и ехала «отдельно
 	# от машины» (жалоба 07.09).
@@ -2183,8 +2216,11 @@ func _drive(
 	var fx_mult := 1.0
 	if _freeze_time > 0.0:
 		fx_mult = 0.55
+	elif _oil_slow_time > 0.0:
+		fx_mult = 0.6   # масло без заноса (ступень < II): только тише
 	elif _boost_time > 0.0:
-		fx_mult = 1.45
+		# III ступень ускорения — сильнее (спецификация игрока 04.09).
+		fx_mult = 1.65 if wstep(Weapons.BOOST) >= 3 else 1.45
 	# Рыхлый песок за полотном (песчаная трасса): тяга и потолок скорости
 	# заметно ниже — срезать по песку невыгодно, ограждений там нет.
 	# 0.55 -> 0.40 (31.08: «пески нужно сделать более замедляющими»).
@@ -2509,8 +2545,10 @@ func _wall_slide(delta: float) -> void:
 		if _wall_spark_time <= 0.0 and hspeed > 3.0:
 			_wall_spark_time = WALL_SPARK_PERIOD
 			var at := axis_pos + n * wall_face
-			at.y = global_position.y + 0.15
-			SparksFx.spawn(get_parent(), at, hspeed * 0.35)
+			at.y = global_position.y + 0.25
+			# Сноп — от стены на полотно (вверх с грани он уходил в борт).
+			SparksFx.spawn(get_parent(), at, hspeed * 0.35,
+					(-n + Vector3.UP * 0.7).normalized())
 
 	# Если руль прямо сейчас просит рысканье ПРОЧЬ от стены — не мешаем:
 	# ни доворота, ни гашения (иначе у стены нельзя отрулить). Занос от
@@ -2702,12 +2740,23 @@ func use_weapon() -> void:
 	# Вне сети и у ботов это то же самое тело.
 	var origin := true_position()
 	var fwd := true_forward()
+	# Ступень этого вида у хозяина машины (магазин, 08.09) — см. Weapons.
+	var step := wstep(kind)
 	match kind:
 		Weapons.MINE:
-			var m := Mine.new()
-			m.dropper = self
-			get_parent().add_child(m)
-			m.global_position = origin - fwd * 2.4 + Vector3.UP * 0.1
+			# II ступень — ДВЕ мины, под левое и правое колесо (спецификация
+			# игрока 04.09); I — взрыв шире на 15 %.
+			var right := Vector3(-fwd.z, 0.0, fwd.x)
+			var offsets: Array[float] = [0.0]
+			if step >= 2:
+				offsets = [-0.8, 0.8]
+			for sx: float in offsets:
+				var m := Mine.new()
+				m.dropper = self
+				m.radius_mult = 1.15 if step >= 1 else 1.0
+				get_parent().add_child(m)
+				m.global_position = origin - fwd * 2.4 + right * sx \
+						+ Vector3.UP * 0.1
 		Weapons.ROCKET, Weapons.FREEZE:
 			var p := Projectile.new()
 			p.shooter = self
@@ -2716,6 +2765,14 @@ func use_weapon() -> void:
 			# как лазер: он целился в то, что видел на своём экране.
 			p.lag = net_shot_lag()
 			p.freeze = kind == Weapons.FREEZE
+			# Ступени: I — снаряд крупнее (ракета) / заморозка дольше
+			# (ледышка); II — самонаведение (ракета) / быстрее (ледышка).
+			if p.freeze:
+				p.freeze_time = 3.45 if step >= 1 else 3.0
+				p.speed_mult = 1.2 if step >= 2 else 1.0
+			else:
+				p.hit_mult = 1.15 if step >= 1 else 1.0
+				p.homing = step >= 2
 			get_parent().add_child(p)
 			p.global_position = muzzle_at(origin, fwd)
 			FxKit.muzzle_flash(get_parent(), p.global_position,
@@ -2723,6 +2780,10 @@ func use_weapon() -> void:
 		Weapons.OIL:
 			var oil := OilSlick.new()
 			oil.dropper = self
+			# I — пятно крупнее; заносить и крутить масло начинает со II
+			# ступени, ниже — только замедляет (спецификация игрока 04.09).
+			oil.size_mult = 1.15 if step >= 1 else 1.0
+			oil.slow_only = step < 2
 			get_parent().add_child(oil)
 			oil.global_position = origin - fwd * 3.0 + Vector3.UP * 0.12
 		Weapons.MAGNET:
@@ -2736,6 +2797,9 @@ func use_weapon() -> void:
 			# Отмотка целей — как у снарядов: стрелявший целился по своему
 			# экрану (протокол 13).
 			w.lag = net_shot_lag()
+			# Ступени: I — сбитое управление дольше, II — волна быстрее.
+			w.stun_time = ScrambleWave.SCRAMBLE_TIME * (1.15 if step >= 1 else 1.0)
+			w.speed_mult = 1.3 if step >= 2 else 1.0
 			get_parent().add_child(w)
 			w.global_position = muzzle_at(origin, fwd)
 			FxKit.muzzle_flash(get_parent(), w.global_position,
@@ -2756,6 +2820,22 @@ func use_weapon() -> void:
 	var _wd := Time.get_ticks_msec() - _wd0
 	if _wd > 100:
 		print("[slow] use_weapon(%d) занял %d мс" % [kind, _wd])
+
+
+## Ступень вида оружия у хозяина этой машины (0..Weapons.STEPS).
+func wstep(kind: int) -> int:
+	return Weapons.step_of(weapon_steps, kind)
+
+
+## Дальность лазера по ступени: со II — через всю трассу (без предела;
+## 400 м покрывают любую нашу трассу по прямой).
+static func laser_range_for(step: int) -> float:
+	return 400.0 if step >= 2 else LASER_RANGE
+
+
+## Сколько держится луч (и жжёт): III ступень — в полтора раза дольше.
+static func laser_lifetime_for(step: int) -> float:
+	return LaserFx.LIFETIME * (1.5 if step >= 3 else 1.0)
 
 
 ## Магнит: ВСЕ машины заезда разово получают импульс к этой машине —
@@ -2807,12 +2887,18 @@ func _use_magnet() -> void:
 			continue
 		var t: float = clampf(dist / MAGNET_RANGE, 0.0, 1.0)
 		var wear := other.magnet_wear()
-		var power: float = lerpf(MAGNET_PULL, MAGNET_FAR, t) * wear
+		# Ступени магнита (08.09): I — рывок сильнее на 15 %; II — жертвы
+		# теряют ВСЮ скорость (спецификация игрока 04.09).
+		var mstep := wstep(Weapons.MAGNET)
+		var power: float = lerpf(MAGNET_PULL, MAGNET_FAR, t) * wear \
+				* (1.15 if mstep >= 1 else 1.0)
 		var spin := MAGNET_SPIN * (1.0 - t) * wear \
 				* (1.0 if randf() < 0.5 else -1.0)
 		# Впередиедущих осаживаем ДО рывка: срежь скорость после — порезался
 		# бы и сам импульс притяжения.
-		if _rival_is_ahead(other):
+		if mstep >= 2:
+			other.apply_speed_cut(0.0)
+		elif _rival_is_ahead(other):
 			other.apply_speed_cut(lerpf(0.65, 1.0, 1.0 - wear))
 		other.push_from_blast(pull_dir, power, spin, 0.12)
 		other.show_effect_icon(Weapons.MAGNET, MAGNET_ICON_TIME)
@@ -2934,8 +3020,11 @@ func _use_laser(fwd: Vector3) -> void:
 	# _pos_hist) — «попал в то, что видел». Боты и оффлайн стреляют по
 	# текущему миру: их картина и есть правда.
 	_laser_lag = net_shot_lag()
-	_laser_left = LaserFx.LIFETIME
-	LaserFx.spawn(get_parent(), muzzle_point(fwd), fwd, LASER_RANGE, self)
+	# Ступени лазера (08.09): II — через всю трассу, III — луч дольше.
+	var lstep := wstep(Weapons.LASER)
+	_laser_left = laser_lifetime_for(lstep)
+	LaserFx.spawn(get_parent(), muzzle_point(fwd), fwd, laser_range_for(lstep),
+			self, laser_lifetime_for(lstep))
 	_laser_sweep(fwd)
 
 
@@ -2948,6 +3037,10 @@ func _laser_sweep(fwd: Vector3) -> void:
 	# 08.09). Теперь коридор равен геометрическому касанию плюс щепотка
 	# на разницу картинок.
 	const HALF_WIDTH := 1.15
+	# Ступени лазера: I — коридор шире на 15 %, II — без предела дальности.
+	var lstep := wstep(Weapons.LASER)
+	var half := HALF_WIDTH * (1.15 if lstep >= 1 else 1.0)
+	var reach := laser_range_for(lstep)
 	for node in get_tree().get_nodes_in_group("cars"):
 		var other := node as Car
 		if other == self or not other.alive or other.is_ghost():
@@ -2962,9 +3055,9 @@ func _laser_sweep(fwd: Vector3) -> void:
 			var to := center + body_f * k - global_position
 			to.y = 0.0
 			var along := to.dot(fwd)
-			if along < 0.0 or along > LASER_RANGE:
+			if along < 0.0 or along > reach:
 				continue
-			if (to - fwd * along).length() <= HALF_WIDTH:
+			if (to - fwd * along).length() <= half:
 				hit = true
 				break
 		if hit:
@@ -2986,6 +3079,12 @@ func _use_airstrike() -> void:
 	strike.track = track
 	strike.target = target
 	strike.attacker = self
+	# Ступени авиаудара (08.09, спецификация игрока 04.09): I — воронки
+	# шире; II — три ракеты с упреждением по едущим впереди; III — четыре.
+	var astep := wstep(Weapons.AIRSTRIKE)
+	strike.hit_mult = 1.15 if astep >= 1 else 1.0
+	strike.rockets = 2 + maxi(0, astep - 1)
+	strike.lead = astep >= 2
 	get_parent().add_child(strike)
 	# Клиентам — точки падения (протокол 18): копия у них больше не гадает.
 	if race != null and race.has_method("net_broadcast_airstrike"):
@@ -3034,6 +3133,7 @@ func destroy() -> void:
 	reset_speed_memory()
 	_freeze_time = 0.0
 	_slip_time = 0.0
+	_oil_slow_time = 0.0
 	_boost_time = 0.0
 	_scramble_time = 0.0
 	# Свой лазер гаснет: машина уходит с трассы до появления, и добивать
@@ -3283,7 +3383,11 @@ func apply_boost(from_pad := false) -> void:
 		return
 	_forward_fx(NetFx.BOOST, [from_pad])
 	_boost_from_pad = from_pad
-	_boost_time = boost_duration
+	# Ступени ускорения (08.09): I — дольше на 15 %, II и III — в полтора
+	# раза дольше (III вдобавок сильнее — см. fx_mult в _drive). Плита-
+	# ускоритель — без ступеней: это трасса, а не оружие игрока.
+	var bstep := 0 if from_pad else wstep(Weapons.BOOST)
+	_boost_time = boost_duration * (1.5 if bstep >= 2 else (1.15 if bstep == 1 else 1.0))
 
 
 ## Разовый срез скорости (магнит осаживает впередиедущих). По сети машина
@@ -3327,6 +3431,26 @@ func apply_scramble(duration: float) -> void:
 ## Сколько глушилки осталось (стенды и HUD).
 func scramble_left() -> float:
 	return _scramble_time
+
+
+## Масло НИЖЕ II ступени (магазин, 08.09; спецификация игрока 04.09: «масло
+## I — только замедляет»): скорость сразу режется до 60 % и на OIL_SLOW_TIME
+## тяга и потолок скорости придушены (fx_mult в _drive), без закрутки и
+## потери сцепления. По сети — владельцу (NetFx.OIL_SLOW), как занос.
+func apply_oil_slow() -> void:
+	const OIL_SLOW_TIME := 1.8
+	if not alive or _oil_slow_time > 0.0:
+		return
+	_forward_fx(NetFx.OIL_SLOW)
+	_oil_slow_time = OIL_SLOW_TIME
+	linear_velocity.x *= 0.6
+	linear_velocity.z *= 0.6
+	_recent_hspeed *= 0.6
+	show_effect_icon(Weapons.OIL, OIL_SLOW_TIME)
+
+
+func oil_slow_left() -> float:
+	return _oil_slow_time
 
 
 ## Сколько заморозки осталось. Наружу — для сети: этим числом сервер

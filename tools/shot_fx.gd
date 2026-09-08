@@ -36,6 +36,9 @@ func _physics_process(_d: float) -> void:
 	match _frame:
 		250:   # отсчёт прошёл, машины едут; буст — огонь из выхлопа
 			me.apply_boost()
+			# `--smoke` (08.09): и дым из-под колёс НА ХОДУ — на стоящей
+			# машине (ShotParticles) зазоры между клубами не видны.
+			me.debug_smoke = "--smoke" in OS.get_cmdline_user_args()
 		262:
 			_shot("fx_boost_flame.png")
 		278:   # ракета: вспышка у дула + огненный шлейф

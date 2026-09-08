@@ -14,6 +14,10 @@ func _ready() -> void:
 	if args.size() > 0:
 		_out = args[0]
 	DirAccess.make_dir_recursive_absolute(_out)
+	# На пустом стендовом профиле окно «КАК ТЕБЯ ЗОВУТ?» закрывало бы
+	# подменю (как в ShotTuning) — имя задаём в памяти, профиль не трогаем.
+	if GameState.player_name == "":
+		GameState.player_name = "Стенд"
 	_select = (load("res://scenes/CarSelect.tscn") as PackedScene).instantiate()
 	add_child(_select)
 
@@ -21,12 +25,18 @@ func _ready() -> void:
 func _physics_process(_d: float) -> void:
 	_frame += 1
 	var board := OS.get_cmdline_user_args().has("--board")
+	# `--weapons` (08.09) — открыт магазин ступеней оружия.
+	var weapons := OS.get_cmdline_user_args().has("--weapons")
 	if _frame == 40 and board:
 		_select.call("_open_board")
+	if _frame == 40 and weapons:
+		_select.call("_open_weapons")
 	if _frame == 90:  # миниатюры успевают отрендериться, съезд — доехать
 		await RenderingServer.frame_post_draw
 		var img := get_viewport().get_texture().get_image()
 		var name := "carselect_board.png" if board else "carselect.png"
+		if weapons:
+			name = "carselect_weapons.png"
 		img.save_png(_out + "/" + name)
 		print("SHOT " + name)
 		get_tree().quit(0)

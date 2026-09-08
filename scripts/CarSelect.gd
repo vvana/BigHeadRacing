@@ -103,6 +103,8 @@ var _grid_locks: Array[Label] = []    # ярлыки «N ур.» на ячейк
 var _buy_flash := 0               # поколение вспышки «НЕ ХВАТАЕТ МОНЕТ»
 var _tuning: TuningPanel          # панель косметики (на месте доски)
 var _tuning_btn: Button           # «ТЮНИНГ» (у купленной аркадной машины)
+var _weapons: WeaponShopPanel     # магазин ступеней оружия (на месте доски)
+var _weapons_btn: Button          # «ОРУЖИЕ» — открыть магазин
 var _board_btn: Button            # «АВТОПАРК» — открыть доску миниатюр
 var _grid_panel: Control          # доска «АВТОПАРК» (скрыта, пока не открыли)
 var _column: Control              # левая колонка HUD (см. COL_*)
@@ -157,6 +159,11 @@ func _process(delta: float) -> void:
 	if _tuning != null and _tuning.visible:
 		if Input.is_action_just_pressed("ui_cancel"):
 			_tuning.close()
+		return
+	# И магазин оружия — так же.
+	if _weapons != null and _weapons.visible:
+		if Input.is_action_just_pressed("ui_cancel"):
+			_weapons.close()
 		return
 	# Esc закрывает и доску «АВТОПАРК».
 	if _grid_panel != null and _grid_panel.visible \
@@ -670,12 +677,15 @@ func _set_podium_smoke(color: String) -> void:
 	for p in _podium_smoke:
 		p.queue_free()
 	_podium_smoke.clear()
-	if not CarModelLibrary.ARCADE_COLORS.has(color):
+	# FX_COLORS, а не ARCADE_COLORS: белый и чёрный дым (04.09) есть только
+	# в списке эффектов — с ARCADE_COLORS подиум их молча не показывал
+	# («дым в гараже не видно», 08.09: у машины игрока куплен белый).
+	if not CarModelLibrary.FX_COLORS.has(color):
 		return
 	for sx: float in [-0.55, 0.55]:
 		var p := Car.make_smoke()
 		Car.tint_smoke(p, color, false)
-		p.amount = 10
+		p.amount = 14
 		p.lifetime = 1.1
 		p.initial_velocity_min = 0.3
 		p.initial_velocity_max = 0.7
@@ -791,7 +801,21 @@ func _open_tuning() -> void:
 	if not GameState.car_owned(base) or _tuning == null:
 		return
 	_grid_panel.visible = false
+	if _weapons != null:
+		_weapons.visible = false
 	_tuning.open(base)
+	_set_panel_open(true)
+
+
+## Магазин ступеней оружия (08.09) — на месте доски; тюнинг и доска
+## прячутся без сигнала closed (иначе машина метнулась бы в центр).
+func _open_weapons() -> void:
+	if _weapons == null:
+		return
+	_grid_panel.visible = false
+	if _tuning != null and _tuning.visible:
+		_tuning.visible = false
+	_weapons.open()
 	_set_panel_open(true)
 
 
@@ -814,6 +838,8 @@ func _on_tuning_closed() -> void:
 func _open_board() -> void:
 	if _tuning != null and _tuning.visible:
 		_tuning.visible = false   # без closed — иначе машина метнётся в центр
+	if _weapons != null:
+		_weapons.visible = false
 	_grid_panel.visible = true
 	if _buttons.size() > _index:
 		_scroll.ensure_control_visible(_buttons[_index])
@@ -1402,6 +1428,15 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 	_tuning_btn.pressed.connect(_open_tuning)
 	col.add_child(_tuning_btn)
 
+	# «ОРУЖИЕ» — магазин ступеней оружия (08.09): над «ТЮНИНГ», справа от
+	# таблички с именем машины (она 118..538 px), не зависит от машины.
+	_weapons_btn = Button.new()
+	_weapons_btn.text = "ОРУЖИЕ"
+	UiKit.style_button(_weapons_btn, "orange", 15)
+	_place(_weapons_btn, 548, ROW_Y - 66, 108, 54, true)
+	_weapons_btn.pressed.connect(_open_weapons)
+	col.add_child(_weapons_btn)
+
 
 ## Мультяшная кнопка-стрелка листания (x — левая кромка в px, по
 ## вертикали — середина окна).
@@ -1470,6 +1505,13 @@ func _setup_grid(canvas: CanvasLayer) -> void:
 	_tuning.closed.connect(_on_tuning_closed)
 	_tuning.tab_changed.connect(_refresh_podium_smoke)
 	canvas.add_child(_tuning)
+
+	# Магазин оружия — там же, на месте доски, пока открыт.
+	_weapons = WeaponShopPanel.new()
+	_place(_weapons, BOARD_X, BOARD_Y, BOARD_W, BOARD_H)
+	_weapons.changed.connect(_refresh_money_label)
+	_weapons.closed.connect(func() -> void: _set_panel_open(false))
+	canvas.add_child(_weapons)
 
 	_scroll = ScrollContainer.new()
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED

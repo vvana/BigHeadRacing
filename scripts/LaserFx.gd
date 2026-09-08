@@ -17,11 +17,14 @@ var _dir := Vector3.FORWARD
 var _length := 70.0
 
 
+## lifetime — сколько луч держится (III ступень лазера держит его дольше,
+## см. Car.laser_lifetime); 0 — обычные LIFETIME.
 static func spawn(parent: Node, from: Vector3, dir: Vector3, length: float,
-		source: Car = null) -> void:
+		source: Car = null, lifetime := 0.0) -> void:
 	# Выделенному серверу косметика не нужна и вредна (см. FxKit._skip).
 	if FxKit._skip():
 		return
+	var life := lifetime if lifetime > 0.0 else LIFETIME
 	var fx := LaserFx.new()
 	fx._source = source
 	fx._dir = dir
@@ -45,8 +48,8 @@ static func spawn(parent: Node, from: Vector3, dir: Vector3, length: float,
 	var tw := fx.create_tween()
 	# Гаснет не сразу: первую половину жизни луч держит яркость, дальше
 	# тает — так его видно и стрелявшему, и жертве.
-	tw.tween_interval(LIFETIME * 0.45)
-	tw.tween_property(mat, "albedo_color:a", 0.0, LIFETIME * 0.55)
+	tw.tween_interval(life * 0.45)
+	tw.tween_property(mat, "albedo_color:a", 0.0, life * 0.55)
 	tw.tween_callback(fx.queue_free)
 
 

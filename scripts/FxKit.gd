@@ -381,31 +381,37 @@ static func fire_burst(parent: Node, pos: Vector3, amount := 14) -> void:
 	fx.emitting = false
 	fx.one_shot = true
 	fx.explosiveness = 0.85
-	fx.amount = amount
+	# 08.09 («огонь плотнее»): языков в полтора раза больше и крупнее,
+	# кучнее (радиус 0.9 → 0.7), смешивание вместо аддитивного — на светлом
+	# полотне аддитивный огонь просвечивал.
+	fx.amount = int(amount * 1.5)
 	fx.lifetime = 0.5
 	fx.local_coords = false
 	fx.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
-	fx.emission_sphere_radius = 0.9
+	fx.emission_sphere_radius = 0.7
 	fx.direction = Vector3.UP
 	fx.spread = 30.0
 	fx.gravity = Vector3(0.0, 2.5, 0.0)
 	fx.initial_velocity_min = 1.0
 	fx.initial_velocity_max = 2.6
-	fx.scale_amount_min = 0.8
-	fx.scale_amount_max = 1.4
+	fx.scale_amount_min = 1.0
+	fx.scale_amount_max = 1.7
 	var shrink := Curve.new()
 	shrink.add_point(Vector2(0.0, 1.0))
 	shrink.add_point(Vector2(1.0, 0.15))
 	fx.scale_amount_curve = shrink
+	# Атлас fire_6x3 — анимация догорания (крупные языки — верхний ряд,
+	# ниже — крошки): старт в верхнем ряду, за жизнь язык догорает до
+	# середины второго (offset + speed ≈ 0.55), а не листает атлас 1-2 раза.
 	fx.anim_offset_min = 0.0
-	fx.anim_offset_max = 1.0
-	fx.anim_speed_min = 1.0
-	fx.anim_speed_max = 2.0
+	fx.anim_offset_max = 0.15
+	fx.anim_speed_min = 0.35
+	fx.anim_speed_max = 0.45
 	var quad := QuadMesh.new()
 	quad.size = Vector2(1.0, 1.0)
 	var mat := StandardMaterial3D.new()
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	mat.blend_mode = BaseMaterial3D.BLEND_MODE_MIX
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
 	mat.particles_anim_h_frames = 6

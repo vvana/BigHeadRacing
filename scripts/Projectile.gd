@@ -22,6 +22,14 @@ var freeze := false
 ## получил такую отмотку раньше (Car._use_laser), снаряды — нет.
 ## 0 — цели берутся «как есть» (боты, оффлайн, инертные копии).
 var lag := 0.0
+## Ступени (магазин, 08.09; ставит Car.use_weapon и копия у клиента):
+## hit_mult — снаряд крупнее, попадание шире (I: ×1.15); homing — ракета II
+## доворачивает на соперника рядом с курсом (_home); speed_mult — ледышка
+## II летит быстрее; freeze_time — сколько держится заморозка (I: дольше).
+var hit_mult := 1.0
+var homing := false
+var speed_mult := 1.0
+var freeze_time := 3.0
 
 ## Полукорпус для проверки по отмотанным положениям: машина ~3.2 x 1.7 м,
 ## снаряд радиусом 0.5. Та же величина, что у коридора лазера.
@@ -44,10 +52,11 @@ func _ready() -> void:
 		# должна лететь быстрее» (жалоба 31.08).
 		_speed = 55.0
 		_life = 2.0
+	_speed *= speed_mult
 
 	var col := CollisionShape3D.new()
 	var sphere := SphereShape3D.new()
-	sphere.radius = 0.5
+	sphere.radius = 0.5 * hit_mult
 	col.shape = sphere
 	add_child(col)
 
@@ -55,8 +64,8 @@ func _ready() -> void:
 	# 55 м/с было плохо видно, просьба игрока — «пульки побольше».
 	var mesh := MeshInstance3D.new()
 	var ball := SphereMesh.new()
-	ball.radius = 0.42
-	ball.height = 0.84
+	ball.radius = 0.42 * hit_mult
+	ball.height = 0.84 * hit_mult
 	mesh.mesh = ball
 	var mat := StandardMaterial3D.new()
 	if freeze:
@@ -132,6 +141,8 @@ func _physics_process(delta: float) -> void:
 	if _first_check:
 		_first_check = false
 		prev -= direction * 2.3
+	if homing:
+		_home(delta)
 	global_position += direction * _speed * delta
 	_hug_ground()
 	# Попадание по ОТМОТАННЫМ положениям — для снаряда живого игрока.
@@ -154,13 +165,54 @@ func _physics_process(delta: float) -> void:
 			var f := car.true_forward()
 			for k: float in [0.0, 1.1, -1.1]:
 				if _segment_gap(prev, global_position,
-						center + f * k) < HIT_R:
+						center + f * k) < HIT_R * hit_mult:
 					_hit_car(car)
 					_boom()
 					return
 	_life -= delta
 	if _life <= 0.0:
 		queue_free()
+
+
+## САМОНАВЕДЕНИЕ (ракета II, спецификация игрока 04.09: «если пролетает
+## близко от соперника»). Цель — ближайшая по курсу машина в конусе
+## перед снарядом (до HOME_RANGE вперёд, не дальше HOME_SIDE вбок); курс
+## доворачивает к ней не быстрее HOME_TURN рад/с — прямо летящую в упор
+## ракету это не меняет, а прошедшую бы в паре метров подтягивает.
+## Считается и у инертной копии на клиенте (по тем же марионеткам), чтобы
+## картинка не разъезжалась с сервером; итог всё равно решает сервер.
+func _home(delta: float) -> void:
+	const HOME_RANGE := 26.0
+	const HOME_SIDE := 6.0
+	const HOME_TURN := 2.4
+	var best: Car = null
+	var best_score := INF
+	for node in get_tree().get_nodes_in_group("cars"):
+		var car := node as Car
+		if car == null or car == shooter or not car.alive or car.is_ghost():
+			continue
+		var rel := car.global_position - global_position
+		rel.y = 0.0
+		var along := rel.dot(direction)
+		if along < 0.5 or along > HOME_RANGE:
+			continue
+		var side := (rel - direction * along).length()
+		if side > HOME_SIDE:
+			continue
+		var score := along + side * 2.0
+		if score < best_score:
+			best_score = score
+			best = car
+	if best == null:
+		return
+	var want := best.global_position - global_position
+	want.y = 0.0
+	if want.length_squared() < 1e-4:
+		return
+	want = want.normalized()
+	var angle := direction.signed_angle_to(want, Vector3.UP)
+	var step: float = clampf(angle, -HOME_TURN * delta, HOME_TURN * delta)
+	direction = direction.rotated(Vector3.UP, step).normalized()
 
 
 ## Прижим к полотну (как у ScrambleWave): луч вниз, цель — земля + HOVER,
@@ -226,7 +278,7 @@ func _on_body_entered(body: Node3D) -> void:
 func _hit_car(car: Car) -> void:
 	car.notify_hit_by(shooter, Weapons.FREEZE if freeze else Weapons.ROCKET)
 	if freeze:
-		car.apply_freeze(3.0)
+		car.apply_freeze(freeze_time)
 	else:
 		car.destroy()
 

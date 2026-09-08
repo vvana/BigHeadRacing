@@ -26,6 +26,10 @@ var direction := Vector3.FORWARD
 ## На сколько отматывать цели при проверке попадания — ровно как у снаряда
 ## (Projectile.lag): стрелявший целился по своему экрану.
 var lag := 0.0
+## Ступени глушилки (магазин, 08.09): stun_time — сколько держится сбитое
+## управление (I: ×1.15), speed_mult — скорость волны (II: ×1.3).
+var stun_time := SCRAMBLE_TIME
+var speed_mult := 1.0
 
 ## Радиус поражения — он же радиус, до которого расходятся кольца: игрок
 ## видит ровно ту зону, в которой волна снимает управление. Той же
@@ -125,7 +129,7 @@ func _physics_process(delta: float) -> void:
 	if _first_check:
 		_first_check = false
 		prev -= direction * 2.3
-	global_position += direction * SPEED * delta
+	global_position += direction * SPEED * speed_mult * delta
 	_hug_ground()
 	# Машины считаем ВРУЧНУЮ отрезком за кадр и радиусом колец HIT_R —
 	# и с отмоткой (живой игрок, протокол 13), и без (боты, оффлайн).
@@ -226,7 +230,7 @@ func _on_body_entered(_body: Node3D) -> void:
 
 func _hit_car(car: Car) -> void:
 	car.notify_hit_by(shooter, Weapons.SCRAMBLE)
-	car.apply_scramble(SCRAMBLE_TIME)
+	car.apply_scramble(stun_time)
 
 
 func _boom() -> void:

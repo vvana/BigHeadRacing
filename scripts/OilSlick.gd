@@ -10,6 +10,12 @@ extends Area3D
 ## в снимках; работай копия по-настоящему, машину било бы дважды.
 var inert := false
 var dropper: Car = null
+## Ступени масла (магазин, 08.09): size_mult — пятно крупнее (I: ×1.15);
+## slow_only — ниже II ступени пятно ТОЛЬКО ЗАМЕДЛЯЕТ (Car.apply_oil_slow),
+## занос с закруткой — со II (спецификация игрока 04.09: «масло I —
+## только замедляет; II — как сейчас»).
+var size_mult := 1.0
+var slow_only := false
 
 var _arm := 0.7
 var _life := 15.0
@@ -22,7 +28,7 @@ func _ready() -> void:
 
 	var col := CollisionShape3D.new()
 	var shape := CylinderShape3D.new()
-	shape.radius = 2.4
+	shape.radius = 2.4 * size_mult
 	shape.height = 0.6
 	col.shape = shape
 	add_child(col)
@@ -35,7 +41,7 @@ func _ready() -> void:
 	# стендов с seed (правило журнала).
 	var mesh := MeshInstance3D.new()
 	var quad := QuadMesh.new()
-	quad.size = Vector2(6.4, 6.4)
+	quad.size = Vector2(6.4, 6.4) * size_mult
 	quad.orientation = PlaneMesh.FACE_Y
 	mesh.mesh = quad
 	var mat := StandardMaterial3D.new()
@@ -67,6 +73,12 @@ func _on_body(body: Node3D) -> void:
 	if car == null or not car.alive:
 		return
 	if car == dropper and _arm > 0.0:
+		return
+	if slow_only:
+		# Ниже II ступени — только замедление, без закрутки.
+		if car.oil_slow_left() <= 0.0:
+			car.notify_hit_by(dropper, Weapons.OIL)
+		car.apply_oil_slow()
 		return
 	# В ленту — только если занос реально начнётся (повторный наезд во
 	# время заноса apply_oil_slip игнорирует, событие было бы ложным).

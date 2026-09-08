@@ -173,7 +173,8 @@ func _give(car: Car) -> void:
 	if car.race != null and car.race.has_method("pickup_weapon_for"):
 		car.weapon = car.race.pickup_weapon_for(car)
 	else:
-		car.weapon = Weapons.random_weapon(false, 0.0, car.weapon)
+		car.weapon = Weapons.random_weapon(false, 0.0, car.weapon,
+				car.weapon_steps)
 	_pickup_fx()
 
 

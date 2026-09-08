@@ -169,9 +169,13 @@ func net_loss_report() -> String:
 			_loss_got, _loss_total,
 			100.0 * float(_loss_total) / float(_loss_got + _loss_total),
 			" ".join(parts)]
-# Когда мы сами нарисовали свой лазер, не дожидаясь сервера (см.
+# Когда мы сами нарисовали свой выстрел, не дожидаясь сервера (см.
 # _client_tick): эхо _rx_weapon_fx об этом же выстреле рисовать не надо.
+# 08.09: было только для лазера, теперь для ЛЮБОГО оружия — kind того, что
+# предсказали, и момент нажатия. Пока сервер не подтвердил, HUD показывает
+# слот пустым (иначе значок висел ещё пинг после выстрела).
 var _laser_predicted := -10.0
+var _fx_predicted_kind := -1
 # Клиент: прошлое отправленное состояние своей машины (см. _client_tick).
 var _pstate_prev := PackedFloat32Array()
 # Сервер: прошлый разосланный снимок — едет историей за текущим (_pack_state).
@@ -399,8 +403,12 @@ func _spawn_cars() -> void:
 		car.name = "Car%d" % i
 		car.track = _track
 		car.race = self
+		# Ступени оружия из магазина — только у машины игрока (оффлайн;
+		# по сети свою машину отмечает _rx_welcome, чужие — _rx_hello).
+		if is_p:
+			car.weapon_steps = GameState.weapon_steps()
 		# На старте у каждого одно случайное оружие; дальше — боксы.
-		car.weapon = Weapons.random_weapon()
+		car.weapon = Weapons.random_weapon(false, 0.0, -1, car.weapon_steps)
 		# Характеристики машины игрока НЕ трогаем: тюнинг косметический,
 		# все едут на стоке (03.09, см. Car «Улучшения»).
 		if not is_p:
@@ -560,7 +568,8 @@ func pickup_weapon_for(car: Car) -> int:
 	# Того же, что уже в руках, не выдаём: подбор без видимой смены значка
 	# читался как «проехал сквозь бонус» (03.09).
 	return Weapons.random_weapon(
-			_place_of(i) == _cars.size(), lead - _progress[i], car.weapon)
+			_place_of(i) == _cars.size(), lead - _progress[i], car.weapon,
+			car.weapon_steps)
 
 
 ## Вспышка подбора бокса (та же, что рисует WeaponBox._give у сервера и
@@ -756,11 +765,20 @@ func _process(delta: float) -> void:
 		if spd != _hud_speed:
 			_hud_speed = spd
 			_speed_label.text = str(spd)
-		if _car.weapon != _last_weapon:
-			_last_weapon = _car.weapon
-			if _car.weapon >= 0:
-				_weapon_icon.texture = Weapons.icon(_car.weapon)
-				_weapon_name.text = Weapons.display_name(_car.weapon)
+		# По сети снимок ещё пинг после нажатия везёт старое оружие — слот
+		# показываем пустым сразу, как только выстрел предсказан
+		# (_client_tick); сервер подтвердит или (если отверг) вернёт значок.
+		var shown := _car.weapon
+		if shown >= 0 and shown == _fx_predicted_kind \
+				and Time.get_ticks_msec() / 1000.0 - _laser_predicted < 1.0:
+			shown = -1
+		if shown != _last_weapon:
+			_last_weapon = shown
+			if shown >= 0:
+				_weapon_icon.texture = Weapons.icon(shown)
+				# С римской ступенью из магазина: «Ракета II».
+				_weapon_name.text = Weapons.display_name_step(shown,
+						_car.wstep(shown))
 			else:
 				_weapon_icon.texture = _slot_empty_tex
 				_weapon_name.text = "возьми бокс"
@@ -1674,7 +1692,8 @@ func _say_hello() -> void:
 		if Net.my_slot != -1 or not Net.is_client():
 			return
 		_rx_hello.rpc_id(1, GameState.selected_car_id, Net.PROTOCOL,
-				GameState.race_size, GameState.display_name())
+				GameState.race_size, GameState.display_name(),
+				GameState.weapon_steps())
 		await get_tree().create_timer(1.0).timeout
 		if not is_inside_tree():
 			return
@@ -1967,34 +1986,38 @@ func _client_tick(_delta: float) -> void:
 	if Input.is_action_just_pressed("fire") \
 			or Input.is_action_just_pressed("drop"):
 		_rx_press.rpc_id(1)
-		# Лазер — мгновенное оружие: рисуем СВОЙ луч сразу, не дожидаясь,
-		# пока просьба слетает на сервер и картинка вернётся (полный пинг:
-		# «нажал E, а лазер увидел позже»). Урон по-прежнему решает сервер
-		# (с отмоткой целей — см. Car._use_laser); эхо своего выстрела
-		# гасится в _rx_weapon_fx.
-		if _car.weapon == Weapons.LASER and _car.alive:
+		# Картинку СВОЕГО выстрела рисуем сразу, не дожидаясь, пока просьба
+		# слетает на сервер и событие вернётся (полный пинг: «нажал E, а
+		# оружие сработало с задержкой» — жалоба 08.09; до этого так
+		# предсказывался только лазер). Копия инертна (как у _rx_weapon_fx):
+		# урон, толчки и трату оружия по-прежнему решает сервер, эхо
+		# своего выстрела гасится в _rx_weapon_fx по kind и времени.
+		var kind := _car.weapon
+		if kind >= 0 and _car.alive:
 			var fwd := -_car.global_transform.basis.z
 			fwd.y = 0.0
 			if fwd.length_squared() > 1e-6:
 				var fn := fwd.normalized()
-				LaserFx.spawn(self,
-						_car.global_position + Vector3.UP * 0.5,
-						fn, 70.0, _car)
+				_spawn_weapon_visual(kind, _car.global_position, fn, _car,
+						_car.wstep(kind))
+				_fx_predicted_kind = kind
 				_laser_predicted = Time.get_ticks_msec() / 1000.0
-				# И жертвы тоже предсказываем (04.09): кто стоит в коридоре
-				# луча на МОЁМ экране — взрывается сразу, сервер решает
-				# то же по отмотке к моей картине (Car._use_laser).
-				var from := _car.global_position
-				for c in _cars:
-					if c == _car or c.net_role != Car.NetRole.PUPPET:
-						continue
-					var to := c.visual_origin() - from
-					to.y = 0.0
-					var along := to.dot(fn)
-					if along < 0.0 or along > Car.LASER_RANGE:
-						continue
-					if (to - fn * along).length() <= 1.6:
-						c.net_predict_destroy()
+				# И жертвы лазера тоже предсказываем (04.09): кто стоит в
+				# коридоре луча на МОЁМ экране — взрывается сразу, сервер
+				# решает то же по отмотке к моей картине (Car._use_laser).
+				if kind == Weapons.LASER:
+					var from := _car.global_position
+					for c in _cars:
+						if c == _car or c.net_role != Car.NetRole.PUPPET:
+							continue
+						var to := c.visual_origin() - from
+						to.y = 0.0
+						var along := to.dot(fn)
+						if along < 0.0 \
+								or along > Car.laser_range_for(_car.wstep(kind)):
+							continue
+						if (to - fn * along).length() <= 1.6:
+							c.net_predict_destroy()
 
 
 ## Снимок: на машину 11 float (позиция, кватернион, скорость, метка тика
@@ -2089,7 +2112,7 @@ func _put_state(dst: PackedFloat32Array, ci: int, p: Vector3, q: Quaternion,
 
 @rpc("any_peer", "call_remote", "reliable")
 func _rx_hello(car_id: String, proto: int, want_size := 4,
-		pname := "") -> void:
+		pname := "", steps := PackedByteArray()) -> void:
 	if not Net.is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
@@ -2143,6 +2166,14 @@ func _rx_hello(car_id: String, proto: int, want_size := 4,
 	_roster[slot] = car_id
 	_set_slot_name(slot, pname)
 	_set_car_model(_cars[slot], car_id)
+	# Ступени оружия игрока (магазин, протокол 20): по ним сервер считает
+	# его выстрелы. Санитария клиент-авторитетных данных: ровно COUNT
+	# байт, каждый 0..STEPS — лишнее и мусор отбрасываются.
+	var clean := PackedByteArray()
+	clean.resize(Weapons.COUNT)
+	for k in Weapons.COUNT:
+		clean[k] = clampi(steps[k], 0, Weapons.STEPS) if k < steps.size() else 0
+	_cars[slot].weapon_steps = clean
 	# Вид трассы и размер заезда — ПЕРВЫМИ (надёжные RPC упорядочены): не
 	# совпало — клиент перезагрузит сцену и представится заново, welcome
 	# старой сцены пропадёт.
@@ -2477,6 +2508,9 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	car.freeze = false
 	car.net_role = Car.NetRole.OWNED
 	car.is_player = true
+	# Свои ступени оружия — и своей машине: по ним она рисует предсказанный
+	# выстрел (_client_tick), держит буст дольше и подписывает HUD.
+	car.weapon_steps = GameState.weapon_steps()
 	# И ВСТАЁТ НА СВОЮ КЛЕТКУ РЕШЁТКИ. Пока мы ждали слот, она была
 	# марионеткой, и устаревший снимок (сервер мог поймать хвост _rx_pstate
 	# из сцены ПРОШЛОГО заезда — см. защиту в _rx_pstate) успевал увезти её
@@ -2978,6 +3012,8 @@ func _rx_fx(kind: int, args: Array) -> void:
 				_car.apply_scramble(args[0])
 		Car.NetFx.OIL:
 			_car.apply_oil_slip()
+		Car.NetFx.OIL_SLOW:
+			_car.apply_oil_slow()
 		Car.NetFx.BOOST:
 			_car.apply_boost(args.size() >= 1 and args[0])
 		Car.NetFx.SLOW:
@@ -3158,15 +3194,18 @@ func _mem_note() -> String:
 
 
 @rpc("authority", "call_remote", "reliable")
-func _rx_weapon_fx(idx: int, kind: int, pos: Vector3, dir: Vector3) -> void:
+func _rx_weapon_fx(idx: int, kind: int, pos: Vector3, dir: Vector3,
+		step := 0) -> void:
 	if idx < 0 or idx >= _cars.size():
 		return
-	# Эхо СВОЕГО лазера: луч уже нарисован в момент нажатия (_client_tick),
-	# второй — с задержкой на пинг — рисовался бы поверх и «двоил» выстрел.
-	if kind == Weapons.LASER and idx == _my_index() \
+	# Эхо СВОЕГО выстрела: картинка уже нарисована в момент нажатия
+	# (_client_tick), вторая — с задержкой на пинг — рисовалась бы поверх
+	# и «двоила» выстрел (вторая ракета, второе пятно масла).
+	if idx == _my_index() and kind == _fx_predicted_kind \
 			and Time.get_ticks_msec() / 1000.0 - _laser_predicted < 1.0:
+		_fx_predicted_kind = -1
 		return
-	_spawn_weapon_visual(kind, pos, dir, _cars[idx])
+	_spawn_weapon_visual(kind, pos, dir, _cars[idx], step)
 
 
 ## Сервер зовёт это из Car.use_weapon — чтобы клиенты УВИДЕЛИ выстрел.
@@ -3177,7 +3216,8 @@ func net_broadcast_weapon(car: Car, kind: int) -> void:
 	if idx < 0:
 		return
 	# По сырым данным владельца — как сам выстрел (Car.use_weapon).
-	_rx_weapon_fx.rpc(idx, kind, car.true_position(), car.true_forward())
+	_rx_weapon_fx.rpc(idx, kind, car.true_position(), car.true_forward(),
+			car.wstep(kind))
 
 
 ## Клиентская КОПИЯ выстрела — только картинка. Мины, масло и снаряды
@@ -3186,24 +3226,39 @@ func net_broadcast_weapon(car: Car, kind: int) -> void:
 ## бы дважды — и по-разному на каждом экране.
 ## shooter — машина стрелявшего: луч лазера и волна глушилки ЕДУТ С НЕЙ
 ## (см. LaserFx), а не висят там, где нажали.
+## step — ступень оружия стрелявшего (магазин, протокол 20): копия
+## повторяет то, что видно глазом, — две мины, крупный снаряд и пятно,
+## длинный луч, быстрая волна (см. Car.use_weapon).
 func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3,
-		shooter: Car = null) -> void:
+		shooter: Car = null, step := 0) -> void:
 	match kind:
 		Weapons.MINE:
-			var m := Mine.new()
-			m.inert = true
-			add_child(m)
-			m.global_position = pos - dir * 2.4 + Vector3.UP * 0.1
+			var right := Vector3(-dir.z, 0.0, dir.x)
+			var offsets: Array[float] = [0.0]
+			if step >= 2:
+				offsets = [-0.8, 0.8]
+			for sx: float in offsets:
+				var m := Mine.new()
+				m.inert = true
+				add_child(m)
+				m.global_position = pos - dir * 2.4 + right * sx + Vector3.UP * 0.1
 		Weapons.ROCKET, Weapons.FREEZE:
 			var pr := Projectile.new()
 			pr.inert = true
 			pr.direction = dir
 			pr.freeze = kind == Weapons.FREEZE
+			pr.shooter = shooter
+			if pr.freeze:
+				pr.speed_mult = 1.2 if step >= 2 else 1.0
+			else:
+				pr.hit_mult = 1.15 if step >= 1 else 1.0
+				pr.homing = step >= 2
 			add_child(pr)
 			pr.global_position = pos + dir * 2.3 + Vector3.UP * 0.55
 		Weapons.OIL:
 			var oil := OilSlick.new()
 			oil.inert = true
+			oil.size_mult = 1.15 if step >= 1 else 1.0
 			add_child(oil)
 			oil.global_position = pos - dir * 3.0 + Vector3.UP * 0.12
 		Weapons.MAGNET:
@@ -3213,12 +3268,14 @@ func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3,
 			FxKit.lightning_burst(self, pos + Vector3.UP * 0.8,
 					Color(0.85, 0.4, 1.0), 7, 1.4)
 		Weapons.LASER:
-			LaserFx.spawn(self, pos + Vector3.UP * 0.5, dir, 70.0, shooter)
+			LaserFx.spawn(self, pos + Vector3.UP * 0.5, dir,
+					Car.laser_range_for(step), shooter, Car.laser_lifetime_for(step))
 		Weapons.SCRAMBLE:
 			var wave := ScrambleWave.new()
 			wave.inert = true
 			wave.track = _track
 			wave.direction = dir
+			wave.speed_mult = 1.3 if step >= 2 else 1.0
 			add_child(wave)
 			wave.global_position = pos + dir * 2.3 + Vector3.UP * 0.55
 			# Волна радиуса действия от стрелявшего — как у него самого.

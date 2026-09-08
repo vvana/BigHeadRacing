@@ -78,6 +78,14 @@ func _physics_process(_d: float) -> void:
 			for c: Car in _main._cars:
 				c.controls_enabled = false
 				c.weapon = -1
+			# Ступени оружия (магазин, 08.09): масло ЗАНОСИТ только со II
+			# ступени (ниже — лишь замедляет, спецификация игрока 04.09).
+			# Этот стенд проверяет занос как раньше — даём атакующему масло
+			# II; ступени в целом проверяет TestWeaponSteps.
+			var steps := PackedByteArray()
+			steps.resize(Weapons.COUNT)
+			steps[Weapons.OIL] = 2
+			attacker.weapon_steps = steps
 			# Заезд теперь бывает и на 8 машин (размер выбирается в гараже и
 			# лежит в профиле). Стенд работает с четырьмя — ЛИШНИЕ убираем за
 			# карту, иначе они болтаются на трассе, ловят чужие снаряды и

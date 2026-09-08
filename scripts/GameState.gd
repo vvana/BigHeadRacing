@@ -216,6 +216,11 @@ func _ready() -> void:
 		var items: Variant = cf.get_value("profile", "car_items", {})
 		if items is Dictionary:
 			car_items = items
+		var wups: Variant = cf.get_value("profile", "weapon_upgrades", {})
+		if wups is Dictionary:
+			weapon_upgrades = {}
+			for k in wups:
+				weapon_upgrades[int(k)] = clampi(int(wups[k]), 0, Weapons.STEPS)
 		_migrate_items()
 		sel = str(cf.get_value("profile", "selected_car", ""))
 		_gift_1m_claimed = bool(cf.get_value("profile", "gift_1m_claimed", false))
@@ -502,6 +507,70 @@ func try_buy_item(base: String, key: String) -> bool:
 	return true
 
 
+# ---- Магазин оружия (08.09): три ступени на каждый вид ----
+# Единственная прокачка, влияющая на игру (ЭКОНОМИКА.md, раздел 7):
+# ступени покупаются ПО ПОРЯДКУ (II без I нельзя), каждая — со своего
+# уровня профиля и за свою цену (Weapons.STEP_LEVELS / STEP_PRICES по
+# группе вида). Само оружие по-прежнему надо поймать в боксе.
+var weapon_upgrades := {}   # вид (int) → ступень 0..3
+
+
+func weapon_step(kind: int) -> int:
+	return clampi(int(weapon_upgrades.get(kind, 0)), 0, Weapons.STEPS)
+
+
+## Следующая покупаемая ступень (1..3) или 0, если все куплены.
+func weapon_next_step(kind: int) -> int:
+	var s := weapon_step(kind)
+	return s + 1 if s < Weapons.STEPS else 0
+
+
+## Уровень, с которого продаётся СЛЕДУЮЩАЯ ступень вида (0 — всё куплено).
+func weapon_next_level(kind: int) -> int:
+	var s := weapon_next_step(kind)
+	return Weapons.step_level(kind, s) if s > 0 else 0
+
+
+func weapon_next_price(kind: int) -> int:
+	var s := weapon_next_step(kind)
+	return Weapons.step_price(kind, s) if s > 0 else 0
+
+
+## Купить следующую ступень вида: вид известен, ступени остались, уровень
+## взят, монет хватает. Ступени берутся строго по порядку.
+func try_buy_weapon_step(kind: int) -> bool:
+	if kind < 0 or kind >= Weapons.COUNT:
+		return false
+	var s := weapon_next_step(kind)
+	if s <= 0:
+		return false
+	if level_info().x < Weapons.step_level(kind, s):
+		return false
+	if not try_spend(Weapons.step_price(kind, s)):
+		return false
+	weapon_upgrades[kind] = s
+	_save_profile()
+	return true
+
+
+## Набор ступеней для машины игрока (Car.weapon_steps): байт на вид в
+## порядке Weapons.*. Так же уезжает серверу в hello.
+func weapon_steps() -> PackedByteArray:
+	var out := PackedByteArray()
+	out.resize(Weapons.COUNT)
+	for kind in Weapons.COUNT:
+		out[kind] = weapon_step(kind)
+	return out
+
+
+## Сколько ступеней куплено всего (подпись кнопки «ОРУЖИЕ» в гараже).
+func weapon_steps_total() -> int:
+	var n := 0
+	for kind in Weapons.COUNT:
+		n += weapon_step(kind)
+	return n
+
+
 ## Сколько элементов слота/наклеек куплено (для подписей панели).
 func items_owned_count(base: String, prefix: String) -> int:
 	var n := 0
@@ -743,6 +812,7 @@ func _save_profile() -> void:
 	cf.set_value("profile", "car_items", car_items)
 	cf.set_value("profile", "car_tuning", car_tuning)
 	cf.set_value("profile", "car_packs", car_packs)
+	cf.set_value("profile", "weapon_upgrades", weapon_upgrades)
 	cf.set_value("profile", "selected_car",
 			CarModelLibrary.base_id(selected_car_id))
 	cf.set_value("profile", "gift_1m_claimed", _gift_1m_claimed)

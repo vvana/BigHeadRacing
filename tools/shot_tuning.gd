@@ -26,6 +26,16 @@ func _ready() -> void:
 	if li >= 0 and li + 1 < args.size():
 		GameState.car_items[base] = {"line": true}
 		GameState.car_tuning[base] = {"line": 1, "color_line": args[li + 1]}
+	# Ключ `--smoke <цвет>` (08.09): цвет дыма куплен и надет — подиум на
+	# вкладке ЭФФЕКТЫ должен дымить этим цветом (проверка белого/чёрного).
+	var si := args.find("--smoke")
+	if si >= 0 and si + 1 < args.size():
+		var items: Dictionary = GameState.car_items.get(base, {})
+		items["smoke:" + args[si + 1]] = true
+		GameState.car_items[base] = items
+		var tun: Dictionary = GameState.car_tuning.get(base, {})
+		tun["smoke"] = args[si + 1]
+		GameState.car_tuning[base] = tun
 	if not GameState.owned_cars.has(base):
 		GameState.owned_cars.append(base)
 	GameState.money = 12345
@@ -38,6 +48,11 @@ func _ready() -> void:
 		GameState.car_tuning[base] = {"color": "orange", "shade": 2,
 				"engine": 2, "wheel": 5, "sticker": 0}
 	GameState.selected_car_id = GameState.full_id(base)
+	# Имя только в памяти (без set_player_name — он пишет профиль): иначе
+	# гараж на пустом стендовом профиле открывает окно «КАК ТЕБЯ ЗОВУТ?»
+	# поверх подиума, и на снимке не видно корму (дым, неон).
+	if GameState.player_name == "":
+		GameState.player_name = "Стенд"
 	_select = (load("res://scenes/CarSelect.tscn") as PackedScene).instantiate()
 	add_child(_select)
 

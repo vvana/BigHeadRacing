@@ -23,6 +23,8 @@ const BLAST_LIFT := 0.45    # доля подброса вверх от импу
 ## в снимках; работай копия по-настоящему, машину било бы дважды.
 var inert := false
 var dropper: Car = null
+## Множитель радиусов взрыва (I ступень мины: ×1.15, см. Car.use_weapon).
+var radius_mult := 1.0
 
 var _arm := 0.7   # окно неуязвимости ХОЗЯИНА (сброс за корму — не подрыв)
 # Мина рвётся РОВНО ОДИН РАЗ. queue_free() отложен до конца кадра, а за
@@ -185,6 +187,8 @@ func _try_trigger(body: Node3D) -> void:
 	if trigger == dropper and _arm > 0.0:
 		return
 	_blown = true
+	var blast_r := BLAST_RADIUS * radius_mult
+	var lethal_r := LETHAL_RADIUS * radius_mult
 	# Взрыв: расталкивание всех машин в радиусе, сила тает с расстоянием.
 	for node in get_tree().get_nodes_in_group("cars"):
 		var car := node as Car
@@ -193,7 +197,7 @@ func _try_trigger(body: Node3D) -> void:
 		var away := car.global_position - global_position
 		away.y = 0.0
 		var dist := away.length()
-		if dist > BLAST_RADIUS:
+		if dist > blast_r:
 			continue
 		var dir := away / dist if dist > 0.01 else Vector3.FORWARD
 		# В эпицентре машина ГИБНЕТ (взрыв, появление на трассе, мигание) —
@@ -201,14 +205,14 @@ func _try_trigger(body: Node3D) -> void:
 		# переставляет машину к месту появления. В ленту событий (и в счёт
 		# убийств) идут только погибшие: раньше запись получал каждый, кого
 		# просто качнуло взрывом за десять метров.
-		if dist <= LETHAL_RADIUS:
+		if dist <= lethal_r:
 			car.notify_hit_by(dropper, Weapons.MINE)
 			car.destroy()
 			continue
 		# Дальше — прежнее расталкивание. Спад силы КВАДРАТИЧНЫЙ, а не
 		# линейный: рядом с эпицентром взрыв держит почти полную мощь, и
 		# только к кромке радиуса сходит на нет.
-		var t := dist / BLAST_RADIUS
+		var t := dist / blast_r
 		var falloff := 1.0 - t * t
 		var spin := BLAST_SPIN * falloff * (1.0 if randf() < 0.5 else -1.0)
 		car.push_from_blast(dir, BLAST_SPEED * falloff, spin, BLAST_LIFT)

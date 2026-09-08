@@ -46,11 +46,14 @@ func _ready() -> void:
 	_car.debug_smoke = true
 	add_child(_car)
 	_car.global_position = Vector3(0, 0.6, 0)
-	var model := CarModelLibrary.build("vz01_red-mred", 3.2)
+	# Ключ `--plain` (08.09): машина без купленного цвета дыма — обычный
+	# серый дым и обычное (жёлто-оранжевое) пламя выхлопа.
+	var id := "vz01_red" if args.has("--plain") else "vz01_red-mred"
+	var model := CarModelLibrary.build(id, 3.2)
 	if model:
 		_car.add_child(model)
 		_car.collect_wheels(model)
-	_car.apply_fx("vz01_red-mred")
+	_car.apply_fx(id)
 	var cam := Camera3D.new()
 	cam.fov = 45
 	add_child(cam)
@@ -61,6 +64,8 @@ func _physics_process(_d: float) -> void:
 	_frame += 1
 	if _frame == 90:
 		await RenderingServer.frame_post_draw
-		get_viewport().get_texture().get_image().save_png(_out + "/particles.png")
-		print("SHOT particles.png")
+		var name := "particles_plain.png" \
+				if OS.get_cmdline_user_args().has("--plain") else "particles.png"
+		get_viewport().get_texture().get_image().save_png(_out + "/" + name)
+		print("SHOT ", name)
 		get_tree().quit(0)
