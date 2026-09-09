@@ -80,13 +80,32 @@ func _run() -> void:
 	_ok(gs.weapon_next_level(Weapons.MINE) == 7 and gs.weapon_next_price(Weapons.MINE) == 1500,
 			"следующая мина: 7 ур., 1 500")
 
-	# --- Порядок: II без I нельзя (у масла ступень 0 → покупается именно I).
-	gs.xp = _xp_for_level(7)
-	_ok(gs.try_buy_weapon_step(Weapons.OIL) and gs.weapon_step(Weapons.OIL) == 1,
-			"масло: первая покупка — I, не II")
+	# --- Порядок: II без I нельзя (у магнита ступень 0 → покупается именно I).
+	gs.xp = _xp_for_level(9)
+	_ok(gs.try_buy_weapon_step(Weapons.MAGNET) and gs.weapon_step(Weapons.MAGNET) == 1,
+			"магнит: первая покупка — I, не II")
+	_ok(gs.try_buy_weapon_step(Weapons.MAGNET) and gs.weapon_step(Weapons.MAGNET) == 2,
+			"магнит II куплен на 9 уровне")
+	_ok(not gs.try_buy_weapon_step(Weapons.MAGNET), "магнит III с 18 уровня — рано")
+	# --- Бесплатная I ступень (09.09): ракета/масло/ускорение/щит I — у
+	# всех с 1-го уровня, без покупки; покупается сразу II по своему уровню.
+	_ok(gs.weapon_step(Weapons.OIL) == 1 and gs.weapon_step(Weapons.ROCKET) == 1
+			and gs.weapon_step(Weapons.BOOST) == 1 and gs.weapon_step(Weapons.SHIELD) == 1
+			and gs.weapon_upgrades.get(Weapons.OIL, 0) == 0,
+			"ракета/масло/ускорение/щит: I ступень даром, в профиле не записана")
+	_ok(Weapons.step_level(Weapons.ROCKET, 1) == 1 and Weapons.step_price(Weapons.ROCKET, 1) == 0
+			and Weapons.step_level(Weapons.ROCKET, 2) == 11 and Weapons.step_price(Weapons.ROCKET, 2) == 4000,
+			"ракета: I — 1 ур. и 0 монет, II — 11 ур. и 4 000 как раньше")
+	_ok(gs.weapon_next_step(Weapons.OIL) == 2 and gs.weapon_next_level(Weapons.OIL) == 7,
+			"масло: следующая покупка — II с 7 уровня")
 	_ok(gs.try_buy_weapon_step(Weapons.OIL) and gs.weapon_step(Weapons.OIL) == 2,
-			"масло II куплено на 7 уровне")
-	_ok(not gs.try_buy_weapon_step(Weapons.OIL), "масло III с 14 уровня — рано")
+			"масло: первая покупка — сразу II (I бесплатна)")
+	_ok(not gs.try_buy_weapon_step(Weapons.ROCKET) and gs.weapon_step(Weapons.ROCKET) == 1,
+			"ракета II на 9 уровне — рано, I остаётся")
+	_ok(Weapons.step_of(PackedByteArray(), Weapons.BOOST) == 1
+			and Weapons.step_of(PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), Weapons.SHIELD) == 1
+			and Weapons.step_of(PackedByteArray(), Weapons.MINE) == 0,
+			"step_of: бот/пустой набор — ускорение и щит I, мина 0")
 
 	# --- Нехватка монет.
 	gs.money = 100
@@ -113,7 +132,8 @@ func _run() -> void:
 			"weapon_steps: байт на вид")
 	_ok(Weapons.step_of(steps, Weapons.MINE) == 3 and Weapons.step_of(PackedByteArray(), Weapons.MINE) == 0
 			and Weapons.step_of(steps, 99) == 0, "step_of: пустой набор и чужой вид — 0")
-	_ok(gs.weapon_steps_total() == 5, "куплено ступеней всего: 5")
+	# Мина 3 + магнит 2 + масло II (I бесплатна — не считается) = 6.
+	_ok(gs.weapon_steps_total() == 6, "куплено ступеней всего: 6 (бесплатные не в счёт)")
 	# Мина на III — из бокса в 1.5 раза чаще: на 9000 бросках доля ~1.5/9.5.
 	seed(3)
 	var mines := 0
@@ -131,5 +151,6 @@ func _run() -> void:
 	var gs2: Node = GS.new()
 	gs2._ready()
 	_ok(gs2.weapon_step(Weapons.MINE) == 3 and gs2.weapon_step(Weapons.OIL) == 2
-			and gs2.weapon_step(Weapons.ROCKET) == 0, "ступени пережили перезапуск")
+			and gs2.weapon_step(Weapons.MAGNET) == 2 and gs2.weapon_step(Weapons.ROCKET) == 1
+			and gs2.weapon_step(Weapons.LASER) == 0, "ступени пережили перезапуск")
 	_ok(gs2.money == gs.money, "деньги совпали после перезапуска")

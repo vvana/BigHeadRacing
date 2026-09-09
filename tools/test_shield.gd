@@ -104,10 +104,10 @@ func _physics_process(_d: float) -> void:
 			_park(v2)
 			_park(v3)
 			_place(attacker, _base, _tan)
-			# ДЛИТЕЛЬНОСТЬ: без ступени 5 с, I — на 15 % дольше; уровень
-			# 1 и без ступени, и с I; II → 2, III → 3.
+			# ДЛИТЕЛЬНОСТЬ: «без ступени» — это бесплатная I (Weapons.FREE_STEP,
+			# 09.09), 5 с + 15 %; уровень 1 и с 0, и с I; II → 2, III → 3.
 			_shield_up(holder, _base + _tan * 15.0, 0)
-			_check("щит 0: 5 с", absf(holder.shield_left() - 5.0) < 0.05,
+			_check("щит 0 (= бесплатная I): 5.75 с", absf(holder.shield_left() - 5.75) < 0.05,
 					"осталось %.2f" % holder.shield_left())
 			_check("щит 0: уровень 1", holder.shield_level() == 1)
 			_check("щит: значок над машиной",

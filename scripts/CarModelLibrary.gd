@@ -1012,12 +1012,21 @@ static func _build_arcade(cfg: Dictionary, car_id: String,
 		var ws: Vector3 = geo["ws_f"] if front else geo["ws_r"]
 		var pivot := Node3D.new()
 		pivot.name = "WheelPivot_%s%s" % ["f" if front else "r", "r" if side > 0 else "l"]
-		pivot.position = pos
 		var wheel := _arcade_part(wheel_mesh, paint, 0, 0)
 		wheel.name = "Wheel"
 		var rot := Basis.IDENTITY if float(side) == mesh_side \
 				else Basis(Vector3.UP, PI)
-		wheel.transform = Transform3D(rot.scaled(ws), Vector3.ZERO)
+		# Пивот — В ЦЕНТРЕ колеса, а не в точке префаба: меш колеса в файле
+		# смещён наружу по x (~0.19 ед.), и пивот в точке префаба стоял на
+		# ВНУТРЕННЕЙ плоскости колеса. Руль крутит пивот вокруг Y — колесо
+		# ходило по дуге: на полном руле передние сближались на 2 см и
+		# разъезжались по длине на 8 см (жалоба 09.09 «у Стрелы сужается
+		# расстояние между передними колёсами»). Само место колеса не
+		# меняется: смещение перенесено с меша на пивот.
+		var basis := rot.scaled(ws)
+		var offset := basis * wheel_aabb.get_center()
+		pivot.position = pos + offset
+		wheel.transform = Transform3D(basis, -offset)
 		pivot.add_child(wheel)
 		pivot.set_meta("wheel_radius", wheel_aabb.size.y * 0.5 * ws.y * s)
 		pivot.set_meta("is_front", front)
@@ -1057,7 +1066,17 @@ static func _build_arcade(cfg: Dictionary, car_id: String,
 ## "paint:grey20"), пусто — краска кузова body_paint.
 static func _part_paint(cfg: Dictionary, slot: String, body_paint: String) -> String:
 	var pc := str(cfg.get(COLOR_KEYS.get(slot, ""), ""))
-	return "paint:%s0" % pc if is_paint_spec(pc) else body_paint
+	if is_paint_spec(pc):
+		return "paint:%s0" % pc
+	# Диски без своего цвета красятся в краску кузова, а на ТЁМНОЙ краске
+	# (шаг 1 у синего/фиолетового/коричневого, тёмно-серый) диск сливался с
+	# чёрной шиной — «диски пропадают» (жалоба 09.09; у ботов краска
+	# случайная, потому «иногда»). Такой краске — серебристый металлик,
+	# как и полосе (line_default_spec) достаётся светлый цвет.
+	if slot == "wheel" and body_paint.begins_with("paint:") \
+			and paint_color(body_paint.substr(6).left(-1), Color.GRAY).get_luminance() < 0.2:
+		return "paint:grey31"
+	return body_paint
 
 
 ## Красить ли деталь целиком (и поверхность "details"): выхлоп — при явно

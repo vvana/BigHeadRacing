@@ -196,7 +196,9 @@ func _physics_process(_d: float) -> void:
 			var b0: float = attacker._boost_time
 			_fire(attacker, Weapons.BOOST, 2)
 			var b2: float = attacker._boost_time
-			_ok["буст II дольше"] = b2 > b0 * 1.4
+			# Ступень «0» у ускорения — это бесплатная I (Weapons.FREE_STEP,
+			# 09.09): 1.15× против 1.5× у II.
+			_ok["буст II дольше"] = b2 > b0 * 1.25 and b2 < b0 * 1.35
 			# Волна перед носом (08.09): на II ступени её нет, на III — есть.
 			attacker._tick_effects(0.016)
 			_ok["буст II: волны перед носом нет"] = attacker._shock_fx != null \

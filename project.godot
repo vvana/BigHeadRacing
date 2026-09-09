@@ -17,6 +17,7 @@ InputSetup="*res://scripts/InputSetup.gd"
 GameState="*res://scripts/GameState.gd"
 Net="*res://scripts/Net.gd"
 Music="*res://scripts/Music.gd"
+Social="*res://scripts/Social.gd"
 
 [display]
 

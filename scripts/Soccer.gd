@@ -488,6 +488,8 @@ func _finish_match() -> void:
 	coins += _player_goals * 50
 	GameState.add_money(coins)
 	GameState.add_xp(xp)
+	# Статистика (09.09): матчи, победы, голы — в гараже (StatsPanel).
+	GameState.record_soccer(signi(_score[0] - _score[1]), _player_goals)
 	if _announcer:
 		_announcer.big(title, "опыт +%d  ·  монеты +%d" % [xp, coins], kind)
 	if _end_label:

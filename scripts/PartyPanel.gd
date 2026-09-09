@@ -1,0 +1,364 @@
+class_name PartyPanel
+extends PanelContainer
+## КОМАНДА ДРУЗЕЙ в гараже (09.09): на месте доски «АВТОПАРК», как
+## WeaponShopPanel. Поиск игрока по имени (имена единые — Social),
+## приглашение, состав команды с машинами на подиумах (как в лобби),
+## кнопки «ГОТОВ» и «ВЫЙТИ». Все данные — от сервера друзей (Social):
+## панель только рисует ростер и шлёт нажатия.
+
+signal closed
+
+const CAR_NAMES: Dictionary = preload("res://scripts/CarSelect.gd").DISPLAY_NAMES
+const CARD_W := 128.0
+const CARD_H := 150.0
+const RESULTS_MAX := 6
+
+var _font: FontFile
+var _box: VBoxContainer
+var _status: Label
+var _search: LineEdit
+var _results: VBoxContainer
+var _members_title: Label
+var _grid: GridContainer
+var _ready_btn: Button
+var _leave_btn: Button
+var _notice: Label
+var _notice_time := 0.0
+var _cards := {}          # uid → {root, table, car, name_l, state_l}
+var _last_items: Array = []
+
+
+func _ready() -> void:
+	_font = UiKit.font()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.19, 0.21, 0.24, 0.96)
+	style.set_corner_radius_all(10)
+	style.set_content_margin_all(10)
+	style.set_border_width_all(1)
+	style.border_color = Color(UiKit.RIM.r, UiKit.RIM.g, UiKit.RIM.b, 0.45)
+	add_theme_stylebox_override("panel", style)
+	_box = VBoxContainer.new()
+	_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_box.add_theme_constant_override("separation", 6)
+	add_child(_box)
+	_build()
+	visible = false
+	Social.connected_changed.connect(func(_on: bool) -> void: _refresh())
+	Social.welcome.connect(func(_ok: bool, _r: String) -> void: _refresh())
+	Social.name_result.connect(func(_ok: bool, _n: String, _r: String) -> void:
+		_refresh())
+	Social.party_changed.connect(_refresh)
+	Social.search_result.connect(_on_results)
+	Social.notice.connect(_on_notice)
+
+
+func _process(delta: float) -> void:
+	if not visible:
+		return
+	for uid in _cards:
+		(_cards[uid].table as Node3D).rotation.y += delta * 0.9
+	if _notice_time > 0.0:
+		_notice_time -= delta
+		if _notice_time <= 0.0:
+			_notice.text = ""
+
+
+func open() -> void:
+	visible = true
+	_refresh()
+	if not Social.in_party() and _search:
+		_search.call_deferred("grab_focus")
+
+
+func close() -> void:
+	visible = false
+	closed.emit()
+
+
+func _build() -> void:
+	# Шапка: заголовок, «ЗАКРЫТЬ».
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 10)
+	_box.add_child(head)
+	var title := _label("КОМАНДА ДРУЗЕЙ", 20, UiKit.YELLOW)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(title)
+	var close_btn := Button.new()
+	close_btn.text = "ЗАКРЫТЬ"
+	UiKit.style_button(close_btn, "steel", 14)
+	close_btn.custom_minimum_size = Vector2(110, 34)
+	close_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	close_btn.pressed.connect(close)
+	head.add_child(close_btn)
+
+	_status = _label("", 12, Color(1, 1, 1, 0.6))
+	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_box.add_child(_status)
+	_box.add_child(HSeparator.new())
+
+	# Поиск по имени.
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	_box.add_child(row)
+	_search = LineEdit.new()
+	_search.placeholder_text = "имя друга"
+	_search.max_length = GameState.NAME_MAX
+	_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_search.add_theme_font_override("font", _font)
+	_search.add_theme_font_size_override("font_size", 16)
+	var sb := UiKit.steel_box(6, 0.95)
+	sb.set_content_margin_all(6)
+	for state in ["normal", "focus"]:
+		_search.add_theme_stylebox_override(state, sb)
+	_search.add_theme_color_override("font_color", Color.WHITE)
+	_search.add_theme_color_override("caret_color", UiKit.YELLOW)
+	_search.text_submitted.connect(func(_t: String) -> void: _do_search())
+	row.add_child(_search)
+	var find := Button.new()
+	find.text = "НАЙТИ"
+	UiKit.style_button(find, "yellow", 14)
+	find.custom_minimum_size = Vector2(110, 36)
+	find.pressed.connect(_do_search)
+	row.add_child(find)
+
+	_results = VBoxContainer.new()
+	_results.add_theme_constant_override("separation", 3)
+	_box.add_child(_results)
+	_box.add_child(HSeparator.new())
+
+	# Состав команды.
+	_members_title = _label("", 15, Color.WHITE)
+	_box.add_child(_members_title)
+	_grid = GridContainer.new()
+	_grid.columns = 4
+	_grid.add_theme_constant_override("h_separation", 8)
+	_grid.add_theme_constant_override("v_separation", 8)
+	_box.add_child(_grid)
+
+	var spacer := Control.new()
+	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_box.add_child(spacer)
+
+	_notice = _label("", 13, UiKit.TEAL)
+	_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_box.add_child(_notice)
+
+	var bottom := HBoxContainer.new()
+	bottom.add_theme_constant_override("separation", 10)
+	_box.add_child(bottom)
+	_ready_btn = Button.new()
+	_ready_btn.text = "ГОТОВ"
+	UiKit.style_button(_ready_btn, "teal", 18)
+	_ready_btn.custom_minimum_size = Vector2(300, 48)
+	_ready_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ready_btn.pressed.connect(_toggle_ready)
+	bottom.add_child(_ready_btn)
+	_leave_btn = Button.new()
+	_leave_btn.text = "ВЫЙТИ"
+	UiKit.style_button(_leave_btn, "red", 16)
+	_leave_btn.custom_minimum_size = Vector2(150, 48)
+	_leave_btn.pressed.connect(func() -> void: Social.leave_party())
+	bottom.add_child(_leave_btn)
+
+
+func _do_search() -> void:
+	if not Social.connected:
+		_on_notice("Нет связи с сервером друзей")
+		return
+	Social.search(_search.text)
+
+
+func _on_results(items: Array) -> void:
+	_last_items = items
+	for c in _results.get_children():
+		_results.remove_child(c)
+		c.queue_free()
+	if items.is_empty():
+		_results.add_child(_label("Никого не нашлось" if _search.text != ""
+				else "Сейчас никого нет в игре", 12, Color(1, 1, 1, 0.5)))
+		return
+	var shown := 0
+	for it: Dictionary in items:
+		if shown >= RESULTS_MAX:
+			break
+		shown += 1
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		_results.add_child(row)
+		var online := bool(it.get("online", false))
+		var nm := _label(str(it.get("name", "")), 15,
+				Color.WHITE if online else Color(1, 1, 1, 0.45))
+		nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(nm)
+		var st := "не в сети"
+		if online:
+			st = "в заезде" if str(it.get("status", "")) == "race" else "в гараже"
+			if bool(it.get("party", false)):
+				st += ", в команде"
+		row.add_child(_label(st, 12, Color(1, 1, 1, 0.55)))
+		var inv := Button.new()
+		inv.text = "ПРИГЛАСИТЬ"
+		UiKit.style_button(inv, "orange", 12)
+		inv.custom_minimum_size = Vector2(120, 30)
+		inv.disabled = not online or bool(it.get("party", false)) \
+				or Social.members().size() >= SocialServer.PARTY_MAX
+		var who := str(it.get("name", ""))
+		inv.pressed.connect(func() -> void: Social.invite(who))
+		row.add_child(inv)
+
+
+func _on_notice(text: String) -> void:
+	_notice.text = text
+	_notice_time = 6.0
+
+
+func _toggle_ready() -> void:
+	Social.set_ready(not Social.my_ready())
+
+
+## Перерисовать по текущему состоянию Social: связь, имя, ростер.
+func _refresh() -> void:
+	if not is_inside_tree():
+		return
+	if not Social.connected:
+		_status.text = "Нет связи с сервером друзей — проверь интернет " \
+				+ "или подожди: подключаемся…"
+	elif not Social.name_ok:
+		_status.text = ("Имя «%s» занято другим игроком — нажми «ИМЯ» вверху "
+				+ "и выбери другое") % GameState.display_name() \
+				if Social.name_reason == "taken" \
+				else "Сначала введи имя (кнопка «ИМЯ» вверху)"
+	else:
+		_status.text = ("Ты на связи как «%s». Найди друга по имени и пригласи "
+				+ "в команду — до %d человек. Когда все нажмут «ГОТОВ», "
+				+ "команда попадёт в один заезд.") % [GameState.display_name(),
+				SocialServer.PARTY_MAX]
+	var ms: Array = Social.members()
+	var in_party := Social.in_party()
+	_members_title.text = ("В КОМАНДЕ: %d/%d" % [ms.size(), SocialServer.PARTY_MAX]) \
+			if in_party else "Команды пока нет — пригласи друга"
+	_ready_btn.visible = in_party
+	_leave_btn.visible = in_party
+	if in_party:
+		var mine := Social.my_ready()
+		_ready_btn.text = "ГОТОВ ✓ — ждём остальных" if mine else "ГОТОВ"
+		if bool(Social.party.get("launching", false)):
+			_ready_btn.text = "Ищем заезд…"
+	# Карточки членов: по uid, лишние снимаем, новые строим, машины меняем.
+	var seen := {}
+	for m: Dictionary in ms:
+		var uid := str(m.get("uid", ""))
+		seen[uid] = true
+		if not _cards.has(uid):
+			_cards[uid] = _build_card()
+		var card: Dictionary = _cards[uid]
+		var name_l: Label = card.name_l
+		var is_me := uid == str(Social.party.get("me", ""))
+		name_l.text = ("★ " if bool(m.get("leader", false)) else "") \
+				+ str(m.get("name", "")) + (" (ты)" if is_me else "")
+		name_l.add_theme_color_override("font_color",
+				UiKit.GREEN_ME if is_me else UiKit.BLUE_MATE)
+		var state_l: Label = card.state_l
+		if not bool(m.get("online", true)):
+			state_l.text = "не в сети"
+			state_l.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
+		elif bool(m.get("ready", false)):
+			state_l.text = "ГОТОВ ✓"
+			state_l.add_theme_color_override("font_color", UiKit.GREEN_ME)
+		elif str(m.get("status", "")) == "race":
+			state_l.text = "в заезде"
+			state_l.add_theme_color_override("font_color", UiKit.ORANGE_RIVAL)
+		else:
+			state_l.text = "ждёт"
+			state_l.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
+		var cid := str(m.get("car", ""))
+		if cid != "" and cid != str(card.car):
+			card.car = cid
+			var table: Node3D = card.table
+			for old in table.get_children():
+				old.queue_free()
+			var model := CarModelLibrary.build(cid, 3.0, 0.02)
+			if model:
+				table.add_child(model)
+			(card.car_l as Label).text = CAR_NAMES.get(
+					CarModelLibrary.base_id(cid), CarModelLibrary.base_id(cid))
+	for uid in _cards.keys():
+		if not seen.has(uid):
+			(_cards[uid].root as Control).queue_free()
+			_cards.erase(uid)
+
+
+## Карточка члена команды: подиум с машиной (свой мир, как в лобби),
+## имя, состояние.
+func _build_card() -> Dictionary:
+	var root := VBoxContainer.new()
+	root.custom_minimum_size = Vector2(CARD_W, CARD_H)
+	root.add_theme_constant_override("separation", 2)
+	_grid.add_child(root)
+	var name_l := _label("", 13, Color.WHITE)
+	name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_l.clip_text = true
+	root.add_child(name_l)
+
+	var view := SubViewportContainer.new()
+	view.stretch = true
+	view.custom_minimum_size = Vector2(CARD_W, 92)
+	root.add_child(view)
+	var vp := SubViewport.new()
+	vp.own_world_3d = true
+	vp.transparent_bg = true
+	vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	view.add_child(vp)
+	var cam := Camera3D.new()
+	cam.position = Vector3(0, 1.9, 4.6)
+	cam.rotation_degrees = Vector3(-16, 0, 0)
+	cam.fov = 45
+	vp.add_child(cam)
+	cam.current = true
+	var light := DirectionalLight3D.new()
+	light.rotation_degrees = Vector3(-45, -30, 0)
+	light.light_energy = 1.3
+	vp.add_child(light)
+	var env := WorldEnvironment.new()
+	var e := Environment.new()
+	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	e.ambient_light_color = Color(0.6, 0.6, 0.7)
+	e.ambient_light_energy = 0.9
+	env.environment = e
+	vp.add_child(env)
+	var podium := MeshInstance3D.new()
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = 2.0
+	cyl.bottom_radius = 2.3
+	cyl.height = 0.3
+	podium.mesh = cyl
+	podium.position.y = -0.15
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.16, 0.16, 0.2)
+	mat.metallic = 0.6
+	mat.roughness = 0.35
+	podium.material_override = mat
+	vp.add_child(podium)
+	var table := Node3D.new()
+	vp.add_child(table)
+
+	var car_l := _label("", 11, Color(1, 0.9, 0.45))
+	car_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	car_l.clip_text = true
+	root.add_child(car_l)
+	var state_l := _label("", 12, Color(1, 1, 1, 0.6))
+	state_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	root.add_child(state_l)
+	return {root = root, table = table, car = "", name_l = name_l,
+			car_l = car_l, state_l = state_l}
+
+
+func _label(txt: String, size_px: int, color: Color) -> Label:
+	var l := Label.new()
+	l.text = txt
+	l.add_theme_font_override("font", _font)
+	l.add_theme_font_size_override("font_size", size_px)
+	l.add_theme_color_override("font_color", color)
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return l

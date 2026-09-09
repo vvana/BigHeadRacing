@@ -115,19 +115,35 @@ const STEP_DESC := {
 			"красный щит: коснувшийся соперник взрывается; выпадает в 1.5 раза чаще"],
 }
 const DROP_BONUS := 1.5   # вес в боксе при III ступени
+## Ступени, которые есть У ВСЕХ сразу, без уровня и покупки (просьба
+## игрока 09.09: «ракета, масло, ускорение и щит доступны сразу всем с
+## 1-го уровня и бесплатно»). Ниже этой ступени вид не бывает ни у кого —
+## ни у игрока (GameState.weapon_step), ни у бота и марионетки (step_of).
+## Ступени II и III этих видов покупаются как раньше.
+const FREE_STEP := {ROCKET: 1, OIL: 1, BOOST: 1, SHIELD: 1}
 
 
 static func group_of(kind: int) -> String:
 	return GROUP_OF.get(kind, "A")
 
 
+## Ступень, ниже которой вид не опускается (FREE_STEP), 0 у остальных.
+static func free_step(kind: int) -> int:
+	return int(FREE_STEP.get(kind, 0))
+
+
 ## С какого уровня профиля продаётся ступень step (1..3) этого вида.
+## Бесплатные ступени — «с 1-го уровня» и за 0 монет.
 static func step_level(kind: int, step: int) -> int:
+	if step <= free_step(kind):
+		return 1
 	var lv: Array = STEP_LEVELS[group_of(kind)]
 	return int(lv[clampi(step, 1, STEPS) - 1])
 
 
 static func step_price(kind: int, step: int) -> int:
+	if step <= free_step(kind):
+		return 0
 	var pr: Array = STEP_PRICES[group_of(kind)]
 	return int(pr[clampi(step, 1, STEPS) - 1])
 
@@ -139,11 +155,12 @@ static func step_desc(kind: int, step: int) -> String:
 
 
 ## Ступень вида из набора машины (PackedByteArray на COUNT видов; пустой
-## или короткий набор — нулевые ступени: боты, старые записи).
+## или короткий набор — нулевые ступени: боты, старые записи), но не ниже
+## бесплатной (FREE_STEP — она у всех, включая ботов).
 static func step_of(steps: PackedByteArray, kind: int) -> int:
 	if kind < 0 or kind >= steps.size():
-		return 0
-	return clampi(steps[kind], 0, STEPS)
+		return free_step(kind)
+	return maxi(clampi(steps[kind], 0, STEPS), free_step(kind))
 
 
 ## Имя с римской ступенью для HUD: «Ракета II» (I ступень не пишется —

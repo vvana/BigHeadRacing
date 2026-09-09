@@ -187,6 +187,98 @@ var _ad_pair_done_at := 0.0     # unix-время завершения посл�
 const GIFT_1M_AMOUNT := 1_000_000
 var _gift_1m_claimed := false
 
+# ---- Идентификатор игрока (09.09) ----
+# Случайная строка, один раз на профиль. По ней сервер друзей (Social)
+# узнаёт владельца имени: имена единые на всех, и сменить своё или зайти
+# с тем же профилем после переустановки можно только по uid.
+var uid := ""
+
+# ---- Статистика игрока (09.09) ----
+# Копится на финише (Main._show_finish → record_race, Soccer._finish_match →
+# record_soccer), показывается в гараже (StatsPanel). Рейтинг: старт
+# RATING_START, за заезд ± RATING_SWING·(N+1−2·место)/(N−1) — победа +20,
+# последнее место −20, середина 0 — плюс RATING_KILL за каждого
+# уничтоженного; ниже нуля не падает. «Любимая машина» — на которой
+# больше всего заездов (stats.cars: база → число).
+const RATING_START := 1000
+const RATING_SWING := 20
+const RATING_KILL := 2
+var stats := {}
+
+
+## Пустая статистика (ключи — см. record_race / record_soccer).
+static func empty_stats() -> Dictionary:
+	return {races = 0, net_races = 0, wins = 0, podiums = 0, place_sum = 0,
+			best_place = 0, kills = 0, rating = RATING_START, cars = {},
+			soccer_games = 0, soccer_wins = 0, soccer_goals = 0}
+
+
+## Итог заезда: место (с единицы) из size машин, kills уничтоженных,
+## base — база машины, online — сетевой заезд. Возвращает изменение рейтинга.
+func record_race(place: int, size: int, kills: int, base: String,
+		online: bool) -> int:
+	if stats.is_empty():
+		stats = empty_stats()
+	place = clampi(place, 1, maxi(size, 1))
+	stats.races += 1
+	if online:
+		stats.net_races += 1
+	if place == 1:
+		stats.wins += 1
+	if place <= 3:
+		stats.podiums += 1
+	stats.place_sum += place
+	if stats.best_place == 0 or place < stats.best_place:
+		stats.best_place = place
+	stats.kills += maxi(0, kills)
+	if base != "":
+		var cars: Dictionary = stats.cars
+		cars[base] = int(cars.get(base, 0)) + 1
+	var delta := 0
+	if size > 1:
+		delta = roundi(float(RATING_SWING * (size + 1 - 2 * place))
+				/ float(size - 1))
+	delta += RATING_KILL * maxi(0, kills)
+	stats.rating = maxi(0, int(stats.rating) + delta)
+	_save_profile()
+	return delta
+
+
+## Итог футбольного матча: result 1 — победа, 0 — ничья, −1 — поражение.
+func record_soccer(result: int, goals: int) -> void:
+	if stats.is_empty():
+		stats = empty_stats()
+	stats.soccer_games += 1
+	if result > 0:
+		stats.soccer_wins += 1
+	stats.soccer_goals += maxi(0, goals)
+	_save_profile()
+
+
+## Среднее место по всем заездам (0.0 — заездов не было).
+func avg_place() -> float:
+	if stats.is_empty() or int(stats.races) <= 0:
+		return 0.0
+	return float(stats.place_sum) / float(stats.races)
+
+
+## База любимой машины (больше всего заездов) и число заездов на ней.
+## ["", 0] — заездов не было.
+func favourite_car() -> Array:
+	var best := ""
+	var best_n := 0
+	if not stats.is_empty():
+		for base: String in stats.cars:
+			var n := int(stats.cars[base])
+			if n > best_n or (n == best_n and base < best):
+				best = base
+				best_n = n
+	return [best, best_n]
+
+
+func rating() -> int:
+	return int(stats.rating) if not stats.is_empty() else RATING_START
+
 
 func _ready() -> void:
 	var sel := ""
@@ -224,6 +316,19 @@ func _ready() -> void:
 		_migrate_items()
 		sel = str(cf.get_value("profile", "selected_car", ""))
 		_gift_1m_claimed = bool(cf.get_value("profile", "gift_1m_claimed", false))
+		uid = SocialServer.clean_uid(str(cf.get_value("profile", "uid", "")))
+		var st: Variant = cf.get_value("profile", "stats", {})
+		if st is Dictionary and not (st as Dictionary).is_empty():
+			stats = empty_stats()
+			for k in stats:
+				if (st as Dictionary).has(k):
+					stats[k] = st[k]
+			if not (stats.cars is Dictionary):
+				stats.cars = {}
+	# Идентификатор — один раз и навсегда (см. uid).
+	if uid == "":
+		uid = Crypto.new().generate_random_bytes(8).hex_encode()
+		_save_profile()
 	# Восстановить выбор машины; пропавшая/некупленная база → стартовая.
 	if not CarModelLibrary.CAR_IDS.has(sel) or not car_owned(sel):
 		sel = FREE_CARS[0]
@@ -515,8 +620,11 @@ func try_buy_item(base: String, key: String) -> bool:
 var weapon_upgrades := {}   # вид (int) → ступень 0..3
 
 
+## Ступень вида у игрока: купленная, но не ниже бесплатной
+## (Weapons.FREE_STEP — ракета/масло/ускорение/щит I у всех с 1-го уровня).
 func weapon_step(kind: int) -> int:
-	return clampi(int(weapon_upgrades.get(kind, 0)), 0, Weapons.STEPS)
+	return maxi(clampi(int(weapon_upgrades.get(kind, 0)), 0, Weapons.STEPS),
+			Weapons.free_step(kind))
 
 
 ## Следующая покупаемая ступень (1..3) или 0, если все куплены.
@@ -563,11 +671,12 @@ func weapon_steps() -> PackedByteArray:
 	return out
 
 
-## Сколько ступеней куплено всего (подпись кнопки «ОРУЖИЕ» в гараже).
+## Сколько ступеней КУПЛЕНО всего (подпись кнопки «ОРУЖИЕ» в гараже) —
+## бесплатные ступени не считаются.
 func weapon_steps_total() -> int:
 	var n := 0
 	for kind in Weapons.COUNT:
-		n += weapon_step(kind)
+		n += maxi(0, weapon_step(kind) - Weapons.free_step(kind))
 	return n
 
 
@@ -816,4 +925,6 @@ func _save_profile() -> void:
 	cf.set_value("profile", "selected_car",
 			CarModelLibrary.base_id(selected_car_id))
 	cf.set_value("profile", "gift_1m_claimed", _gift_1m_claimed)
+	cf.set_value("profile", "uid", uid)
+	cf.set_value("profile", "stats", stats)
 	cf.save(PROFILE_PATH)

@@ -104,6 +104,16 @@ const FINISH_TIMEOUT := 40.0
 
 var _player_marker: Node3D          # стрелка-указатель над своей машиной
 var _marker_time := 0.0
+# Голубые стрелки над машинами ТОВАРИЩЕЙ по команде друзей (Social, 09.09):
+# слот → узел. Товарищ узнаётся по имени слота (имена единые на сервере).
+var _mate_markers := {}
+# Сервер: команды друзей в этом лобби. Слот → id команды (из hello),
+# id → ожидаемая численность и секунда первого прибытия. Пока команда не
+# в сборе (и место ещё есть), старт ждёт — не дольше PARTY_GRACE.
+var _party_of_slot := {}
+var _party_size := {}
+var _party_first := {}
+const PARTY_GRACE := 20.0
 
 var _net_started := false           # сервер: гонка идёт (иначе лобби)
 # Комната-процесс (Net.is_room), простоявшая пустой без гонки столько
@@ -340,6 +350,9 @@ func _ready() -> void:
 		Net.bot_mask = 0
 		_bot_rng.randomize()
 		print("[net] трасса готова, ждём игроков%s" % _mem_note())
+		# Сцена могла быть перестроена под БОЛЬШИЙ заезд (команда друзей
+		# подключилась разом) — гостям без слота теперь есть место.
+		Net.seat_guests()
 		# Сцена могла быть перезагружена после прошлого заезда — тогда
 		# игроки УЖЕ подключены, и peer_connected по ним больше не придёт.
 		# Возвращаем их машины на присланный ввод руками.
@@ -347,6 +360,7 @@ func _ready() -> void:
 			_on_peer_joined(pid, Net.slot_of_peer[pid])
 	elif Net.is_client():
 		print("[net] сцена гонки готова%s" % _mem_note())
+		Social.report_status("race")
 		# Клиент ничего не начинает сам: представляемся серверу и ждём
 		# от него слот, ростер машин и команду отсчёта. Если рукопожатие
 		# ещё не закончилось (сцену могли открыть сразу), ждём сигнала —
@@ -372,6 +386,7 @@ func _ready() -> void:
 			# _on_join_failed_in_race (вернёт домой к воротам).
 			_watch_join_timeout()
 	else:
+		Social.report_status("race")
 		_countdown()
 
 
@@ -758,6 +773,10 @@ func _process(delta: float) -> void:
 	var bob := 2.4 + 0.12 * sin(_marker_time * 3.0)
 	if _player_marker and _car != null:
 		_player_marker.global_position = _car.visual_origin() + Vector3.UP * bob
+	for s: int in _mate_markers:
+		if s < _cars.size():
+			(_mate_markers[s] as Node3D).global_position = \
+					_cars[s].visual_origin() + Vector3.UP * bob
 	if _car and _speed_label:
 		# Строки HUD форматируем только при смене числа: set_text равные
 		# строки и так отсекает, а три формата в кадр делались впустую.
@@ -928,10 +947,13 @@ func _show_finish(place: int) -> void:
 	GameState.add_money(coins)
 	GameState.add_xp(gained)   # может добавить и бонус монет за уровень
 	var info: Vector3i = GameState.level_info()
+	# Статистика игрока (09.09): заезд, место, уничтоженные, машина, рейтинг.
+	var rdelta: int = GameState.record_race(place, _cars.size(), _my_kills,
+			CarModelLibrary.base_id(GameState.selected_car_id), Net.is_online())
 	_finish_label.text = "ФИНИШ!  МЕСТО %d ИЗ %d" % [place, _cars.size()]
 	if _finish_xp_label:
-		_finish_xp_label.text = "+%d ОПЫТА  ·  +%d МОНЕТ  ·  УРОВЕНЬ %d  (%d / %d)" \
-				% [gained, coins, info.x, info.y, info.z]
+		_finish_xp_label.text = ("+%d ОПЫТА  ·  +%d МОНЕТ  ·  УРОВЕНЬ %d  (%d / %d)"
+				+ "  ·  РЕЙТИНГ %+d") % [gained, coins, info.x, info.y, info.z, rdelta]
 	if info.x > before.x and _announcer:
 		_announcer.big("НОВЫЙ УРОВЕНЬ %d!" % info.x, "", "teal")
 	_finish_root.visible = true
@@ -1598,6 +1620,9 @@ func _on_peer_left(_id: int, slot: int) -> void:
 	_hello_done.erase(slot)
 	_join_time.erase(slot)
 	_late_slots.erase(slot)
+	_party_of_slot.erase(slot)
+	# Старт мог ждать ушедшего товарища — пусть _maybe_start пересчитает.
+	_loading_told = false
 	# До старта слот снова ждёт человека — боту свежий ник (имя ушедшего не
 	# зомбируем: он может тут же перезайти). ВО ВРЕМЯ заезда имя не трогаем:
 	# бот доигрывает под именем ушедшего, и для остальных этот «игрок»
@@ -1692,8 +1717,8 @@ func _say_hello() -> void:
 		if Net.my_slot != -1 or not Net.is_client():
 			return
 		_rx_hello.rpc_id(1, GameState.selected_car_id, Net.PROTOCOL,
-				GameState.race_size, GameState.display_name(),
-				GameState.weapon_steps())
+				Net.want_size, GameState.display_name(),
+				GameState.weapon_steps(), Net.party_id, Net.party_size)
 		await get_tree().create_timer(1.0).timeout
 		if not is_inside_tree():
 			return
@@ -1734,6 +1759,14 @@ func _maybe_start() -> void:
 	var full := Net.slot_of_peer.size() >= Net.race_size
 	if not (_want_start or full):
 		return
+	# Команда друзей ещё не в сборе (Social, 09.09): её члены подключаются
+	# по одному, и без этой паузы заезд уезжал бы с первым из них. Ждём,
+	# пока есть место и не вышел PARTY_GRACE.
+	if not full and _party_waiting():
+		if not _loading_told:
+			_loading_told = true
+			_rx_lobby.rpc(_lobby_players(), -2)
+		return
 	if _all_loaded():
 		_lobby_wait = -1.0
 		_start_with_bots()
@@ -1742,6 +1775,21 @@ func _maybe_start() -> void:
 		# Один раз, не каждый тик — _tick_lobby зовёт нас каждый кадр.
 		_loading_told = true
 		_rx_lobby.rpc(_lobby_players(), -1)
+
+
+## Сервер: есть ли команда друзей, которая ещё не съехалась (hello с id
+## команды пришёл не от всех её членов), и не вышел ли срок ожидания.
+func _party_waiting() -> bool:
+	var now := Time.get_ticks_msec() / 1000.0
+	for pid: String in _party_size:
+		var seen := 0
+		for sl: int in _party_of_slot:
+			if _party_of_slot[sl] == pid and Net.slot_of_peer.values().has(sl):
+				seen += 1
+		if seen < int(_party_size[pid]) \
+				and now - float(_party_first.get(pid, now)) < PARTY_GRACE:
+			return true
+	return false
 
 
 func _start_net_race() -> void:
@@ -1890,7 +1938,9 @@ func _server_tick(delta: float) -> void:
 	_card_accum += delta
 	if _card_accum >= 1.0:
 		_card_accum = 0.0
-		Rooms.write_card(Net.port, Net.slot_of_peer.size(), _joinable_here())
+		Rooms.write_card(Net.port, Net.slot_of_peer.size(), _joinable_here(),
+				maxi(0, Net.race_size - Net.slot_of_peer.size())
+				if not _net_started else 0)
 		# Заодно хороним завершившиеся процессы комнат (у комнат список пуст).
 		Rooms.reap_children()
 	# Пустая комната без гонки живёт не вечно: погасла — память свободна.
@@ -2072,7 +2122,10 @@ func _pack_state() -> Array:
 						c._snap_prev_vel, c._snap_prev_stamp)
 		_put_state(xf, ci, p, q, v, stamp)
 		flags.append(c.weapon + 1)
-		flags.append((1 if c.alive else 0) | (2 if c.is_ghost() else 0))
+		# Бит 4 — дым из-под колёс (протокол 22): марионетке на клиенте
+		# больше неоткуда его взять.
+		flags.append((1 if c.alive else 0) | (2 if c.is_ghost() else 0)
+				| (4 if c.smoke_bit() else 0))
 		# ДЕЙСТВУЮЩИЙ эффект, а не _status_shown: тот обновляется лишь при
 		# живом Sprite3D, которого на выделенном сервере нет, — значок по
 		# сети не видел никто (кодировка та же: <2 — «пусто», протокол цел).
@@ -2116,7 +2169,8 @@ func _put_state(dst: PackedFloat32Array, ci: int, p: Vector3, q: Quaternion,
 
 @rpc("any_peer", "call_remote", "reliable")
 func _rx_hello(car_id: String, proto: int, want_size := 4,
-		pname := "", steps := PackedByteArray()) -> void:
+		pname := "", steps := PackedByteArray(), party := "",
+		party_size := 0) -> void:
 	if not Net.is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
@@ -2145,7 +2199,11 @@ func _rx_hello(car_id: String, proto: int, want_size := 4,
 	# живут в autoload Net и перезагрузку переживают; hello клиента
 	# повторяется раз в секунду (_say_hello) и застанет новую сцену.
 	# Остальным размер диктуется в _rx_track ниже — как вид трассы.
-	if slot >= 0 and not _net_started and Net.slot_of_peer.size() == 1:
+	# «Первый» — по ПЕРВОМУ hello, а не по числу подключённых (09.09):
+	# команда друзей подключается разом, и по старому правилу «ровно один
+	# подключён» желание никого не принималось — команда из шести ехала бы
+	# в заезд на четверых.
+	if slot >= 0 and not _net_started and _hello_done.is_empty():
 		var want := clampi(want_size, GameState.RACE_SIZE_MIN,
 				GameState.RACE_SIZE_MAX)
 		if want != Net.race_size:
@@ -2154,6 +2212,14 @@ func _rx_hello(car_id: String, proto: int, want_size := 4,
 			Net.race_size = want
 			get_tree().reload_current_scene()
 			return
+	# Команда друзей (Social): запоминаем, кого ждём (см. _party_waiting).
+	if slot >= 0 and not _net_started and party != "":
+		var pid := party.left(32)
+		_party_of_slot[slot] = pid
+		if not _party_size.has(pid):
+			_party_first[pid] = Time.get_ticks_msec() / 1000.0
+		_party_size[pid] = clampi(party_size, 1, Net.race_size)
+		_loading_told = false
 	# Игроку ЗДЕСЬ ехать негде: слота нет (гость) или он опоздал к идущему
 	# заезду. Раньше гость получал отказ, а опоздавший ждал конца чужой
 	# гонки — теперь обоих отправляем в параллельный заезд-комнату
@@ -2553,6 +2619,34 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 	# На карте цвета прежние: своя точка зелёная, соперники оранжевые.
 	if _minimap:
 		_minimap.my_index = slot
+	# Товарищи по команде друзей — голубые стрелки (имена уже могли прийти).
+	_refresh_mate_markers()
+
+
+## Клиент: голубая стрелка над машиной каждого ТОВАРИЩА по команде друзей
+## (Social, 09.09) — по именам слотов (_rx_names), имена единые. Зовётся при
+## welcome и при каждой смене имён; лишние стрелки (имя слота сменилось)
+## снимаются.
+func _refresh_mate_markers() -> void:
+	if not Net.is_client() or Net.my_slot < 0:
+		return
+	for s in _cars.size():
+		var mate := s != Net.my_slot and s < _names.size() \
+				and Social.is_mate(_names[s])
+		if mate and not _mate_markers.has(s):
+			var m := _build_player_marker(UiKit.BLUE_MATE)
+			_cars[s].add_child(m)
+			m.global_position = _cars[s].global_position + Vector3.UP * 2.4
+			_cars[s].has_marker = true
+			_mate_markers[s] = m
+			if _minimap:
+				_minimap.mates[s] = true
+		elif not mate and _mate_markers.has(s):
+			(_mate_markers[s] as Node3D).queue_free()
+			_mate_markers.erase(s)
+			_cars[s].has_marker = false
+			if _minimap:
+				_minimap.mates.erase(s)
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -2576,6 +2670,7 @@ func _apply_roster(roster: PackedStringArray) -> void:
 func _rx_names(names: PackedStringArray) -> void:
 	_names = names
 	_update_lobby_slots()
+	_refresh_mate_markers()
 
 
 ## Сервер: вписать имя игрока в слот. Чистим той же чисткой, что своё
@@ -2698,6 +2793,11 @@ func _rx_lobby(players: int, secs: int) -> void:
 	if secs > 0:
 		txt += "
 Ждём игроков: %d…" % secs
+	elif secs == -2:
+		# Команда друзей ещё съезжается (сервер держит лобби, см.
+		# Main._party_waiting).
+		txt += "
+Ждём твою команду…"
 	elif secs < 0:
 		# Старт запрошен, но у кого-то ещё грузится игра — ждём всех,
 		# чтобы никто не въехал в уже идущий заезд после загрузки.
@@ -2839,6 +2939,8 @@ func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray,
 			# заводится фаза мигания и снимаются контакты (31.08 —
 			# «не вижу, что он мигает при появлении»).
 			c.net_set_ghost((int(flags[f + 1]) & 2) != 0)
+			# Дым из-под колёс соперника (протокол 22).
+			c.net_set_smoke((int(flags[f + 1]) & 4) != 0)
 			# Заморозка соперника (протокол 12): «синяя» шуба и заразность
 			# при касании считаются по _freeze_time, а он у марионетки
 			# ниоткуда не берётся. Своей машины это не касается — она
@@ -3327,7 +3429,7 @@ func _update_lobby_slots() -> void:
 			pname = GameState.display_name()
 		_lobby.set_slot(s, _slot_taken[s], id, is_me,
 				(_bot_mask & (1 << s)) != 0, pname,
-				_slot_pending.has(s))
+				_slot_pending.has(s), not is_me and Social.is_mate(pname))
 
 
 # ════════════════════ ЛЕНТА СОБЫТИЙ ОРУЖИЯ ════════════════════

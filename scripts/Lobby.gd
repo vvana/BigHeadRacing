@@ -130,8 +130,11 @@ func hide_screen() -> void:
 ## (сервер объявляет слот занятым при ENet-подключении, ростер и имя — после
 ## hello): показываем «Подключается…» без машины, а не чужую машину бота
 ## с его ником, которую через секунду подменит настоящая.
+## is_mate (09.09) — товарищ по команде друзей (Social): подпись голубая,
+## с пометкой «друг», как маркер над его машиной в заезде.
 func set_slot(slot: int, taken: bool, car_id: String, is_me: bool,
-		is_bot := false, pname := "", pending := false) -> void:
+		is_bot := false, pname := "", pending := false,
+		is_mate := false) -> void:
 	if slot < 0 or slot >= _slots:
 		return
 	var name_l := _name_labels[slot]
@@ -152,14 +155,16 @@ func set_slot(slot: int, taken: bool, car_id: String, is_me: bool,
 	# кто именно приедет ботом.
 	if taken or is_bot or is_me:
 		name_l.text = (pname if pname != "" else "Player %d" % (slot + 1)) \
-				+ (" — ты" if is_me else "")
+				+ (" — ты" if is_me else (" · друг" if is_mate else ""))
 	else:
 		name_l.text = ""
-	# Цвета — те же, что у стрелок над машинами: свой зелёный, соперник
-	# (живой или бот — не различить) оранжевый.
+	# Цвета — те же, что у стрелок над машинами: свой зелёный, товарищ
+	# по команде голубой, соперник (живой или бот — не различить) оранжевый.
 	var color := Color(1, 1, 1, 0.5)
 	if is_me:
 		color = UiKit.GREEN_ME
+	elif is_mate and taken:
+		color = UiKit.BLUE_MATE
 	elif taken or is_bot:
 		color = UiKit.ORANGE_RIVAL
 	name_l.add_theme_color_override("font_color", color)

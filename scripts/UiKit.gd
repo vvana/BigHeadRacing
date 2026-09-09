@@ -14,6 +14,7 @@ const RED := Color8(207, 51, 39)
 const TEAL := Color8(43, 191, 174)
 const GREEN_ME := Color(0.45, 1.0, 0.55)     # «свой» цвет меток
 const ORANGE_RIVAL := Color(1.0, 0.65, 0.25) # цвет соперника
+const BLUE_MATE := Color(0.4, 0.75, 1.0)     # товарищ по команде (09.09)
 
 const FONT_PATH := "res://assets/ui/RussoOne.ttf"
 const DIR := "res://assets/ui/garage/"

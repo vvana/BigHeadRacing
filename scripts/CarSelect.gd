@@ -112,6 +112,14 @@ var _arrows: Array[TextureButton] = []   # стрелки листания (пр
 var _cam: Camera3D
 var _panel_open := false          # открыта доска или тюнинг (машина слева)
 var _ui_tween: Tween              # съезд колонки и камеры
+var _party: PartyPanel            # команда друзей (09.09, на месте доски)
+var _party_btn: Button            # «КОМАНДА»
+var _stats: StatsPanel            # статистика игрока (09.09, там же)
+var _stats_btn: Button            # «СТАТИСТИКА»
+var _invite_box: Control          # плашка «X зовёт в команду» (null — нет)
+var _name_hint: Label             # подсказка в окне имени («занято…»)
+var _name_wait := false           # ждём ответ сервера друзей на имя
+var _party_join := false          # «СТАРТ» нажат не нами, а командой (go)
 
 
 ## Полный id скина машины из сетки: база + её текущий цвет/комплектация.
@@ -139,6 +147,18 @@ func _ready() -> void:
 			_refresh_name_btn()
 		else:
 			_open_name_dialog(true)
+	# Друзья (09.09): выходим на связь с сервером друзей — поиск по имени,
+	# приглашения, команда. Соединение живёт в автозагрузке Social.
+	Social.welcome.connect(_on_social_welcome)
+	Social.name_result.connect(_on_name_result)
+	Social.invite_received.connect(_show_invite)
+	Social.party_changed.connect(_refresh_start_btn)
+	Social.go.connect(_on_party_go)
+	Social.report_status("garage")
+	Social.go_online()
+	if Social.connected:
+		_on_social_welcome(Social.name_ok, Social.name_reason)
+	_refresh_start_btn()
 
 
 func _process(delta: float) -> void:
@@ -164,6 +184,16 @@ func _process(delta: float) -> void:
 	if _weapons != null and _weapons.visible:
 		if Input.is_action_just_pressed("ui_cancel"):
 			_weapons.close()
+		return
+	# Команда друзей и статистика (09.09) — так же; в поле поиска команды
+	# стрелки и Enter принадлежат ему.
+	if _party != null and _party.visible:
+		if Input.is_action_just_pressed("ui_cancel"):
+			_party.close()
+		return
+	if _stats != null and _stats.visible:
+		if Input.is_action_just_pressed("ui_cancel"):
+			_stats.close()
 		return
 	# Esc закрывает и доску «АВТОПАРК».
 	if _grid_panel != null and _grid_panel.visible \
@@ -239,6 +269,8 @@ func _start_race() -> void:
 	# игроком лобби, сервер примет его и перестройка не понадобится; если
 	# заезд уже другого размера — сервер продиктует свой (_rx_track).
 	Net.race_size = GameState.race_size
+	Net.want_size = GameState.race_size
+	_party_join = false
 	_connecting = true
 	if _start_btn:
 		_start_btn.disabled = true
@@ -247,6 +279,59 @@ func _start_race() -> void:
 		_watch_connect_timeout()
 	else:
 		_start_offline()
+
+
+## Команда друзей в сборе — сервер друзей (Social) назвал порт заезда
+## (09.09). Едем туда ВСЕ: сервер заезда держит лобби, пока не съедемся
+## (Main._party_waiting). Порт комнаты «домом» не становится (remember =
+## false — комнаты смертны). Не ответил — не оффлайн, а честно обратно в
+## гараж: ехать без команды игрок не просил.
+func _on_party_go(port: int, size: int, party_id: String, count: int) -> void:
+	if _connecting or _name_dialog != null or _ad_showing \
+			or not is_inside_tree():
+		return
+	var base: String = CarModelLibrary.CAR_IDS[_index]
+	if not GameState.car_owned(base):
+		base = CarModelLibrary.base_id(GameState.selected_car_id)
+	Net.leave()
+	GameState.select_car(base)
+	GameState.track_kind = ""
+	Net.race_size = clampi(size, GameState.RACE_SIZE_MIN, GameState.RACE_SIZE_MAX)
+	Net.want_size = Net.race_size
+	Net.party_id = party_id
+	Net.party_size = count
+	Net.redirect_hops = 0
+	_party_join = true
+	_connecting = true
+	if _party:
+		_party.close()
+	if _start_btn:
+		_start_btn.disabled = true
+		_start_btn.text = "К КОМАНДЕ…"
+	print("[social] команда %s: едем в заезд на порту %d (%d машин, нас %d)"
+			% [party_id, port, Net.race_size, count])
+	if Net.join_server(Net.host.strip_edges(), port, false):
+		_watch_connect_timeout()
+	else:
+		_on_join_failed("не удалось начать подключение")
+
+
+## «СТАРТ» под команду друзей: пока мы «ГОТОВ» — ждём остальных, кнопка
+## занята; передумал — снимай готовность в панели «КОМАНДА».
+func _refresh_start_btn() -> void:
+	if _start_btn == null or _connecting:
+		return
+	if Social.in_party() and Social.my_ready():
+		_start_btn.disabled = true
+		_start_btn.text = "ЖДЁМ КОМАНДУ…"
+		_start_btn.add_theme_font_size_override("font_size", 17)
+	else:
+		_start_btn.disabled = false
+		_start_btn.text = "СТАРТ"
+		_start_btn.add_theme_font_size_override("font_size", 24)
+	if _party_btn:
+		_party_btn.text = "КОМАНДА %d" % Social.members().size() \
+				if Social.in_party() else "КОМАНДА"
 
 
 ## Оффлайн-заезд: игрок + (race_size−1) ботов, случайная трасса.
@@ -278,10 +363,121 @@ func _on_joined() -> void:
 
 
 func _on_join_failed(reason: String) -> void:
+	# Ехали к команде друзей, а заезд не ответил — остаёмся в гараже и
+	# говорим об этом (оффлайн без команды никому не нужен).
+	if _party_join:
+		print("[social] заезд команды не ответил (", reason, ")")
+		Net.leave()
+		_party_join = false
+		_connecting = false
+		_refresh_start_btn()
+		if _party:
+			_party.open()
+			_party._on_notice("Заезд не ответил — нажмите «ГОТОВ» ещё раз")
+			_set_panel_open(true)
+		return
 	# Сервер отказал или оборвался на этапе подключения — не мучаем игрока
 	# сообщениями, просто едем оффлайн с ботами (причина — в лог).
 	print("Сеть недоступна (", reason, ") — оффлайн-заезд")
 	_start_offline()
+
+
+# ---- Друзья: имя, приглашения (09.09) ----
+
+## Сервер друзей ответил на hello: имя свободно/наше — или ЗАНЯТО другим
+## игроком (имена единые). Занято — просим выбрать другое тем же окном.
+func _on_social_welcome(ok: bool, reason: String) -> void:
+	if not ok and reason == "taken" and _name_dialog == null:
+		_open_name_dialog(false, true)
+	_refresh_name_btn()
+
+
+## Ответ сервера на новое имя из окна: принято — сохраняем и закрываем,
+## занято — оставляем окно с подсказкой.
+func _on_name_result(ok: bool, n: String, reason: String) -> void:
+	_name_wait = false
+	if _name_dialog == null:
+		return
+	if ok:
+		GameState.set_player_name(n)
+		_close_name_dialog()
+		return
+	if _name_hint:
+		_name_hint.text = ("Имя «%s» уже занято — попробуй другое" % n) \
+				if reason == "taken" else "Сервер не принял имя, попробуй другое"
+		_name_hint.add_theme_color_override("font_color", UiKit.YELLOW)
+
+
+## Плашка «X зовёт в команду» — под верхней полкой, поверх всего:
+## ПРИНЯТЬ / ОТКЛОНИТЬ. Живёт до ответа или минуту.
+func _show_invite(from: String, count: int) -> void:
+	if _invite_box:
+		_invite_box.queue_free()
+		_invite_box = null
+	var plate := UiKit.plate(_canvas, "teal", Vector2.ZERO, Vector2(520, 96))
+	# Слева над машиной: панель команды справа остаётся видна.
+	_place(plate, 62, TOP_Y + TOP_H + 60, 520, 96)
+	_invite_box = plate
+	var txt := UiKit.label(plate, "%s зовёт тебя в команду (%d чел.)"
+			% [from, count + 1], 17, Color.WHITE, 5)
+	txt.position = Vector2(0, 12)
+	txt.size = Vector2(520, 24)
+	txt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var ok := _mini_button("ПРИНЯТЬ")
+	ok.add_theme_font_size_override("font_size", 16)
+	ok.position = Vector2(110, 46)
+	ok.size = Vector2(140, 36)
+	ok.pressed.connect(func() -> void:
+		Social.accept_invite()
+		_hide_invite()
+		_open_party())
+	plate.add_child(ok)
+	var no := Button.new()
+	no.text = "ОТКЛОНИТЬ"
+	UiKit.style_button(no, "steel", 13)
+	no.position = Vector2(270, 44)
+	no.size = Vector2(140, 40)
+	no.pressed.connect(func() -> void:
+		Social.decline_invite()
+		_hide_invite())
+	plate.add_child(no)
+	get_tree().create_timer(60.0).timeout.connect(func() -> void:
+		if _invite_box == plate:
+			_hide_invite())
+
+
+func _hide_invite() -> void:
+	if _invite_box:
+		_invite_box.queue_free()
+		_invite_box = null
+
+
+func _open_party() -> void:
+	if _party == null:
+		return
+	_grid_panel.visible = false
+	if _tuning != null and _tuning.visible:
+		_tuning.visible = false
+	if _weapons != null:
+		_weapons.visible = false
+	if _stats != null:
+		_stats.visible = false
+	_party.open()
+	_set_panel_open(true)
+
+
+func _open_stats() -> void:
+	if _stats == null:
+		return
+	_grid_panel.visible = false
+	if _tuning != null and _tuning.visible:
+		_tuning.visible = false
+	if _weapons != null:
+		_weapons.visible = false
+	if _party != null:
+		_party.visible = false
+	_stats.open()
+	_set_panel_open(true)
 
 
 ## Сигналы сети: гонка начнётся, когда сервер подтвердит соединение
@@ -387,9 +583,12 @@ func _refresh_name_btn() -> void:
 ## Модальное окно ввода имени. first — первый запуск: имени ещё нет,
 ## закрыть окно можно только введя его (кнопки «ОТМЕНА» нет). Дальше имя
 ## меняется той же формой по клику на «ИМЯ: …» в гараже.
-func _open_name_dialog(first: bool) -> void:
+## taken (09.09) — сервер друзей сказал, что имя занято другим игроком:
+## окно объясняет это и просит другое.
+func _open_name_dialog(first: bool, taken := false) -> void:
 	if _name_dialog != null:
 		return
+	_name_wait = false
 	var dim := ColorRect.new()
 	dim.color = Color(0, 0, 0, 0.5)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP   # клики вниз не пропускаем
@@ -412,11 +611,16 @@ func _open_name_dialog(first: bool) -> void:
 	title.size = Vector2(460, 34)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
-	var hint := UiKit.label(plate, "Под этим именем тебя увидят другие игроки",
-			14, Color(1, 1, 1, 0.7))
+	var hint := UiKit.label(plate,
+			("Имя «%s» уже занято другим игроком — выбери другое"
+					% GameState.display_name()) if taken
+			else "Под этим именем тебя увидят другие игроки. Имена уникальны",
+			14 if not taken else 13,
+			UiKit.YELLOW if taken else Color(1, 1, 1, 0.7))
 	hint.position = Vector2(0, 54)
 	hint.size = Vector2(460, 22)
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_name_hint = hint
 
 	_name_edit = LineEdit.new()
 	_name_edit.text = GameState.player_name
@@ -460,6 +664,22 @@ func _name_accept() -> void:
 	if n == "":
 		_name_edit.placeholder_text = "введи хоть что-нибудь"
 		return
+	if _name_wait:
+		return
+	# На связи с сервером друзей — имя сначала проверяется на уникальность
+	# (ответ — _on_name_result). Нет связи — принимаем как раньше, сервер
+	# проверит при следующем подключении.
+	if Social.connected:
+		_name_wait = true
+		if _name_hint:
+			_name_hint.text = "Проверяем имя…"
+		Social.claim_name(n)
+		get_tree().create_timer(4.0).timeout.connect(func() -> void:
+			if _name_wait and _name_dialog != null:
+				_name_wait = false
+				GameState.set_player_name(n)
+				_close_name_dialog())
+		return
 	GameState.set_player_name(n)
 	_close_name_dialog()
 
@@ -468,6 +688,7 @@ func _close_name_dialog() -> void:
 	if _name_dialog:
 		_name_dialog.queue_free()
 		_name_dialog = null
+	_name_hint = null
 	_refresh_name_btn()
 
 
@@ -627,6 +848,9 @@ func _set_index(i: int) -> void:
 	_name_label.text = DISPLAY_NAMES.get(base, base)
 	_name_label.add_theme_color_override("font_color",
 			Color.WHITE if owned else Color(1, 1, 1, 0.5))
+	# Команде друзей видно, на чём поедешь (09.09).
+	if owned:
+		Social.report_car(GameState.full_id(base))
 	_count_label.text = "%d / %d" % [_index + 1, CarModelLibrary.CAR_IDS.size()]
 	# Закрытая машина стоит на подиуме «тенью» — видно, но не наша.
 	if _model and not owned:
@@ -803,8 +1027,18 @@ func _open_tuning() -> void:
 	_grid_panel.visible = false
 	if _weapons != null:
 		_weapons.visible = false
+	_hide_social_panels()
 	_tuning.open(base)
 	_set_panel_open(true)
+
+
+## Панели команды и статистики прячутся без сигнала closed (иначе машина
+## метнулась бы в центр), как тюнинг при открытии доски.
+func _hide_social_panels() -> void:
+	if _party != null:
+		_party.visible = false
+	if _stats != null:
+		_stats.visible = false
 
 
 ## Магазин ступеней оружия (08.09) — на месте доски; тюнинг и доска
@@ -815,6 +1049,7 @@ func _open_weapons() -> void:
 	_grid_panel.visible = false
 	if _tuning != null and _tuning.visible:
 		_tuning.visible = false
+	_hide_social_panels()
 	_weapons.open()
 	_set_panel_open(true)
 
@@ -840,6 +1075,7 @@ func _open_board() -> void:
 		_tuning.visible = false   # без closed — иначе машина метнётся в центр
 	if _weapons != null:
 		_weapons.visible = false
+	_hide_social_panels()
 	_grid_panel.visible = true
 	if _buttons.size() > _index:
 		_scroll.ensure_control_visible(_buttons[_index])
@@ -1437,6 +1673,21 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 	_weapons_btn.pressed.connect(_open_weapons)
 	col.add_child(_weapons_btn)
 
+	# «КОМАНДА» (09.09) — друзья: зеркально «ОРУЖИЮ», слева от таблички с
+	# именем машины; «СТАТИСТИКА» — над ней.
+	_party_btn = Button.new()
+	_party_btn.text = "КОМАНДА"
+	UiKit.style_button(_party_btn, "teal", 14)
+	_place(_party_btn, 0, ROW_Y - 66, 108, 54, true)
+	_party_btn.pressed.connect(_open_party)
+	col.add_child(_party_btn)
+	_stats_btn = Button.new()
+	_stats_btn.text = "СТАТИСТИКА"
+	UiKit.style_button(_stats_btn, "steel", 12)
+	_place(_stats_btn, 0, ROW_Y - 66 - 60, 108, 54, true)
+	_stats_btn.pressed.connect(_open_stats)
+	col.add_child(_stats_btn)
+
 
 ## Мультяшная кнопка-стрелка листания (x — левая кромка в px, по
 ## вертикали — середина окна).
@@ -1512,6 +1763,16 @@ func _setup_grid(canvas: CanvasLayer) -> void:
 	_weapons.changed.connect(_refresh_money_label)
 	_weapons.closed.connect(func() -> void: _set_panel_open(false))
 	canvas.add_child(_weapons)
+
+	# Команда друзей и статистика (09.09) — там же.
+	_party = PartyPanel.new()
+	_place(_party, BOARD_X, BOARD_Y, BOARD_W, BOARD_H)
+	_party.closed.connect(func() -> void: _set_panel_open(false))
+	canvas.add_child(_party)
+	_stats = StatsPanel.new()
+	_place(_stats, BOARD_X, BOARD_Y, BOARD_W, BOARD_H)
+	_stats.closed.connect(func() -> void: _set_panel_open(false))
+	canvas.add_child(_stats)
 
 	_scroll = ScrollContainer.new()
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED

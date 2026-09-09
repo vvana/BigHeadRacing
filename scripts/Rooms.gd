@@ -54,13 +54,17 @@ static func _now() -> float:
 
 
 ## Своя визитка: сколько игроков и есть ли место новому (Main._joinable_here).
-static func write_card(port: int, players: int, joinable: bool) -> void:
+## free (09.09) — сколько ЖИВЫХ игроков ещё влезет: по нему сервер друзей
+## (SocialServer) сажает команду в заезд, где хватит места на всех.
+static func write_card(port: int, players: int, joinable: bool,
+		free := 0) -> void:
 	DirAccess.make_dir_recursive_absolute(DIR)
 	var f := FileAccess.open("%s/%d.json" % [DIR, port], FileAccess.WRITE)
 	if f == null:
 		return
 	f.store_string(JSON.stringify({
-		port = port, players = players, joinable = joinable, ts = _now(),
+		port = port, players = players, joinable = joinable, free = free,
+		ts = _now(),
 	}))
 
 

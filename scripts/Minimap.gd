@@ -32,6 +32,8 @@ const OWN_R := 5.0                 # «радиус» треугольника �
 var cars: Array[Car] = []
 var my_index := 0
 var rivals := {}                   # слоты живых соперников (слот → true)
+var mates := {}                    # слоты товарищей по команде (09.09)
+const MATE_COLOR := Color(0.4, 0.75, 1.0)
 # Цвет кромок полотна: красный — ограждения; на трассе без стен (песчаная)
 # кромка рисуется песочной, красные «стены» на карте врали бы.
 var edge_color := EDGE_COLOR
@@ -172,6 +174,8 @@ func _draw() -> void:
 		if car == null or not is_instance_valid(car):
 			continue
 		var color := RIVAL_COLOR if rivals.has(i) else BOT_COLOR
+		if mates.has(i):
+			color = MATE_COLOR
 		if not car.alive:
 			color.a = 0.35
 		var p := world_to_px(car.global_position)

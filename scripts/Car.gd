@@ -53,6 +53,13 @@ const STATUS_ICON_PLAYER_Y := 3.25      # у игрока — выше марк�
 # хода, но доворачивает кузов лишь пока нос стоит поперёк — по изгибам
 # трассы вдоль борта машина сама не едет, рулить надо.
 const WALL_ALIGN_FREE := deg_to_rad(10.0)  # угол к оси, который стена не правит
+## Доля хода, которую съедает КАЖДЫЙ радиан доворота носа стеной (09.09:
+## «машина едет по изгибу борта сама» на скорости с бустом — стена
+## доворачивала нос вслед за изгибом даром, дальше шины везли по дуге
+## без руля; теперь такой поворот платный: 90° у борта — минус ~половина
+## хода). Скольжение вдоль ПРЯМОГО борта по-прежнему ход не теряет
+## (просьба 07.09), руль прочь от стены доворота не получает вовсе.
+const WALL_TURN_LOSS := 0.5
 const WALL_SPARK_PERIOD := 0.07         # искры о стену: сноп раз в столько с
 
 # Откуда вылетает оружие (см. muzzle_at): передняя кромка машины.
@@ -287,7 +294,8 @@ var _boost_from_pad := false    # текущий буст — с плиты (с�
 var _shock_fx: Node3D           # волна перед носом — III ступень буста (_build_shock_fx)
 var _shock_rings: Array[MeshInstance3D] = []   # кольца ударной волны, в противофазе
 var _shock_cone: MeshInstance3D                # конус уплотнения остриём вперёд
-var _shock_phase := 0.0         # ход первого кольца, 0..SHOCK_PERIOD
+var _shock_left := 0.0          # сколько ещё длится вспышка волны, с (0 — нет)
+var _shock_was_on := false      # буст III горел на прошлом кадре (фронт для марионетки)
 var _wheel_pivots: Array[Node3D] = []
 var _steer_visual := 0.0
 var _ai_fire_cd := 2.0
@@ -1029,7 +1037,13 @@ func _build_boost_flame() -> void:
 ## как пламя и фары, едет за КАРТИНКОЙ машины (см. _process); включает и
 ## гонит кольца _tick_effects. С плиты-ускорителя волны нет — плита не
 ## оружие игрока (см. apply_boost).
-const SHOCK_PERIOD := 0.42   # с — одно кольцо от носа до растворения
+## 09.09 («эффект должен быть визуально больше и короче, полсекунды»):
+## это ВСПЫШКА на SHOCK_TOTAL с в момент включения буста III, а не
+## постоянный нимб на весь буст: крупный конус (основание 2.6 м, длина
+## 1.6 м) и два кольца до 4.6 м, за полсекунды всё тает. Владелец
+## запускает её из apply_boost, марионетка — по фронту значка буста.
+const SHOCK_TOTAL := 0.5     # с — вся вспышка
+const SHOCK_LEN := 1.6       # м — длина конуса перед бампером
 const SHOCK_NOSE := Vector3(0.0, 0.55, -1.7)   # нос: кузова пака 3.2 м (-1.6)
 
 func _build_shock_fx() -> void:
@@ -1043,8 +1057,8 @@ func _build_shock_fx() -> void:
 	var cone := MeshInstance3D.new()
 	var cm := CylinderMesh.new()
 	cm.top_radius = 0.0
-	cm.bottom_radius = 0.6
-	cm.height = 0.9
+	cm.bottom_radius = 1.3
+	cm.height = SHOCK_LEN
 	cm.radial_segments = 24
 	cm.rings = 1
 	cm.cap_bottom = false
@@ -1058,7 +1072,7 @@ func _build_shock_fx() -> void:
 	cone.mesh = cm
 	cone.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	# Весь конус ПЕРЕД машиной: основание на плоскости бампера, остриё в
-	# 0.9 м впереди — машина «толкает» волну носом. Первый вариант (база
+	# SHOCK_LEN впереди — машина «толкает» волну носом. Первый вариант (база
 	# 0.95 м, конус до середины капота) на снимке читался куполом над
 	# кабиной, а не волной перед носом.
 	cone.position = SHOCK_NOSE + Vector3(0.0, 0.0, 0.1 - cm.height * 0.5)
@@ -1086,21 +1100,31 @@ func _build_shock_fx() -> void:
 	_shock_fx = root
 
 
-## Гонит волну перед носом: кольца от носа назад, растут и тают; конус
-## слегка дышит. Вызывается из _tick_effects, пока волна включена.
+## Запустить вспышку волны (буст III включился). Повторный вызов во
+## время вспышки начинает её заново.
+func _start_shock() -> void:
+	_shock_left = SHOCK_TOTAL
+
+
+## Гонит вспышку: конус вспыхивает и тает, два кольца одно за другим от
+## острия к бамперу, растут и тают. Вызывается из _tick_effects, пока
+## _shock_left > 0.
 func _tick_shock(delta: float) -> void:
-	_shock_phase = fmod(_shock_phase + delta, SHOCK_PERIOD)
+	_shock_left = maxf(0.0, _shock_left - delta)
+	var t := 1.0 - _shock_left / SHOCK_TOTAL   # 0 — начало, 1 — конец
 	for i in _shock_rings.size():
-		var t := fmod(_shock_phase / SHOCK_PERIOD + 0.5 * i, 1.0)
+		# Второе кольцо стартует на трети вспышки, оба гаснут к её концу.
+		var ti := clampf((t - 0.3 * i) / (1.0 - 0.3 * i), 0.0, 1.0)
 		var ring := _shock_rings[i]
-		# Кольцо рождается у острия конуса полуметровым, за жизнь растёт до
-		# 1.8 м и доходит до бампера/капота — волна идёт по конусу назад.
-		ring.scale = Vector3.ONE * (0.3 + 0.6 * t)
-		ring.position = SHOCK_NOSE + Vector3(0.0, 0.05 * t, -0.8 + 1.2 * t)
+		# Кольцо рождается у острия конуса 0.8 м, к бамперу дорастает до
+		# 4.6 м — волна идёт по конусу назад.
+		ring.scale = Vector3.ONE * (0.4 + 1.9 * ti)
+		ring.position = SHOCK_NOSE + Vector3(0.0, 0.1 * ti, 0.1 - SHOCK_LEN * (1.0 - ti))
 		var mat := (ring.mesh as QuadMesh).material as StandardMaterial3D
-		mat.albedo_color.a = (1.0 - t) * (1.0 - 0.5 * t)
+		mat.albedo_color.a = 0.0 if (i > 0 and ti <= 0.0) else (1.0 - ti) * (1.0 - 0.4 * ti)
+	# Конус: быстрый всплеск (0.1 с) и плавное таяние до конца вспышки.
 	var cmat := (_shock_cone.mesh as CylinderMesh).material as StandardMaterial3D
-	cmat.albedo_color.a = 0.2 + 0.06 * sin(_shock_phase / SHOCK_PERIOD * TAU)
+	cmat.albedo_color.a = 0.38 * minf(1.0, t * 5.0) * (1.0 - t)
 
 
 ## Подвинуть отметку на оси вслед за машиной. Раз за кадр физики: её просит
@@ -1437,14 +1461,21 @@ func _tick_effects(delta: float) -> void:
 	# Волна перед носом — только турбина III ступени (у марионетки ступени
 	# хозяина приезжают в hello, а признак буста — тем же значком).
 	if _shock_fx:
-		var shock_on := alive and not _boost_from_pad \
+		var boost3 := alive and not _boost_from_pad \
 				and wstep(Weapons.BOOST) >= 3 and (_boost_time > 0.0
 				or (_status_time > 0.0 and _status_kind == Weapons.BOOST))
+		# Фронт «буст III включился» — для марионетки (у владельца вспышку
+		# запускает apply_boost, здесь она лишь перезапустится тем же кадром).
+		if boost3 and not _shock_was_on:
+			_start_shock()
+		_shock_was_on = boost3
+		# Вспышка короткая (SHOCK_TOTAL), но с концом буста гаснет сразу.
+		var shock_on := boost3 and _shock_left > 0.0
 		_shock_fx.visible = shock_on
 		if shock_on:
 			_tick_shock(delta)
-		else:
-			_shock_phase = 0.0
+		elif not boost3:
+			_shock_left = 0.0
 	if _ghost_time > 0.0:
 		_ghost_age += delta
 		_ghost_time -= delta
@@ -2816,9 +2847,18 @@ func _wall_slide(delta: float) -> void:
 	var ang := fwd.signed_angle_to(tangent, Vector3.UP)
 	if absf(ang) <= WALL_ALIGN_FREE:
 		return
-	rotate(Vector3.UP, (ang - signf(ang) * WALL_ALIGN_FREE)
-			* minf(1.0, wall_align_speed * delta))
+	var turn := (ang - signf(ang) * WALL_ALIGN_FREE) \
+			* minf(1.0, wall_align_speed * delta)
+	rotate(Vector3.UP, turn)
 	angular_velocity.y = 0.0
+	# Доворот стеной — платный (WALL_TURN_LOSS): в повороте касательная
+	# уходит вместе с трассой, и без этого нос тянулся за ней даром, а
+	# шины везли машину по дуге сами. Память скорости режем вслед, иначе
+	# ведение вернёт ход обратно (см. _recent_hspeed в перенаправлении).
+	var keep := maxf(0.0, 1.0 - WALL_TURN_LOSS * absf(turn))
+	linear_velocity.x *= keep
+	linear_velocity.z *= keep
+	_recent_hspeed *= keep
 
 
 ## Кузов у грани ограждения. Раньше — контакт решателя; теперь стена для
@@ -3656,6 +3696,10 @@ func apply_boost(from_pad := false) -> void:
 	# ускоритель — без ступеней: это трасса, а не оружие игрока.
 	var bstep := 0 if from_pad else wstep(Weapons.BOOST)
 	_boost_time = boost_duration * (1.5 if bstep >= 2 else (1.15 if bstep == 1 else 1.0))
+	# Турбина III: вспышка волны перед носом (и при повторном бусте поверх
+	# идущего — фронт в _tick_effects её бы не увидел).
+	if bstep >= 3:
+		_start_shock()
 
 
 ## Разовый срез скорости (магнит осаживает впередиедущих). По сети машина
@@ -3758,6 +3802,42 @@ func shield_level() -> int:
 
 func shield_left() -> float:
 	return _shield_time
+
+
+## Дымят ли колёса — для снимка (сервер, протокол 22). До этого чужие
+## машины по сети не дымили вовсе (жалоба 09.09): на клиенте все соперники
+## — марионетки, а дым считает только локальная физика. Бот на сервере —
+## как посчитала его физика; марионетка живого игрока физики не имеет —
+## судим по присланной скорости: сильный боковой снос на ходу (те же
+## пороги, что в _physics_process) или песок за полотном, не в полёте.
+func smoke_bit() -> bool:
+	if not alive or _smoke.is_empty():
+		return false
+	if net_role != NetRole.PUPPET:
+		return _smoke[0].emitting
+	if not _snap_seen or absf(_snap_vel.y) > 2.0:
+		return false
+	var hv := Vector3(_snap_vel.x, 0.0, _snap_vel.z)
+	var right := Basis(_snap_rot).x
+	right.y = 0.0
+	if right.length_squared() < 0.01:
+		return false
+	var side := absf(hv.dot(right.normalized()))
+	if side > 5.0 and hv.length() > 8.0:
+		return true
+	if track != null and track.kind == TrackBuilder.KIND_SAND \
+			and hv.length() > 3.0 \
+			and track.distance_from_axis_at(_snap_pos, track_offset) \
+				> track.half_width_at_offset(track_offset):
+		return true
+	return false
+
+
+## Дым ПРИЕХАЛ В СНИМКЕ (Main._rx_state) — марионетке на клиенте. Её
+## _physics_process до расчёта дыма не доходит, эмиттеры ставим отсюда.
+func net_set_smoke(on: bool) -> void:
+	for p in _smoke:
+		p.emitting = on and alive
 
 
 ## Байт снимка (протокол 21): уровень в старших двух битах, остаток в

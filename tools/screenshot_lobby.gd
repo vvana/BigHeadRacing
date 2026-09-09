@@ -36,7 +36,8 @@ func _ready() -> void:
 	# неотличим от живого игрока (ник, машина, оранжевый цвет).
 	_lobby.set_status("Все в сборе — поехали!")
 	_lobby.set_slot(0, true, "fastback", true, false, "Андрей")
-	_lobby.set_slot(1, true, "diablo", false, false, "Жека_777")
+	# Жека — товарищ по команде друзей (09.09): голубая подпись «· друг».
+	_lobby.set_slot(1, true, "diablo", false, false, "Жека_777", false, true)
 	_lobby.set_slot(2, false, "chevelle", false, true, "Шумахер")
 	_lobby.set_slot(3, false, "safari", false, true, "Настя")
 	if Net.race_size > 4:
