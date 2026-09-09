@@ -136,6 +136,23 @@ func _run() -> void:
 	_ok(items.size() == 1 and not bool(items[0].online),
 			"ушедший игрок в поиске — не в сети")
 
+	# --- Список друзей (lookup, 09.09 вечер): статусы по именам.
+	srv.handle(3, {t = "lookup", names = ["Женёк", "настя", "Никто", "АНДРЕЙ"]})
+	var lr := _last(srv, 3, "lookup_result")
+	items = lr.get("items", [])
+	_ok(items.size() == 4, "lookup: по записи на каждое имя (%d)" % items.size())
+	_ok(items.size() == 4 and str(items[0].name) == "Женёк" and bool(items[0].online)
+			and str(items[0].status) == "garage", "lookup: Женёк в сети, в гараже")
+	_ok(items.size() == 4 and str(items[1].name) == "Настя" and not bool(items[1].online),
+			"lookup: имя без регистра, Настя не в сети")
+	_ok(items.size() == 4 and str(items[2].name) == "Никто" and not bool(items[2].online)
+			and str(items[2].status) == "offline", "lookup: незнакомое имя — не в сети")
+	_ok(items.size() == 4 and not bool(items[3].online),
+			"lookup: своё имя — как не в сети (не приглашаем сами себя)")
+	srv.handle(3, {t = "lookup", names = "мусор"})
+	lr = _last(srv, 3, "lookup_result")
+	_ok((lr.get("items", []) as Array).is_empty(), "lookup: не список — пустой ответ")
+
 	# --- Приглашение и команда.
 	srv.handle(3, {t = "invite", name = "никто"})
 	_ok(not _take(srv, 3, "error").is_empty(), "приглашение несуществующего — ошибка")

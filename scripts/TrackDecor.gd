@@ -3,7 +3,7 @@ extends Node3D
 ## Декор трассы из готовых лоуполи-ассетов (BEDRILL Track Environment Free +
 ## Cartoon Tracks Pack + Palmov Low Poly Locations + ithappy Cartoon City):
 ## финишная арка, стартовая ферма с огнями, трибуны, деревья, воздушные шары,
-## реклама и знаки перед поворотами; в пустыне — пирамиды, сфинкс и кактусы;
+## реклама и знаки перед поворотами; в пустыне — скалы, гора-череп и кактусы;
 ## в ночном городе — мультяшные здания со светящимися окнами и светофоры.
 ## ТОЛЬКО ВИЗУАЛ: ни у одного пропса нет коллизий, всё стоит за ограждением
 ## (или в воздухе/на полотне без физики) — геймплей не задет.
@@ -504,7 +504,7 @@ const PALMS: Array[String] = ["palm_large.fbx", "palm_bent.fbx"]
 
 
 ## Пустыня: вестерн-станция с поездом, оазисы с пальмами, дальние монументы
-## (пирамиды, сфинкс, гора-череп) за трассой и россыпь кактусов, камней,
+## (гора-череп, скальные останцы) за трассой и россыпь кактусов, камней,
 ## сухих деревьев, пучков жёлтой травы, брошенных бочек-ящиков и пасущихся
 ## лошадей по дюнам.
 ## Коллизий нет: по песку разрешено ездить, машина проходит насквозь.
@@ -620,17 +620,46 @@ func _build_oases(rng: RandomNumberGenerator) -> void:
 		placed += 1
 
 
+## Скальный останец: гроздь валунов из того же пака, раздутых до размера
+## монумента, — крупная скала по центру, вокруг помельче и повёрнутые
+## вразнобой. Ставится вместо египетских пирамид: на Диком Западе в
+## прериях стоят камни (просьба 09.09).
+func _build_rock_outcrop(rng: RandomNumberGenerator, c: Vector3,
+		s: float) -> void:
+	var stones: Array[String] = [
+		"stone_a.fbx", "stone_b.fbx", "stone_c.fbx", "stone_d.fbx",
+	]
+	# stone_c — самый «башенный» из четырёх (≈1×1×1 м): в 14·s раз это
+	# скала 14 м высотой при s = 1. Низ утоплен в песок, как у монументов.
+	var core := 14.0 * s
+	var p := Vector3(c.x, _ground_y(c) - 1.2 * s, c.z)
+	_spawn(PDIR + "stone_c.fbx", p, _rand_yaw(rng), core, false)
+	for k in rng.randi_range(3, 5):
+		var ang := TAU * k / 5.0 + rng.randf_range(-0.5, 0.5)
+		var d := core * rng.randf_range(0.35, 0.6)
+		var q := c + Vector3(cos(ang) * d, 0, sin(ang) * d)
+		q.y = _ground_y(q) - 0.8 * s
+		_spawn(PDIR + stones[rng.randi() % stones.size()], q, _rand_yaw(rng),
+				core * rng.randf_range(0.3, 0.6), false)
+
+
+## Случайное направление «лица» для пропса, которому всё равно куда смотреть.
+func _rand_yaw(rng: RandomNumberGenerator) -> Vector3:
+	var v := Vector3(rng.randf_range(-1, 1), 0, rng.randf_range(-1, 1))
+	return v if v.length_squared() > 0.01 else Vector3.FORWARD
+
+
 ## Монументы пустыни: ищем каждому место в своём секторе круга — подальше
 ## от полотна, слегка утопив в песок (низ на дюнах неровный).
 func _build_desert_monuments(rng: RandomNumberGenerator) -> void:
 	var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
 	var half := TrackBuilder.GROUND_SIZE * 0.47
-	# [файл, масштаб, радиус занимаемого места (м) с учётом масштаба]
+	# [файл ("rocks" — гроздь валунов), масштаб, радиус места (м)]
 	var items: Array = [
-		["pyramid_b.fbx", 3.2, 34.0],
-		["sphinx.fbx", 2.6, 18.0],
-		["pyramid_a.fbx", 2.6, 18.0],
+		["rocks", 1.5, 24.0],
 		["skull_mountain.fbx", 2.6, 28.0],
+		["rocks", 1.0, 16.0],
+		["rocks", 1.25, 20.0],
 	]
 	for k in items.size():
 		var item: Array = items[k]
@@ -646,8 +675,11 @@ func _build_desert_monuments(rng: RandomNumberGenerator) -> void:
 			if _is_occupied(p, clear):
 				continue
 			p.y = _ground_y(p) - 0.4
-			_spawn(PDIR + String(item[0]), p, Vector3(-p.x, 0, -p.z),
-					float(item[1]), false)
+			if String(item[0]) == "rocks":
+				_build_rock_outcrop(rng, p, float(item[1]))
+			else:
+				_spawn(PDIR + String(item[0]), p, Vector3(-p.x, 0, -p.z),
+						float(item[1]), false)
 			_occupy(p, clear)
 			break
 

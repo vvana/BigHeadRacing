@@ -101,6 +101,27 @@ var _first_finish_time := -1.0      # когда финишировал перв
 # Доезжать дают всем, но не вечно: спустя столько секунд после первого
 # финишёра заезд закрывается принудительно (места — по текущему прогрессу).
 const FINISH_TIMEOUT := 40.0
+# Хронометраж (09.09, вечер): время гонки и лучший круг каждой машины —
+# для таблицы мест на финише. Считает тот, кто судит (сервер/оффлайн),
+# клиенту приходит в _rx_car_finished / _rx_finish. Мс от GO.
+var _go_ms := 0                           # момент GO (мс тиков), 0 — старта ещё не было
+var _lap_start_ms: Array[int] = []        # начало текущего круга каждой машины
+var _best_lap_ms: Array[int] = []         # лучший круг (0 — нет)
+var _finish_ms: Array[int] = []           # время гонки на финише (0 — не доехала)
+# Рекорды трассы (файл GameState.records_path(), ключ — вид трассы):
+# {lap_ms, lap_name, race_ms, race_name}. Только живые игроки — боты не
+# считаются. Клиент получает их с сервера (_rx_records) при hello и при
+# каждом новом рекорде; кто побил в ЭТОМ заезде — помечается в таблице.
+var _records := {}
+var _records_all := {}                    # весь файл (все виды трасс), у судьи
+var _record_lap_new := false              # рекорд круга побит в этом заезде
+var _record_race_new := false
+# После заезда сервер перезапускает трассу, а участники ОТСОЕДИНЯЮТСЯ и
+# остаются с таблицей мест до Enter/Esc (просьба 09.09: следующая гонка не
+# начинается сама, все сперва попадают в гараж). _detached — сцена больше
+# не сетевая и ничего не считает, только показывает итог.
+var _detached := false
+const POST_RACE_HOLD := 20.0              # сервер: секунд от конца заезда до перезапуска
 
 var _player_marker: Node3D          # стрелка-указатель над своей машиной
 var _marker_time := 0.0
@@ -296,6 +317,8 @@ var _count_label: Label         # отсчёт 3-2-1-GO
 var _finish_root: Control       # баннер финиша
 var _finish_label: Label
 var _finish_xp_label: Label     # строка «+N ОПЫТА · УРОВЕНЬ K» на баннере
+var _records_label: Label       # рекорды трассы под таблицей мест
+var _result_rows: Array = []    # строки таблицы мест: {place, name, time, lap}
 var _my_kills := 0              # мои уничтоженные соперники (опыт за заезд)
 var _my_deaths := 0             # сколько раз уничтожили меня (статистика)
 var _ui_font: FontFile          # Russo One — индустриальный, с кириллицей
@@ -325,6 +348,8 @@ func _ready() -> void:
 			return
 	Music.play_race()
 	_track_kind = _pick_track_kind()
+	if not Net.is_client():
+		_load_records()
 	_setup_environment()
 
 	_track = TrackBuilder.new()
@@ -456,6 +481,9 @@ func _spawn_cars() -> void:
 		_slot_taken.append(false)
 		_net_place.append(0)
 		_net_weapon.append(-2)
+		_lap_start_ms.append(0)
+		_best_lap_ms.append(0)
+		_finish_ms.append(0)
 
 	_roster = ids
 	# Имена. Клиент ждёт их с сервера (_rx_names) — до тех пор пустые;
@@ -659,6 +687,10 @@ func _countdown() -> void:
 		_rx_count.rpc("GO!")
 	for c in _cars:
 		c.controls_enabled = true
+	# Секундомер гонки и первого круга у всех — с GO (судья: сервер/оффлайн).
+	_go_ms = maxi(1, Time.get_ticks_msec())
+	for i in _lap_start_ms.size():
+		_lap_start_ms[i] = _go_ms
 	await get_tree().create_timer(0.7).timeout
 	if is_inside_tree() and _count_label:
 		_count_label.visible = false
@@ -691,7 +723,7 @@ func _physics_process(_delta: float) -> void:
 				"сервер" if Net.is_server() else "клиент",
 				wd_now / 1000.0, str(_net_started)])
 	_wd_last = wd_now
-	if _cars.is_empty():
+	if _cars.is_empty() or _detached:
 		return
 	var curve: Curve3D = _track._curve
 	var length := curve.get_baked_length()
@@ -714,6 +746,15 @@ func _physics_process(_delta: float) -> void:
 		var lap := int(floorf(_progress[i] / length))
 		if lap > _laps_done[i]:
 			_laps_done[i] = lap
+			# Хронометраж круга (судья). Круг короче 5 с — не круг, а скачок
+			# прогресса (телепорт после взрыва/возврата), не засчитываем.
+			if not Net.is_client() and _go_ms > 0 and not _cars[i].race_over:
+				var now_ms := Time.get_ticks_msec()
+				var lap_ms := now_ms - _lap_start_ms[i]
+				_lap_start_ms[i] = now_ms
+				if lap_ms >= 5000 and (_best_lap_ms[i] == 0 or lap_ms < _best_lap_ms[i]):
+					_best_lap_ms[i] = lap_ms
+					_try_record("lap", i, lap_ms)
 			# Финиш ПОФИНИШНЫЙ: доехавшая машина останавливается и
 			# получает место по порядку пересечения, остальные ДОЕЗЖАЮТ
 			# (раньше первый финишёр обрывал заезд всем — «3 и 4 не
@@ -921,11 +962,16 @@ func _car_finished(i: int) -> void:
 	if _first_finish_time < 0.0:
 		_first_finish_time = Time.get_ticks_msec() / 1000.0
 	var place := _finish_order.size()
+	# Время гонки — от GO до линии; рекорд трассы — только живым игрокам.
+	if _go_ms > 0:
+		_finish_ms[i] = maxi(1, Time.get_ticks_msec() - _go_ms)
+		_try_record("race", i, _finish_ms[i])
 	if Net.is_server():
-		_rx_car_finished.rpc(i, place)
+		_rx_car_finished.rpc(i, place, _finish_ms[i], _best_lap_ms[i])
 		_record_human_result(i, place)
 	elif i == 0:
 		_show_finish(place)
+	_refresh_results()
 	# Все доехали — заезд окончен целиком.
 	if _finish_order.size() >= _cars.size():
 		_finish_race()
@@ -974,6 +1020,7 @@ func _show_finish(place: int) -> void:
 	if info.x > before.x and _announcer:
 		_announcer.big("НОВЫЙ УРОВЕНЬ %d!" % info.x, "", "teal")
 	_finish_root.visible = true
+	_refresh_results()
 	# Праздничный залп конфетти над машиной игрока (победителю — двойной).
 	var me := _my_index()
 	if me >= 0 and me < _cars.size():
@@ -995,7 +1042,8 @@ func _finish_race() -> void:
 		c.controls_enabled = false
 		c.race_over = true
 	if Net.is_server():
-		_rx_finish.rpc()
+		# Лучшие круги всех (и не доехавших) — в таблицу мест клиентов.
+		_rx_finish.rpc(PackedInt32Array(_best_lap_ms))
 		# Не доехавшие к таймауту живые игроки — место по прогрессу.
 		for i in _cars.size():
 			if not _finish_order.has(i):
@@ -1005,6 +1053,168 @@ func _finish_race() -> void:
 	# Сам не доехал, а заезд кончился (таймаут) — место по прогрессу.
 	if not _my_finished:
 		_show_finish(_player_place())
+	_refresh_results()
+
+
+# ── таблица мест и рекорды трассы (09.09, вечер) ──
+
+## Строки таблицы на плите финиша: шапка + по строке на машину. Колонки —
+## место, гонщик, время гонки, лучший круг; заполняет _refresh_results.
+func _build_results_table(plate: Control, top: float, row_h: float) -> void:
+	_result_rows.clear()
+	var widths := [44.0, 0.0, 128.0, 128.0]   # 0 — растяжимая колонка имени
+	var heads := ["#", "ГОНЩИК", "ВРЕМЯ", "ЛУЧШИЙ КРУГ"]
+	for r in _cars.size() + 1:
+		var row := HBoxContainer.new()
+		row.anchor_left = 0.0
+		row.anchor_right = 1.0
+		row.offset_left = 40.0
+		row.offset_right = -40.0
+		row.offset_top = top + r * row_h
+		row.offset_bottom = top + (r + 1) * row_h
+		row.add_theme_constant_override("separation", 8)
+		plate.add_child(row)
+		var cells: Array = []
+		for c in 4:
+			var l := _make_label(row, heads[c] if r == 0 else "", 15,
+					Color(1, 1, 1, 0.55) if r == 0 else Color.WHITE, 5)
+			l.custom_minimum_size = Vector2(widths[c], row_h)
+			l.size_flags_horizontal = Control.SIZE_EXPAND_FILL if c == 1 \
+					else Control.SIZE_SHRINK_BEGIN
+			l.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT if c == 1 \
+					else HORIZONTAL_ALIGNMENT_CENTER
+			l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+			l.clip_text = true
+			cells.append(l)
+		if r > 0:
+			_result_rows.append({place = cells[0], name = cells[1],
+					time = cells[2], lap = cells[3]})
+
+
+## «м:сс.сс»; 0 — прочерк.
+static func fmt_ms(ms: int) -> String:
+	if ms <= 0:
+		return "—"
+	var cs := (ms / 10) % 100
+	var s := (ms / 1000) % 60
+	var m := ms / 60000
+	return "%d:%02d.%02d" % [m, s, cs]
+
+
+## Перерисовать таблицу мест и рекорды (при каждом финише и новом рекорде).
+## Порядок: финишировавшие — по порядку линии, остальные — по прогрессу;
+## своя строка зелёная, товарищи по команде голубые, не доехавшие бледные.
+func _refresh_results() -> void:
+	if _result_rows.is_empty() or _finish_root == null \
+			or not _finish_root.visible:
+		return
+	var order: Array[int] = []
+	for i in _cars.size():
+		order.append(i)
+	order.sort_custom(func(a: int, b: int) -> bool:
+		return _place_of(a) < _place_of(b))
+	var me := _my_index()
+	for r in mini(order.size(), _result_rows.size()):
+		var i: int = order[r]
+		var row: Dictionary = _result_rows[r]
+		var done := _finish_order.has(i)
+		var col := Color.WHITE
+		if i == me:
+			col = UiKit.GREEN_ME
+		elif Social.is_mate(car_label(i)):
+			col = UiKit.BLUE_MATE
+		if not done:
+			col.a = 0.55
+		(row.place as Label).text = str(_place_of(i))
+		(row.name as Label).text = car_label(i)
+		var t := fmt_ms(_finish_ms[i]) if done else ("не доехал" if _finished else "едет…")
+		(row.time as Label).text = t
+		(row.lap as Label).text = fmt_ms(_best_lap_ms[i])
+		for k in ["place", "name", "time", "lap"]:
+			(row[k] as Label).add_theme_color_override("font_color", col)
+	if _records_label:
+		var lap_ms := int(_records.get("lap_ms", 0))
+		var race_ms := int(_records.get("race_ms", 0))
+		var lap_txt := "РЕКОРД КРУГА: %s" % (("%s — %s" % [fmt_ms(lap_ms),
+				str(_records.get("lap_name", ""))]) if lap_ms > 0 else "пока нет")
+		var race_txt := "РЕКОРД ГОНКИ: %s" % (("%s — %s" % [fmt_ms(race_ms),
+				str(_records.get("race_name", ""))]) if race_ms > 0 else "пока нет")
+		if _record_lap_new:
+			lap_txt += "  ★ НОВЫЙ!"
+		if _record_race_new:
+			race_txt += "  ★ НОВЫЙ!"
+		_records_label.text = lap_txt + "\n" + race_txt
+		_records_label.add_theme_color_override("font_color",
+				UiKit.YELLOW if _record_lap_new or _record_race_new
+				else Color(1, 1, 1, 0.9))
+
+
+## Судья: рекорды всех видов трасс из файла, свои — по _track_kind.
+func _load_records() -> void:
+	_records_all = {}
+	var path := GameState.records_path()
+	if FileAccess.file_exists(path):
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f:
+			var data: Variant = JSON.parse_string(f.get_as_text())
+			if data is Dictionary:
+				_records_all = data
+	var mine: Variant = _records_all.get(_track_kind, {})
+	_records = {}
+	if mine is Dictionary:
+		_records = {lap_ms = int(mine.get("lap_ms", 0)),
+				lap_name = str(mine.get("lap_name", "")),
+				race_ms = int(mine.get("race_ms", 0)),
+				race_name = str(mine.get("race_name", ""))}
+	else:
+		_records = {lap_ms = 0, lap_name = "", race_ms = 0, race_name = ""}
+
+
+func _save_records() -> void:
+	_records_all[_track_kind] = _records.duplicate()
+	var f := FileAccess.open(GameState.records_path(), FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(_records_all))
+
+
+## Живой ли игрок в слоте i (рекорды — только людям): оффлайн — машина 0,
+## на сервере — слот за пиром.
+func _is_human(i: int) -> bool:
+	if Net.is_server():
+		return Net.slot_of_peer.values().has(i)
+	return i == 0 and not Net.is_online()
+
+
+## Судья: попытка рекорда («lap» / «race») машиной i. Побит — в файл, всем
+## клиентам _rx_records (flag 1/2), себе — анонс (оффлайн).
+func _try_record(what: String, i: int, ms: int) -> void:
+	if ms <= 0 or not _is_human(i) or _records.is_empty():
+		return
+	var key := what + "_ms"
+	var old := int(_records.get(key, 0))
+	if old > 0 and ms >= old:
+		return
+	_records[key] = ms
+	_records[what + "_name"] = car_label(i)
+	_save_records()
+	var flag := 1 if what == "lap" else 2
+	if what == "lap":
+		_record_lap_new = true
+	else:
+		_record_race_new = true
+	print("[record] %s: %s — %s (%s)" % [what, fmt_ms(ms), car_label(i), _track_kind])
+	if Net.is_server():
+		_rx_records.rpc(int(_records.lap_ms), str(_records.lap_name),
+				int(_records.race_ms), str(_records.race_name), flag)
+	else:
+		_announce_record(what == "lap", car_label(i), ms)
+		_refresh_results()
+
+
+func _announce_record(lap: bool, who: String, ms: int) -> void:
+	if _announcer:
+		_announcer.big("РЕКОРД КРУГА!" if lap else "РЕКОРД ГОНКИ!",
+				"%s · %s" % [who, fmt_ms(ms)], "yellow")
 
 
 ## Возврат i-й машины на ось трассы (+6 м вперёд), скорость в ноль.
@@ -1485,23 +1695,44 @@ func _setup_hud() -> void:
 	_finish_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_finish_root.visible = false
 	canvas.add_child(_finish_root)
+	# Плита растёт с числом машин: под заголовком — ТАБЛИЦА МЕСТ (09.09,
+	# вечер: кто каким финишировал, время гонки, лучший круг), ниже рекорды
+	# трассы (круг и гонка), строки опыта и подсказка.
+	var n_rows := _cars.size()
+	var table_top := 88.0
+	var row_h := 22.0
+	var rec_top := table_top + 22.0 + n_rows * row_h + 10.0
+	var xp_top := rec_top + 46.0
+	var plate_h := xp_top + 50.0 + 34.0
 	var fin_plate := UiKit.plate(_finish_root, "steel", Vector2.ZERO,
-			Vector2(640, 190), false)
+			Vector2(700, plate_h), false)
 	fin_plate.anchor_left = 0.5
 	fin_plate.anchor_right = 0.5
 	fin_plate.anchor_top = 0.5
 	fin_plate.anchor_bottom = 0.5
-	fin_plate.offset_left = -320
-	fin_plate.offset_right = 320
-	fin_plate.offset_top = -130
-	fin_plate.offset_bottom = 60
-	UiKit.checker(fin_plate, Vector2(20, 14), Vector2(600, 24))
-	UiKit.checker(fin_plate, Vector2(20, 152), Vector2(600, 24))
+	fin_plate.offset_left = -350
+	fin_plate.offset_right = 350
+	fin_plate.offset_top = -plate_h * 0.5 - 20.0
+	fin_plate.offset_bottom = plate_h * 0.5 - 20.0
+	UiKit.checker(fin_plate, Vector2(20, 14), Vector2(660, 24))
+	UiKit.checker(fin_plate, Vector2(20, plate_h - 38.0), Vector2(660, 24))
 	_finish_label = _make_label(fin_plate, "", 34, Color.WHITE, 8)
-	_finish_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_finish_label.anchor_left = 0.0
+	_finish_label.anchor_right = 1.0
+	_finish_label.offset_top = 40.0
+	_finish_label.offset_bottom = 86.0
 	_finish_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_finish_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_finish_label.offset_bottom = -66.0   # выше: снизу две строки итога
+	_build_results_table(fin_plate, table_top, row_h)
+	_records_label = _make_label(fin_plate, "", 15, Color(1, 1, 1, 0.9), 5)
+	_records_label.anchor_left = 0.0
+	_records_label.anchor_right = 1.0
+	_records_label.offset_left = 40.0
+	_records_label.offset_right = -40.0
+	_records_label.offset_top = rec_top
+	_records_label.offset_bottom = rec_top + 44.0
+	_records_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_records_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	# Итог — ДВЕ строки (09.09: в одну «+110 ОПЫТА · +625 МОНЕТ · УРОВЕНЬ
 	# 19 (775 / 820) · РЕЙТИНГ +22» вылезала за плиту). Поля 40 px по
 	# бокам, чтобы и при четырёхзначных монетах строка сидела внутри.
@@ -1510,8 +1741,8 @@ func _setup_hud() -> void:
 	_finish_xp_label.anchor_right = 1.0
 	_finish_xp_label.offset_left = 40.0
 	_finish_xp_label.offset_right = -40.0
-	_finish_xp_label.offset_top = 92.0
-	_finish_xp_label.offset_bottom = 148.0
+	_finish_xp_label.offset_top = xp_top
+	_finish_xp_label.offset_bottom = xp_top + 50.0
 	_finish_xp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_finish_xp_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	var finish_hint := _make_label(fin_plate, "ENTER — В ГАРАЖ", 16,
@@ -1721,7 +1952,11 @@ func _on_net_lost() -> void:
 ## включал управление финишировавшему игроку — он ехал дальше прямо с
 ## баннером «ФИНИШ» на экране.
 func _reset_server_after_race() -> void:
-	await get_tree().create_timer(8.0).timeout
+	# POST_RACE_HOLD (было 8 с): участники успевают прочитать таблицу мест
+	# по сети; по _rx_reset они отсоединяются (_detach_after_race) и в
+	# следующий заезд не садятся — он начнётся только с теми, кто зайдёт
+	# из гаража заново (просьба 09.09).
+	await get_tree().create_timer(POST_RACE_HOLD).timeout
 	if is_inside_tree():
 		print("[net] заезд окончен, перезапуск трассы")
 		_rx_reset.rpc()
@@ -2296,6 +2531,9 @@ func _rx_hello(car_id: String, proto: int, want_size := 4,
 	_rx_welcome.rpc_id(id, slot, _roster, _taken_mask())
 	_rx_roster.rpc(_roster)
 	_rx_names.rpc(_names)
+	_rx_records.rpc_id(id, int(_records.get("lap_ms", 0)),
+			str(_records.get("lap_name", "")), int(_records.get("race_ms", 0)),
+			str(_records.get("race_name", "")), 0)
 	if _net_started and _late_slots.has(slot):
 		# ОПОЗДАЛ к старту (см. _on_peer_joined): в идущую гонку не пускаем
 		# вовсе, машину в его слоте продолжает вести бот. Обычно сюда он не
@@ -3296,11 +3534,15 @@ func _rx_race_running(xf: PackedFloat32Array) -> void:
 ## Машина i финишировала (порядок пересечения решает сервер). Своя —
 ## баннер и снятое управление; чужая — race_over для порядка.
 @rpc("authority", "call_remote", "reliable")
-func _rx_car_finished(i: int, place: int) -> void:
+func _rx_car_finished(i: int, place: int, race_ms := 0, lap_ms := 0) -> void:
 	if i < 0 or i >= _cars.size():
 		return
 	var car := _cars[i]
 	car.race_over = true
+	# Время гонки и лучший круг — в таблицу мест (протокол 23).
+	_finish_ms[i] = maxi(0, race_ms)
+	if lap_ms > 0:
+		_best_lap_ms[i] = lap_ms
 	# Порядок финиша — истина сервера, и клиент ОБЯЗАН занести его в свой
 	# _finish_order: место в HUD слева считает _place_of, и с пустым списком
 	# доехавшие продолжали «соревноваться» прогрессом — слева «МЕСТО 2/4»,
@@ -3316,15 +3558,36 @@ func _rx_car_finished(i: int, place: int) -> void:
 			and not _wait_next_race:
 		car.controls_enabled = false
 		_show_finish(place)
+	_refresh_results()
 
 
 @rpc("authority", "call_remote", "reliable")
-func _rx_finish() -> void:
+func _rx_finish(laps := PackedInt32Array()) -> void:
 	# Ждущий следующего заезда в этом не участвовал — баннер «ФИНИШ! МЕСТО N»
 	# и опыт за чужую гонку ему не положены (сидит в лобби до _rx_reset).
 	if _wait_next_race:
 		return
+	for i in mini(laps.size(), _best_lap_ms.size()):
+		if laps[i] > 0:
+			_best_lap_ms[i] = laps[i]
 	_finish_race()
+
+
+## Рекорды трассы от сервера (протокол 23): при hello — текущие (flag 0),
+## дальше — каждый новый: 1 — круг, 2 — гонка (анонс на экране).
+@rpc("authority", "call_remote", "reliable")
+func _rx_records(lap_ms: int, lap_name: String, race_ms: int,
+		race_name: String, flag: int) -> void:
+	_records = {lap_ms = lap_ms, lap_name = lap_name, race_ms = race_ms,
+			race_name = race_name}
+	if flag == 1:
+		_record_lap_new = true
+	elif flag == 2:
+		_record_race_new = true
+	if flag > 0:
+		_announce_record(flag == 1, lap_name if flag == 1 else race_name,
+				lap_ms if flag == 1 else race_ms)
+	_refresh_results()
 
 
 ## Сервер перезапустил трассу после заезда — перезапускаемся и мы, иначе
@@ -3335,6 +3598,14 @@ func _rx_finish() -> void:
 func _rx_reset() -> void:
 	if _net_lost or _kicked or not is_inside_tree():
 		return
+	# УЧАСТНИК заезда в следующий не едет (просьба 09.09: следующая гонка не
+	# начинается сама, все сперва попадают в гараж): отсоединяемся и
+	# остаёмся с таблицей мест до Enter/Esc. Перезагружается только тот,
+	# кто ждал следующего заезда в лобби (_wait_next_race) — он не ехал.
+	if not _wait_next_race:
+		# Отложенно: рвать соединение прямо внутри обработчика RPC не стоит.
+		_detach_after_race.call_deferred()
+		return
 	print("[net] сервер начал новый заезд — перезагружаем сцену%s" % _mem_note())
 	# Слот за нашим пиром остаётся тот же — лобби новой сцены сразу покажет
 	# нашу машину в нём (welcome подтвердит).
@@ -3343,6 +3614,27 @@ func _rx_reset() -> void:
 	Net.my_slot = -1
 	_rebuilding = true
 	get_tree().reload_current_scene()
+
+
+## Заезд окончен, сервер перезапускает трассу — мы больше не в сети: рвём
+## соединение (сервер не посадит нас в новое лобби), замораживаем машины и
+## перестаём считать физику заезда; на экране остаётся таблица мест, Enter
+## и Esc ведут в гараж как прежде. Сцена НЕ становится оффлайн-заездом:
+## _physics_process выходит по _detached первым делом.
+func _detach_after_race() -> void:
+	if _detached:
+		return
+	_detached = true
+	print("[net] заезд окончен, отсоединяемся — итог на экране до Enter")
+	Net.leave()
+	for c in _cars:
+		c.controls_enabled = false
+		c.race_over = true
+		c.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+		c.freeze = true
+	if _lobby:
+		_lobby.hide_screen()
+	_refresh_results()
 
 
 ## Память и объекты — одной строкой. Клиент 26.08 закрывался НАСМЕРТЬ

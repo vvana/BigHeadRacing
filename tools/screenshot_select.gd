@@ -51,7 +51,16 @@ func _physics_process(_d: float) -> void:
 					leader = false, online = true, status = "race"},
 		]}
 		Social.party_changed.emit()
+		# Список друзей (09.09, вечер) — с выдуманными статусами «от сервера».
+		GameState.friends = ["Пельмень", "Настя", "Жека_777", "Вован"]
 		_select.call("_open_party")
+		Social.connected = true
+		Social.name_ok = true
+		Social.friends_result.emit([
+			{name = "Пельмень", online = true, party = false, status = "garage"},
+			{name = "Настя", online = true, party = true, status = "race"},
+			{name = "Жека_777", online = true, party = true, status = "garage"},
+			{name = "Вован", online = false, party = false, status = "offline"}])
 		_select.call("_show_invite", "Пельмень", 2)
 	if _frame == 40 and stats:
 		GameState.stats = {races = 37, net_races = 21, wins = 9, podiums = 19,

@@ -27,6 +27,7 @@ const PARTY_MAX := 8
 const INVITE_TTL := 90.0       # секунд живёт приглашение без ответа
 const LAUNCH_TIMEOUT := 45.0   # секунд ждём место для команды, потом отказ
 const SEARCH_MAX := 12
+const LOOKUP_MAX := 16         # имён в одном запросе списка друзей
 const UID_MAX := 40
 
 var names := {}          # имя в нижнем регистре → {name, uid, ts}
@@ -126,6 +127,8 @@ func handle(key: int, msg: Dictionary) -> void:
 			_broadcast_party(s.party)
 		"search":
 			_search(key, s, str(msg.get("q", "")))
+		"lookup":
+			_lookup(key, s, msg.get("names", []))
 		"invite":
 			_invite(key, s, str(msg.get("name", "")))
 		"accept":
@@ -285,6 +288,29 @@ func _search(key: int, s: Dictionary, raw: String) -> void:
 	if items.size() > SEARCH_MAX:
 		items.resize(SEARCH_MAX)
 	_send(key, {t = "search_result", q = raw, items = items})
+
+
+## Статусы СПИСКА ДРУЗЕЙ клиента (09.09, вечер): по каждому имени — та же
+## запись, что в поиске; имени нет в реестре (сменил имя, не заходил) —
+## «не в сети». Порядок — как прислали. Не больше LOOKUP_MAX имён.
+func _lookup(key: int, s: Dictionary, raw: Variant) -> void:
+	var items: Array = []
+	if raw is Array:
+		for n in raw:
+			if items.size() >= LOOKUP_MAX:
+				break
+			var k := name_key(str(n))
+			if k == "":
+				continue
+			var rec: Variant = names.get(k)
+			if rec == null or str(rec.uid) == s.uid:
+				items.append({name = str(n), online = false, party = false,
+						status = "offline"})
+				continue
+			var uid: String = rec.uid
+			items.append({name = rec.name, online = peer_of_uid.has(uid),
+					party = _party_of(uid) != "", status = _status_of(uid)})
+	_send(key, {t = "lookup_result", items = items})
 
 
 func _party_of(uid: String) -> String:

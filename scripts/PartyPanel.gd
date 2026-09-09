@@ -12,12 +12,20 @@ const CAR_NAMES: Dictionary = preload("res://scripts/CarSelect.gd").DISPLAY_NAME
 const CARD_W := 128.0
 const CARD_H := 150.0
 const RESULTS_MAX := 6
+const FRIENDS_POLL := 5.0     # секунд между опросами статусов друзей
+const FRIENDS_SHOWN := 4      # строк друзей без прокрутки
+const FRIEND_ROW_H := 28.0
 
 var _font: FontFile
 var _box: VBoxContainer
 var _status: Label
 var _search: LineEdit
 var _results: VBoxContainer
+var _friends_title: Label
+var _friends_scroll: ScrollContainer
+var _friends_box: VBoxContainer
+var _friend_state := {}       # имя в нижнем регистре → запись статуса (lookup)
+var _friends_poll := 0.0
 var _members_title: Label
 var _grid: GridContainer
 var _ready_btn: Button
@@ -50,6 +58,7 @@ func _ready() -> void:
 		_refresh())
 	Social.party_changed.connect(_refresh)
 	Social.search_result.connect(_on_results)
+	Social.friends_result.connect(_on_friends)
 	Social.notice.connect(_on_notice)
 
 
@@ -58,6 +67,11 @@ func _process(delta: float) -> void:
 		return
 	for uid in _cards:
 		(_cards[uid].table as Node3D).rotation.y += delta * 0.9
+	# Статусы друзей (в сети / в заезде) опрашиваем, пока панель открыта.
+	_friends_poll -= delta
+	if _friends_poll <= 0.0:
+		_friends_poll = FRIENDS_POLL
+		_poll_friends()
 	if _notice_time > 0.0:
 		_notice_time -= delta
 		if _notice_time <= 0.0:
@@ -67,6 +81,8 @@ func _process(delta: float) -> void:
 func open() -> void:
 	visible = true
 	_refresh()
+	_friends_poll = FRIENDS_POLL
+	_poll_friends()
 	if not Social.in_party() and _search:
 		_search.call_deferred("grab_focus")
 
@@ -95,6 +111,23 @@ func _build() -> void:
 	_status = _label("", 12, Color(1, 1, 1, 0.6))
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_box.add_child(_status)
+	_box.add_child(HSeparator.new())
+
+	# Друзья (09.09, вечер): кого звал в команду или с кем в ней был —
+	# списком, с кнопкой «ПРИГЛАСИТЬ»: заново искать по имени не надо.
+	_friends_title = _label("ДРУЗЬЯ", 15, Color.WHITE)
+	_box.add_child(_friends_title)
+	# Строки компактные (плоские кнопки, ~FRIEND_ROW_H px), видно не больше
+	# FRIENDS_SHOWN — остальные прокруткой: иначе список из 12 друзей
+	# выталкивал карточки команды за край экрана.
+	_friends_scroll = ScrollContainer.new()
+	_friends_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_friends_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_box.add_child(_friends_scroll)
+	_friends_box = VBoxContainer.new()
+	_friends_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_friends_box.add_theme_constant_override("separation", 3)
+	_friends_scroll.add_child(_friends_box)
 	_box.add_child(HSeparator.new())
 
 	# Поиск по имени.
@@ -208,6 +241,109 @@ func _on_results(items: Array) -> void:
 		row.add_child(inv)
 
 
+## Спросить у сервера друзей статусы списка (ответ — _on_friends).
+func _poll_friends() -> void:
+	if Social.connected and Social.name_ok and not GameState.friends.is_empty():
+		Social.lookup(GameState.friends.duplicate())
+
+
+func _on_friends(items: Array) -> void:
+	for it: Dictionary in items:
+		_friend_state[str(it.get("name", "")).to_lower()] = it
+	_refresh_friends()
+
+
+## Список друзей из профиля: имя, статус (по последнему ответу сервера),
+## «ПРИГЛАСИТЬ» и «✕» (забыть). Без связи — имена есть, звать нельзя.
+func _refresh_friends() -> void:
+	if _friends_box == null:
+		return
+	for c in _friends_box.get_children():
+		_friends_box.remove_child(c)
+		c.queue_free()
+	var names: Array = GameState.friends
+	_friends_title.text = "ДРУЗЬЯ (%d)" % names.size() if not names.is_empty() \
+			else "ДРУЗЬЯ"
+	# В команде ниже стоят карточки состава — друзьям оставляем две строки,
+	# иначе кнопки «ГОТОВ»/«ВЫЙТИ» уезжают за нижний край экрана.
+	var shown := 2 if Social.in_party() else FRIENDS_SHOWN
+	_friends_scroll.custom_minimum_size = Vector2(0,
+			(FRIEND_ROW_H + 3.0) * clampi(names.size(), 1, shown))
+	if names.is_empty():
+		_friends_box.add_child(_label(
+				"Пока никого: найди друга ниже и пригласи — он останется здесь",
+				12, Color(1, 1, 1, 0.5)))
+		return
+	var can_invite := Social.connected and Social.name_ok \
+			and Social.members().size() < SocialServer.PARTY_MAX
+	for n in names:
+		var who := str(n)
+		var it: Dictionary = _friend_state.get(who.to_lower(), {})
+		var known := not it.is_empty() and Social.connected
+		var online := known and bool(it.get("online", false))
+		var in_party := known and bool(it.get("party", false))
+		var row := HBoxContainer.new()
+		row.custom_minimum_size = Vector2(0, FRIEND_ROW_H)
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_theme_constant_override("separation", 8)
+		_friends_box.add_child(row)
+		var nm := _label(who, 14, Color.WHITE if online else Color(1, 1, 1, 0.45))
+		nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		nm.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		nm.clip_text = true
+		row.add_child(nm)
+		var st := "…" if not known else "не в сети"
+		if online:
+			st = "в заезде" if str(it.get("status", "")) == "race" else "в гараже"
+			if in_party:
+				st += ", в команде"
+		var st_l := _label(st, 11, Color(1, 1, 1, 0.55))
+		st_l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		row.add_child(st_l)
+		var inv := _flat_button("ПРИГЛАСИТЬ", UiKit.ORANGE, 100)
+		inv.disabled = not (can_invite and online) or in_party
+		inv.pressed.connect(func() -> void: Social.invite(who))
+		row.add_child(inv)
+		var del := _flat_button("✕", UiKit.STEEL, 28)
+		del.tooltip_text = "Убрать из списка"
+		del.pressed.connect(func() -> void:
+			GameState.forget_friend(who)
+			_refresh_friends())
+		row.add_child(del)
+
+
+## Плоская низкая кнопка для строк списка (стальная плитка UiKit слишком
+## высока — поля текстуры по 20 px).
+func _flat_button(text: String, bg: Color, width: float) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.custom_minimum_size = Vector2(width, FRIEND_ROW_H - 4.0)
+	b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	b.focus_mode = Control.FOCUS_NONE
+	b.add_theme_font_override("font", _font)
+	b.add_theme_font_size_override("font_size", 11)
+	for state in ["normal", "hover", "pressed", "disabled"]:
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = bg
+		if state == "hover":
+			sb.bg_color = bg.lightened(0.12)
+		elif state == "pressed":
+			sb.bg_color = bg.darkened(0.2)
+		elif state == "disabled":
+			sb.bg_color = Color(bg.r, bg.g, bg.b, 0.35)
+		sb.set_corner_radius_all(5)
+		sb.content_margin_left = 6
+		sb.content_margin_right = 6
+		sb.content_margin_top = 2
+		sb.content_margin_bottom = 2
+		b.add_theme_stylebox_override(state, sb)
+	b.add_theme_color_override("font_color", Color.WHITE)
+	b.add_theme_color_override("font_hover_color", Color.WHITE)
+	b.add_theme_color_override("font_pressed_color", Color.WHITE)
+	b.add_theme_color_override("font_disabled_color", Color(1, 1, 1, 0.5))
+	return b
+
+
 func _on_notice(text: String) -> void:
 	_notice.text = text
 	_notice_time = 6.0
@@ -230,10 +366,10 @@ func _refresh() -> void:
 				if Social.name_reason == "taken" \
 				else "Сначала введи имя (кнопка «ИМЯ» вверху)"
 	else:
-		_status.text = ("Ты на связи как «%s». Найди друга по имени и пригласи "
-				+ "в команду — до %d человек. Когда все нажмут «ГОТОВ», "
-				+ "команда попадёт в один заезд.") % [GameState.display_name(),
-				SocialServer.PARTY_MAX]
+		_status.text = ("На связи как «%s». Зови друзей (до %d чел.); "
+				+ "все нажали «ГОТОВ» — едете в один заезд.") % [
+				GameState.display_name(), SocialServer.PARTY_MAX]
+	_refresh_friends()
 	var ms: Array = Social.members()
 	var in_party := Social.in_party()
 	_members_title.text = ("В КОМАНДЕ: %d/%d" % [ms.size(), SocialServer.PARTY_MAX]) \

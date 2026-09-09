@@ -154,6 +154,7 @@ var _shield_age := 0.0          # для пульсации сферы
 var _shield_mesh: MeshInstance3D = null
 var _shield_mat: StandardMaterial3D = null
 var _shield_base := Transform3D.IDENTITY   # сфера в осях машины (top_level)
+var _shield_fx_mute := {}       # id соперника -> мс последней вспышки блока о сферу
 const SHIELD_COLORS := [Color(0.35, 0.75, 1.0), Color(0.35, 0.75, 1.0),
 		Color(1.0, 0.82, 0.2), Color(1.0, 0.2, 0.15)]
 var has_marker := false         # над машиной висит стрелка-указатель
@@ -4150,8 +4151,20 @@ func shield_block_fx() -> void:
 ## ничего: щиты друг друга не пробивают.
 func _shield_touch(other: Car) -> bool:
 	var lvl := shield_level()
-	if lvl < 2 or other == null or other == self or not other.alive \
-			or other.is_ghost() or other.is_shielded():
+	if lvl < 2 or other == null or other == self or not other.alive:
+		return false
+	# Неуязвимых (призрак после появления, чужой щит) сфера не трогает —
+	# но ПОКАЗЫВАЕТ блок вспышкой, не чаще раза в 0.4 с на соперника: без
+	# неё игрок читал это как «сфера не всегда действует» (09.09).
+	if other.is_ghost() or other.is_shielded():
+		var now := Time.get_ticks_msec()
+		var id := other.get_instance_id()
+		if now - int(_shield_fx_mute.get(id, -100000)) > 400:
+			_shield_fx_mute[id] = now
+			if other.is_shielded():
+				other.shield_block_fx()
+			else:
+				shield_block_fx()
 		return false
 	if lvl >= 3:
 		other.notify_hit_by(self, Weapons.SHIELD)
@@ -4164,11 +4177,33 @@ func _shield_touch(other: Car) -> bool:
 	return false
 
 
-## Касание СФЕРЫ щита: зазор между осями кузовов (см. _capsule_gap; кузова
-## соприкасаются при 1.7). Сфера радиусом 2.3 × 0.95..1.15 выступает за
-## кузов на ~1.3 м вбок — игрок «касается» именно её (жалоба 09.09), а не
-## металла: 2.4 — соперник въехал в сферу примерно на полкузова.
-const SHIELD_TOUCH_GAP := 2.4
+## Полуоси сферы щита В ПЛАНЕ: SphereMesh r 2.3 × scale (0.95 вбок,
+## 1.15 по курсу) — см. _build_shield. Касание меряется ПО ЭТОМУ ЭЛЛИПСУ,
+## расширенному на полкузова соперника (SHIELD_BODY_R): первый вариант
+## 09.09 (зазор осей < 2.4) вбок требовал въехать в сферу на 0.6 м
+## (сфера выступает за кузов на 1.3 м + полкузова 0.85 = 3.0), а
+## навстречу срабатывал раньше касания — «сферы не всегда действуют».
+const SHIELD_RX := 2.19
+const SHIELD_RZ := 2.65
+const SHIELD_BODY_R := 0.85
+
+## Кузов соперника (отрезок ±0.9 м по его курсу, 5 проб) задел сферу:
+## проба в моих осях внутри эллипса SHIELD_RX/RZ + полкузова.
+func _touches_shield(other: Car) -> bool:
+	var f := true_forward()
+	var r := Vector3(-f.z, 0.0, f.x)
+	var of := other.true_forward() * 0.9
+	var rx := SHIELD_RX + SHIELD_BODY_R
+	var rz := SHIELD_RZ + SHIELD_BODY_R
+	for i in 5:
+		var p := other.global_position + of * (i * 0.5 - 1.0) - global_position
+		p.y = 0.0
+		var x := p.dot(r) / rx
+		var z := p.dot(f) / rz
+		if x * x + z * z <= 1.0:
+			return true
+	return false
+
 
 ## Держатель щита II/III ищет коснувшихся сферы — единственный путь
 ## удара щитом, для бота, своей машины оффлайн и марионетки живого игрока
@@ -4182,7 +4217,7 @@ func _shield_sweep() -> void:
 			continue
 		if absf(other.global_position.y - global_position.y) > 1.3:
 			continue
-		if _capsule_gap(other) < SHIELD_TOUCH_GAP:
+		if _touches_shield(other):
 			_shield_touch(other)
 
 

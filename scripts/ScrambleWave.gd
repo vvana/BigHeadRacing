@@ -46,7 +46,7 @@ const BODY_HALF_L := 1.7
 const BODY_HALF_W := 1.0
 ## Запас к HIT_R: шаг проб вдоль пути волны (0.25 м) плюс сглаживание
 ## визуального кузова — «коснулось на экране» обязано означать попадание.
-const HIT_GRACE := 0.2
+const HIT_GRACE := 0.35
 
 ## Быстрее прежних 38: волна должна ДОГОНЯТЬ едущих. Машина на бусте идёт
 ## под 48 м/с — от неё волна отстанет (и пусть), но обычную (до ~34)
@@ -78,10 +78,12 @@ func _ready() -> void:
 
 	_build_rings()
 
-	if inert:
-		set_deferred("monitoring", false)
-	else:
-		body_entered.connect(_on_body_entered)
+	# О борта волна НЕ гаснет (09.09, «круги, касаясь машины, не всегда
+	# глушат»): на сервере она умирала о рельс, а копия у клиента (без
+	# слежения) летела дальше, и её кольца «касались» машин, которых
+	# сервер уже не проверял. Теперь обе одинаково ЗАЖИМАЮТСЯ в полотне
+	# (_clamp_inside_walls) — как картинка марионетки у стены.
+	set_deferred("monitoring", false)
 
 
 ## Три бирюзовых кольца, ЛЕЖАЩИХ ГОРИЗОНТАЛЬНО (TorusMesh и так лежит в
@@ -130,6 +132,7 @@ func _physics_process(delta: float) -> void:
 		_first_check = false
 		prev -= direction * 2.3
 	global_position += direction * SPEED * speed_mult * delta
+	_clamp_inside_walls()
 	_hug_ground()
 	# Машины считаем ВРУЧНУЮ отрезком за кадр и радиусом колец HIT_R —
 	# и с отмоткой (живой игрок, протокол 13), и без (боты, оффлайн).
@@ -146,9 +149,14 @@ func _physics_process(delta: float) -> void:
 			if car == null or car == shooter \
 					or not car.alive or car.is_ghost():
 				continue
-			var target := car.past_position(Car.aim_lag(lag, car)) if lag > 0.0 \
-					else car.global_position
-			if _touches_body(prev, global_position, target, car.true_forward()):
+			# Цель — и ТЕКУЩАЯ (что жертва видит у себя), и ОТМОТАННАЯ (что
+			# видел стрелявший): коснулось на любом из экранов — оглушает (09.09).
+			var fwd := car.true_forward()
+			var hit := _touches_body(prev, global_position, car.global_position, fwd)
+			if not hit and lag > 0.0:
+				hit = _touches_body(prev, global_position,
+						car.past_position(Car.aim_lag(lag, car)), fwd)
+			if hit:
 				_hit_car(car)
 				hit_any = true
 		if hit_any:
@@ -190,6 +198,29 @@ func _steer_along_track(delta: float) -> void:
 	direction = direction.lerp(tangent, minf(4.0 * delta, 1.0)).normalized()
 
 
+## Не выпускать волну за ограждение: боковое смещение от оси не больше
+## полуширины минус стенка и запас (как Car._clamp_view_inside_walls).
+func _clamp_inside_walls() -> void:
+	if track == null or not track.has_walls or track._curve == null or _track_off < 0.0:
+		return
+	var length: float = track._curve.get_baked_length()
+	if length <= 0.0:
+		return
+	var off := fposmod(_track_off, length)
+	var axis: Vector3 = track._curve.sample_baked(off)
+	var right: Vector3 = track.right_at_offset(off)
+	right.y = 0.0
+	if right.length_squared() < 1e-6:
+		return
+	right = right.normalized()
+	var rel := global_position - axis
+	rel.y = 0.0
+	var side := rel.dot(right)
+	var limit: float = track.half_width_at_offset(off) - TrackBuilder.WALL_THICKNESS * 0.5 - 0.6
+	if limit > 0.0 and absf(side) > limit:
+		global_position -= right * (side - signf(side) * limit)
+
+
 ## Прижим к полотну: луч вниз, высота = земля + HOVER. Волна взбирается на
 ## горки и спускается с них вместе с дорогой — там же, где машины. Земли
 ## под волной нет (улетела за кромку песчаной трассы, в пропасть) — летит
@@ -215,17 +246,15 @@ func _touches_body(a: Vector3, b: Vector3, center: Vector3,
 	for s in steps + 1:
 		var p := a.lerp(b, float(s) / float(steps))
 		var rel := p - center
+		# По высоте — отдельный допуск (подскок, уклон), дистанция — в плане.
+		if absf(rel.y) > 2.0:
+			continue
+		rel.y = 0.0
 		var w := clampf(rel.dot(right), -BODY_HALF_W, BODY_HALF_W)
 		var l := clampf(rel.dot(fwd), -BODY_HALF_L, BODY_HALF_L)
-		if p.distance_to(center + right * w + fwd * l) < HIT_R + HIT_GRACE:
+		if (rel - (right * w + fwd * l)).length() < HIT_R + HIT_GRACE:
 			return true
 	return false
-
-
-## Только ограждения: машины считает ручная проверка в _physics_process.
-func _on_body_entered(_body: Node3D) -> void:
-	# Машины сюда не попадают вовсе: маска Area — только ограждения (0b010).
-	_boom()
 
 
 func _hit_car(car: Car) -> void:

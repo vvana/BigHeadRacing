@@ -1,8 +1,10 @@
 extends Node
 ## Одноразовый стенд полного цикла заезда по сети: клиент подключается,
 ## ЕДЕТ ГАЗ В ПОЛ все 4 круга, финиширует (баннер, конфетти, начисление
-## опыта), сервер через 8 с перезапускает трассу и шлёт _rx_reset — клиент
-## обязан перезагрузить сцену и вернуться в лобби нового заезда.
+## опыта), сервер через POST_RACE_HOLD с перезапускает трассу и шлёт
+## _rx_reset — с 09.09 (вечер) участник ОТСОЕДИНЯЕТСЯ и остаётся с
+## таблицей мест до Enter (следующая гонка сама не начинается, все идут
+## в гараж); перезагрузка сцены после заезда — теперь FAIL.
 ##
 ## Газ жмём НЕ для красоты: 26.08 клиент закрывался насмерть именно на этой
 ## перезагрузке, а прошлая версия стенда (стояла на месте и ждала
@@ -68,12 +70,33 @@ func _physics_process(delta: float) -> void:
 		print("RESET TEST: FAIL (за %.0f с перезапуск так и не случился)" % DEADLINE)
 		get_tree().quit(1)
 		return
-	# PASS только за перезапуск ПОСЛЕ заезда, причём заезд обязан идти в
-	# ПРОШЛОМ запуске сцены (_raced_run < _run). Иначе стенд рапортовал
-	# успех дважды не за то: сцену перезагружает ещё и _rx_track («сервер
-	# выбрал другую трассу») сразу после подключения, а следом хватало
-	# просто НАЧАЛА нового заезда.
-	if _run >= 2 and _raced_run > 0 and _raced_run < _run and Net.my_slot >= 0:
-		print("  [reset-test] слот выдан заново: %d (на %.0f с)" % [Net.my_slot, total])
-		print("RESET TEST: PASS")
-		get_tree().quit(0)
+	# С 09.09 (вечер) УЧАСТНИК заезда по _rx_reset НЕ перезагружается, а
+	# отсоединяется (Main._detach_after_race): следующая гонка сама не
+	# начинается, итог остаётся на экране до Enter, дальше — гараж.
+	# PASS: заезд шёл, пришёл reset, сцена та же (_run == 1), _detached,
+	# сеть отключена, таблица мест видна, все машины заморожены.
+	# Перезагрузка сцены после заезда теперь — FAIL (старое поведение).
+	if _run >= 2 and _raced_run > 0 and _raced_run < _run:
+		print("RESET TEST: FAIL (после заезда сцена перезагрузилась — участник "
+				+ "должен остаться с таблицей и отсоединиться)")
+		get_tree().quit(1)
+		return
+	if main != null and _raced_run == _run and main._detached:
+		var frozen := true
+		for c in main._cars:
+			if not c.freeze or c.controls_enabled:
+				frozen = false
+		var ok: bool = Net.mode == Net.Mode.OFFLINE and main._finished \
+				and main._finish_root != null and main._finish_root.visible \
+				and frozen
+		print("  [reset-test] reset получен на %.0f с: detached, сеть %s, финиш %s, "
+				% [total, "OFFLINE" if Net.mode == Net.Mode.OFFLINE else "не отключена",
+				str(main._finished)]
+				+ "таблица %s, заморожены %s; моё время %s, лучший круг %s"
+				% [str(main._finish_root.visible if main._finish_root else false),
+				str(frozen), main.fmt_ms(main._finish_ms[main._my_index()]),
+				main.fmt_ms(main._best_lap_ms[main._my_index()])])
+		# Время своей гонки может быть и 0: стенд едет «газ в пол» без руля и
+		# до финиша обычно не доезжает (заезд закрывает таймаут).
+		print("RESET TEST: %s" % ("PASS" if ok else "FAIL"))
+		get_tree().quit(0 if ok else 1)

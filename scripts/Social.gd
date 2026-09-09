@@ -27,6 +27,7 @@ signal connected_changed(on: bool)
 signal welcome(ok: bool, reason: String)
 signal name_result(ok: bool, name: String, reason: String)
 signal search_result(items: Array)
+signal friends_result(items: Array)   # статусы списка друзей (lookup)
 signal invite_received(from: String, count: int)
 signal party_changed()
 signal go(port: int, size: int, party_id: String, count: int)
@@ -158,10 +159,24 @@ func search(q: String) -> void:
 
 
 func invite(n: String) -> void:
+	# Кого звал — в список друзей (профиль): в следующий раз пригласить
+	# можно одной кнопкой, без поиска.
+	GameState.remember_friend(n)
 	send({t = "invite", name = n})
 
 
+## Статусы друзей из профиля (в сети / в заезде / в команде) — ответ
+## придёт сигналом friends_result в том же виде, что поиск.
+func lookup(names: Array) -> void:
+	if names.is_empty():
+		friends_result.emit([])
+		return
+	send({t = "lookup", names = names})
+
+
 func accept_invite() -> void:
+	if pending_invite.has("from"):
+		GameState.remember_friend(str(pending_invite.from))
 	pending_invite = {}
 	send({t = "accept"})
 
@@ -321,6 +336,8 @@ func _on_message(msg: Dictionary) -> void:
 					str(msg.get("reason", "")))
 		"search_result":
 			search_result.emit(msg.get("items", []) as Array)
+		"lookup_result":
+			friends_result.emit(msg.get("items", []) as Array)
 		"invite":
 			pending_invite = {from = str(msg.get("from", "")),
 					party = str(msg.get("party", "")),
@@ -328,6 +345,11 @@ func _on_message(msg: Dictionary) -> void:
 			invite_received.emit(pending_invite.from, pending_invite.count)
 		"party":
 			party = msg
+			# Все, с кем оказался в одной команде, — друзья на будущее.
+			var me := str(party.get("me", ""))
+			for m: Dictionary in members():
+				if str(m.get("uid", "")) != me:
+					GameState.remember_friend(str(m.get("name", "")))
 			party_changed.emit()
 		"go":
 			go.emit(int(msg.get("port", 0)), int(msg.get("size", 4)),

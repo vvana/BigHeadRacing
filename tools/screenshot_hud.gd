@@ -54,7 +54,18 @@ func _physics_process(_d: float) -> void:
 			# вылезала за плиту — теперь две).
 			_main._finish_xp_label.text = ("+110 ОПЫТА  ·  +1625 МОНЕТ  ·  РЕЙТИНГ +22\n"
 					+ "УРОВЕНЬ 19  (775 / 820)")
+			# Таблица мест (09.09, вечер): все доехали, у игрока рекорд круга.
+			_main._finish_order.clear()
+			for i in _main._cars.size():
+				_main._finish_order.append(i)
+				_main._finish_ms[i] = 125_430 + i * 3_170
+				_main._best_lap_ms[i] = 29_870 + i * 640
+			_main._finished = true
+			_main._records = {lap_ms = 29_870, lap_name = _main.car_label(0),
+					race_ms = 121_050, race_name = "Жека"}
+			_main._record_lap_new = true
 			_main._finish_root.visible = true
+			_main._refresh_results()
 		325:
 			_shot("hud_finish.png")
 		330:

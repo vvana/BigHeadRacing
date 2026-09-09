@@ -805,6 +805,7 @@ static func _build_single(
 			pivot.position = hub
 			copy.transform = Transform3D(xform.basis, xform.origin - hub)
 			pivot.add_child(copy)
+			_no_shadow_on(copy)
 			pivot.set_meta("wheel_radius",
 					(it["aabb"] as AABB).size.y * 0.5 * s)
 			# Полуширина колеса в единицах файла — подменное аркадное
@@ -1014,6 +1015,7 @@ static func _build_arcade(cfg: Dictionary, car_id: String,
 		pivot.name = "WheelPivot_%s%s" % ["f" if front else "r", "r" if side > 0 else "l"]
 		var wheel := _arcade_part(wheel_mesh, paint, 0, 0)
 		wheel.name = "Wheel"
+		_no_shadow_on(wheel)
 		var rot := Basis.IDENTITY if float(side) == mesh_side \
 				else Basis(Vector3.UP, PI)
 		# Пивот — В ЦЕНТРЕ колеса, а не в точке префаба: меш колеса в файле
@@ -1232,6 +1234,7 @@ static func _attach_parts(m: Node3D, base: String, cfg: Dictionary) -> void:
 				(old as Node3D).visible = false
 		var w := _arcade_part(wmesh, paint, 0, 0)
 		w.name = "Wheel"
+		_no_shadow_on(w)
 		var side := signf(pivot.position.x - cx)
 		if side == 0.0:
 			side = 1.0
@@ -1572,6 +1575,31 @@ static func _top_tint(model: Node3D) -> Color:
 	if wsum <= 0.0:
 		return Color(0, 0, 0, 0)
 	return Color(sum.r / wsum, sum.g / wsum, sum.b / wsum, 1.0)
+
+
+## Колесо НЕ ПРИНИМАЕТ ТЕНЕЙ (09.09, «передние диски по-прежнему иногда
+## пропадают»): при части курсов относительно солнца крыло кладёт тень на
+## наружную плоскость переднего колеса, и диск в тени сливается с чёрной
+## шиной — на снимке ShotWheelSteer передний диск чёрный при том же
+## положении, что и освещённый задний (геометрия колёс одинаковая, стенд
+## tools/_wheels проверял). Материалы дублируются ТОЛЬКО для колёс —
+## общие кэшированные материалы кузова не трогаются.
+static func _no_shadow_on(mi: MeshInstance3D) -> void:
+	if mi.material_override is BaseMaterial3D:
+		var mo := (mi.material_override as BaseMaterial3D).duplicate() as BaseMaterial3D
+		mo.disable_receive_shadows = true
+		mi.material_override = mo
+		return
+	if mi.mesh == null:
+		return
+	for i in mi.mesh.get_surface_count():
+		var m := mi.get_surface_override_material(i)
+		if m == null:
+			m = mi.mesh.surface_get_material(i)
+		if m is BaseMaterial3D:
+			var d := (m as BaseMaterial3D).duplicate() as BaseMaterial3D
+			d.disable_receive_shadows = true
+			mi.set_surface_override_material(i, d)
 
 
 static func _body_meshes(m: Node3D) -> Array[MeshInstance3D]:

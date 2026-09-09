@@ -269,6 +269,12 @@ func _start_race() -> void:
 	var base: String = CarModelLibrary.CAR_IDS[_index]
 	if not GameState.car_owned(base):
 		return   # закрытая машина — сперва купить (кнопка «КУПИТЬ»)
+	# В команде главная кнопка — «ГОТОВ»: переключаем готовность, заезд
+	# запустит сервер друзей, когда готовы все (Social.go → _on_party_go).
+	if Social.in_party():
+		GameState.select_car(base)
+		Social.set_ready(not Social.my_ready())
+		return
 	Net.leave()   # вдруг остались хвосты прошлого сетевого заезда
 	GameState.select_car(base)
 	if GameState.game_mode == GameState.MODE_SOCCER:
@@ -332,17 +338,28 @@ func _on_party_go(port: int, size: int, party_id: String, count: int) -> void:
 
 ## «СТАРТ» под команду друзей: пока мы «ГОТОВ» — ждём остальных, кнопка
 ## занята; передумал — снимай готовность в панели «КОМАНДА».
+## В КОМАНДЕ главная кнопка — «ГОТОВ» (просьба 09.09, вечер): та же
+## готовность, что в панели «КОМАНДА», только под рукой. Нажал — «ГОТОВ ✓
+## · ЖДЁМ КОМАНДУ» (повторное нажатие снимает готовность), ищем заезд —
+## «ИЩЕМ ЗАЕЗД…». Обычный «СТАРТ» работает только вне команды.
 func _refresh_start_btn() -> void:
 	if _start_btn == null or _connecting:
 		return
-	if Social.in_party() and Social.my_ready():
-		_start_btn.disabled = true
-		_start_btn.text = "ЖДЁМ КОМАНДУ…"
-		_start_btn.add_theme_font_size_override("font_size", 17)
+	_start_btn.disabled = false
+	if Social.in_party():
+		if bool(Social.party.get("launching", false)):
+			_start_btn.text = "ИЩЕМ ЗАЕЗД…"
+			_start_btn.disabled = true
+			UiKit.style_button(_start_btn, "teal", 17)
+		elif Social.my_ready():
+			_start_btn.text = "ГОТОВ ✓ · ЖДЁМ КОМАНДУ"
+			UiKit.style_button(_start_btn, "teal", 15)
+		else:
+			_start_btn.text = "ГОТОВ"
+			UiKit.style_button(_start_btn, "teal", 24)
 	else:
-		_start_btn.disabled = false
 		_start_btn.text = "СТАРТ"
-		_start_btn.add_theme_font_size_override("font_size", 24)
+		UiKit.style_button(_start_btn, "red", 24)
 	if _party_badge:
 		_party_badge.visible = Social.in_party()
 		_party_badge.text = str(Social.members().size())

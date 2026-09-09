@@ -205,6 +205,54 @@ const RATING_SWING := 20
 const RATING_KILL := 2
 var stats := {}
 
+# ---- Друзья (09.09, вечер) ----
+# Имена тех, кого звал в команду или с кем в ней был: панель «КОМАНДА»
+# показывает их списком с кнопкой «ПРИГЛАСИТЬ» — заново искать не надо.
+# Свежие первыми, не больше FRIENDS_MAX; profile.cfg, ключ friends.
+const FRIENDS_MAX := 12
+var friends: Array = []
+
+# ---- Рекорды трасс (09.09, вечер) ----
+# Лучший круг и лучшее время гонки по видам трасс — файл user://records.json
+# у того, кто судит заезд (сервер по сети, сам игрок оффлайн). Стенды
+# пишут в records_test.json, чтобы не трогать настоящие рекорды.
+const RECORDS_PATH := "user://records.json"
+const RECORDS_TEST_PATH := "user://records_test.json"
+
+
+## Файл рекордов: стендам (tools/, --script) — тестовый.
+static func records_path() -> String:
+	for a in OS.get_cmdline_args():
+		var s := str(a).replace("\\", "/")
+		if s.contains("tools/") or s == "--script" or s.begins_with("--script="):
+			return RECORDS_TEST_PATH
+	return RECORDS_PATH
+
+
+## Запомнить друга (звали в команду / были в одной команде): в начало
+## списка, без дублей, не длиннее FRIENDS_MAX. Своё имя не запоминаем.
+func remember_friend(n: String) -> void:
+	n = sanitize_name(n)
+	if n == "" or n.to_lower() == display_name().to_lower():
+		return
+	if not friends.is_empty() and str(friends[0]).to_lower() == n.to_lower():
+		return   # уже первый — профиль не перезаписываем
+	for i in range(friends.size() - 1, -1, -1):
+		if str(friends[i]).to_lower() == n.to_lower():
+			n = str(friends[i])   # уже есть — написание оставляем прежнее
+			friends.remove_at(i)
+	friends.push_front(n)
+	if friends.size() > FRIENDS_MAX:
+		friends.resize(FRIENDS_MAX)
+	_save_profile()
+
+
+func forget_friend(n: String) -> void:
+	for i in range(friends.size() - 1, -1, -1):
+		if str(friends[i]).to_lower() == n.to_lower():
+			friends.remove_at(i)
+	_save_profile()
+
 
 ## Пустая статистика (ключи — см. record_race / record_soccer).
 static func empty_stats() -> Dictionary:
@@ -382,6 +430,15 @@ func _ready() -> void:
 					stats[k] = st[k]
 			if not (stats.cars is Dictionary):
 				stats.cars = {}
+		var fr: Variant = cf.get_value("profile", "friends", [])
+		if fr is Array:
+			friends = []
+			for f in fr:
+				var n := sanitize_name(str(f))
+				if n != "" and not friends.has(n):
+					friends.append(n)
+			if friends.size() > FRIENDS_MAX:
+				friends.resize(FRIENDS_MAX)
 	# Идентификатор — один раз и навсегда (см. uid).
 	if uid == "":
 		uid = Crypto.new().generate_random_bytes(8).hex_encode()
@@ -984,4 +1041,5 @@ func _save_profile() -> void:
 	cf.set_value("profile", "gift_1m_claimed", _gift_1m_claimed)
 	cf.set_value("profile", "uid", uid)
 	cf.set_value("profile", "stats", stats)
+	cf.set_value("profile", "friends", friends)
 	cf.save(PROFILE_PATH)
