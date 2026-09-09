@@ -544,6 +544,21 @@ func _tick_drops(delta: float) -> void:
 
 ## ---- Крючки Car (машины держат race = этот узел) ----
 
+## Цель ракеты III (Car.use_weapon): в футболе — тот, кто у мяча, а если
+## это сам стрелок, то ближайшая к мячу чужая машина.
+func chase_target(shooter: Car) -> Car:
+	var best: Car = null
+	var best_d := 1e9
+	for c in _cars:
+		if c == shooter or not c.alive or c.is_ghost() or c.is_shielded():
+			continue
+		var d := c.global_position.distance_to(_ball.global_position)
+		if d < best_d:
+			best_d = d
+			best = c
+	return best
+
+
 ## «Лидер» для авиаудара: в футболе это машина, владеющая мячом, —
 ## ближайшая к нему.
 func leader_car() -> Car:

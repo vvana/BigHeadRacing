@@ -40,7 +40,7 @@ VDS не потянет. Комнат не осталось — опоздавш
 процессе ворот и слушает **UDP 9990** (`Social.SOCIAL_PORT`; при файрволе
 открыть и его). Это отдельное низкоуровневое ENet-соединение (JSON), по
 нему клиенты сидят в гараже «на связи»: единые имена (реестр
-`user://names.json` у пользователя bighead — `/home/bighead/.local/share/godot/app_userdata/Big Head Racing/names.json`,
+`user://names.json` у пользователя bighead — `/home/bighead/.local/share/godot/app_userdata/Пыль и Пламя/names.json`,
 имя ↔ uid профиля; удалить файл = освободить все имена), поиск по имени,
 приглашения, команды до 8 человек. Команда в сборе — сервер друзей по
 визиткам `user://rooms/*.json` (поле `free` — свободных слотов) выбирает

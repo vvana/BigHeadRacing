@@ -297,6 +297,7 @@ var _finish_root: Control       # баннер финиша
 var _finish_label: Label
 var _finish_xp_label: Label     # строка «+N ОПЫТА · УРОВЕНЬ K» на баннере
 var _my_kills := 0              # мои уничтоженные соперники (опыт за заезд)
+var _my_deaths := 0             # сколько раз уничтожили меня (статистика)
 var _ui_font: FontFile          # Russo One — индустриальный, с кириллицей
 
 # ---- Всплывающие анонсы (Announcer) и события, которые их порождают ----
@@ -561,6 +562,21 @@ func leader_car() -> Car:
 		if _progress[i] > _progress[best]:
 			best = i
 	return _cars[best]
+
+
+## Цель ракеты III (просьба 09.09): ЛИДЕР гонки, а если стреляет сам
+## лидер — идущий вторым. Мёртвых, призраков и укрытых щитом пропускаем:
+## по ним ракета всё равно не сработала бы. Некого вести (стрелок один
+## живой) — null, тогда снаряд доводит обычное самонаведение.
+func chase_target(shooter: Car) -> Car:
+	var best: Car = null
+	for i in _cars.size():
+		var c: Car = _cars[i]
+		if c == shooter or not c.alive or c.is_ghost() or c.is_shielded():
+			continue
+		if best == null or _progress[i] > progress_of(best):
+			best = c
+	return best
 
 
 ## Накопленный путь машины вдоль оси трассы, м (магнит сравнивает по нему,
@@ -949,11 +965,12 @@ func _show_finish(place: int) -> void:
 	var info: Vector3i = GameState.level_info()
 	# Статистика игрока (09.09): заезд, место, уничтоженные, машина, рейтинг.
 	var rdelta: int = GameState.record_race(place, _cars.size(), _my_kills,
-			CarModelLibrary.base_id(GameState.selected_car_id), Net.is_online())
+			_my_deaths, CarModelLibrary.base_id(GameState.selected_car_id),
+			Net.is_online())
 	_finish_label.text = "ФИНИШ!  МЕСТО %d ИЗ %d" % [place, _cars.size()]
 	if _finish_xp_label:
-		_finish_xp_label.text = ("+%d ОПЫТА  ·  +%d МОНЕТ  ·  УРОВЕНЬ %d  (%d / %d)"
-				+ "  ·  РЕЙТИНГ %+d") % [gained, coins, info.x, info.y, info.z, rdelta]
+		_finish_xp_label.text = ("+%d ОПЫТА  ·  +%d МОНЕТ  ·  РЕЙТИНГ %+d\n"
+				+ "УРОВЕНЬ %d  (%d / %d)") % [gained, coins, rdelta, info.x, info.y, info.z]
 	if info.x > before.x and _announcer:
 		_announcer.big("НОВЫЙ УРОВЕНЬ %d!" % info.x, "", "teal")
 	_finish_root.visible = true
@@ -1484,13 +1501,19 @@ func _setup_hud() -> void:
 	_finish_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_finish_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_finish_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_finish_label.offset_bottom = -40.0   # чуть выше: снизу строка опыта
-	_finish_xp_label = _make_label(fin_plate, "", 20, UiKit.YELLOW, 6)
+	_finish_label.offset_bottom = -66.0   # выше: снизу две строки итога
+	# Итог — ДВЕ строки (09.09: в одну «+110 ОПЫТА · +625 МОНЕТ · УРОВЕНЬ
+	# 19 (775 / 820) · РЕЙТИНГ +22» вылезала за плиту). Поля 40 px по
+	# бокам, чтобы и при четырёхзначных монетах строка сидела внутри.
+	_finish_xp_label = _make_label(fin_plate, "", 18, UiKit.YELLOW, 6)
 	_finish_xp_label.anchor_left = 0.0
 	_finish_xp_label.anchor_right = 1.0
-	_finish_xp_label.offset_top = 112.0
-	_finish_xp_label.offset_bottom = 146.0
+	_finish_xp_label.offset_left = 40.0
+	_finish_xp_label.offset_right = -40.0
+	_finish_xp_label.offset_top = 92.0
+	_finish_xp_label.offset_bottom = 148.0
 	_finish_xp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_finish_xp_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	var finish_hint := _make_label(fin_plate, "ENTER — В ГАРАЖ", 16,
 			Color(1, 1, 1, 0.8), 5)
 	finish_hint.anchor_left = 0.0
@@ -2068,6 +2091,26 @@ func _client_tick(_delta: float) -> void:
 							continue
 						if (to - fn * along).length() <= 1.6:
 							c.net_predict_destroy()
+				# И жертв магнита (09.09, «после магнита видимая задержка
+				# где-то в секунду»): разряд, значок и рывок ко мне — сразу,
+				# по моей картине; сервер решает то же (Car._use_magnet), а
+				# запись довезёт настоящий рывок. Дальних (за MAGNET_NEAR
+				# сервер тянет вдоль трассы, не по прямой) не дёргаем —
+				# только разряд.
+				if kind == Weapons.MAGNET:
+					for c in _cars:
+						if c == _car or c.net_role != Car.NetRole.PUPPET \
+								or not c.alive or c.is_ghost():
+							continue
+						if c.is_shielded():
+							c.shield_block_fx()
+							continue
+						var at := c.visual_origin()
+						FxKit.lightning_burst(self, at + Vector3.UP * 0.9,
+								Color(0.85, 0.4, 1.0), 4, 0.9)
+						c.show_effect_icon(Weapons.MAGNET, 1.5)
+						if at.distance_to(_car.global_position) < 18.0:
+							c.net_predict_magnet_pull(_car.global_position)
 
 
 ## Снимок: на машину 11 float (позиция, кватернион, скорость, метка тика
@@ -2124,8 +2167,10 @@ func _pack_state() -> Array:
 		flags.append(c.weapon + 1)
 		# Бит 4 — дым из-под колёс (протокол 22): марионетке на клиенте
 		# больше неоткуда его взять.
+		# Бит 8 — след шин (09.09, «след от шин других машин нужно тоже
+		# отображать»): тот же второй байт, старые клиенты бит не читают.
 		flags.append((1 if c.alive else 0) | (2 if c.is_ghost() else 0)
-				| (4 if c.smoke_bit() else 0))
+				| (4 if c.smoke_bit() else 0) | (8 if c.skid_bit() else 0))
 		# ДЕЙСТВУЮЩИЙ эффект, а не _status_shown: тот обновляется лишь при
 		# живом Sprite3D, которого на выделенном сервере нет, — значок по
 		# сети не видел никто (кодировка та же: <2 — «пусто», протокол цел).
@@ -2823,6 +2868,11 @@ func _rx_count(txt: String) -> void:
 	# Управление включается по команде сервера: до GO! ввод не шлём.
 	for c in _cars:
 		c.controls_enabled = true
+		# Соперники газуют в этот же миг — показываем их разгон сразу, а не
+		# когда доедет запись (буфер + пинг; жалоба 09.09 «я всегда стартую
+		# первым, другие отстают»). См. Car.net_predict_start.
+		if c.net_role == Car.NetRole.PUPPET:
+			c.net_predict_start()
 	await get_tree().create_timer(0.7).timeout
 	if is_inside_tree() and _count_label:
 		_count_label.visible = false
@@ -2941,6 +2991,8 @@ func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray,
 			c.net_set_ghost((int(flags[f + 1]) & 2) != 0)
 			# Дым из-под колёс соперника (протокол 22).
 			c.net_set_smoke((int(flags[f + 1]) & 4) != 0)
+			# След шин соперника (бит 8, 09.09).
+			c.net_set_skid((int(flags[f + 1]) & 8) != 0)
 			# Заморозка соперника (протокол 12): «синяя» шуба и заразность
 			# при касании считаются по _freeze_time, а он у марионетки
 			# ниоткуда не берётся. Своей машины это не касается — она
@@ -3348,7 +3400,9 @@ func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3,
 		Weapons.MINE:
 			var right := Vector3(-dir.z, 0.0, dir.x)
 			var offsets: Array[float] = [0.0]
-			if step >= 2:
+			if step >= 3:
+				offsets = [-1.0, 0.0, 1.0]
+			elif step >= 2:
 				offsets = [-0.8, 0.8]
 			for sx: float in offsets:
 				var m := Mine.new()
@@ -3366,12 +3420,18 @@ func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3,
 			else:
 				pr.hit_mult = 1.15 if step >= 1 else 1.0
 				pr.homing = step >= 2
+				# Ракета III ведёт лидера (см. Car.use_weapon). Копия у
+				# клиента считает цель по СВОЕЙ картине гонки — попадание
+				# всё равно решает сервер, копии нужен только курс.
+				if step >= 3:
+					pr.life_mult = 1.8
+					pr.hunt = chase_target(shooter)
 			add_child(pr)
 			pr.global_position = pos + dir * 2.3 + Vector3.UP * 0.55
 		Weapons.OIL:
 			var oil := OilSlick.new()
 			oil.inert = true
-			oil.size_mult = 1.15 if step >= 1 else 1.0
+			oil.size_mult = 1.4 if step >= 3 else (1.15 if step >= 1 else 1.0)
 			add_child(oil)
 			oil.global_position = pos - dir * 3.0 + Vector3.UP * 0.12
 		Weapons.MAGNET:
@@ -3557,6 +3617,8 @@ func _feed_name(parent: Node, idx: int) -> void:
 ## Летальное попадание: серия убийств (окно KILL_STREAK_WINDOW — лазер и
 ## авиаудар кладут нескольких за раз), первая кровь, личные анонсы.
 func _register_kill(ai: int, vi: int) -> void:
+	if vi == _my_index():
+		_my_deaths += 1   # в статистику (см. _show_finish)
 	if _announcer == null:
 		return
 	var now := Time.get_ticks_msec() / 1000.0

@@ -21,6 +21,7 @@ const ICON := 46
 
 var _font: FontFile
 var _box: VBoxContainer
+var _head: HBoxContainer          # шапка с «ЗАКРЫТЬ» — вне прокрутки
 var _flash_gen := 0
 
 
@@ -33,11 +34,20 @@ func _ready() -> void:
 	style.set_border_width_all(1)
 	style.border_color = Color(UiKit.RIM.r, UiKit.RIM.g, UiKit.RIM.b, 0.45)
 	add_theme_stylebox_override("panel", style)
+	# Корень — колонка: НЕподвижная шапка и прокручиваемый список. Шапка
+	# жила первой строкой списка и уезжала вверх вместе с ним — кнопка
+	# «ЗАКРЫТЬ» пропадала с экрана (жалоба игрока 09.09).
+	var root := VBoxContainer.new()
+	root.add_theme_constant_override("separation", 6)
+	add_child(root)
+	_head = HBoxContainer.new()
+	_head.add_theme_constant_override("separation", 10)
+	root.add_child(_head)
 	var scroll := ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	add_child(scroll)
+	root.add_child(scroll)
 	_box = VBoxContainer.new()
 	_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_box.add_theme_constant_override("separation", 6)
@@ -59,12 +69,13 @@ func rebuild() -> void:
 	for c in _box.get_children():
 		_box.remove_child(c)
 		c.queue_free()
+	for c in _head.get_children():
+		_head.remove_child(c)
+		c.queue_free()
 	_flash_gen += 1
 
-	# Шапка: заголовок, кошелёк, «ЗАКРЫТЬ».
-	var head := HBoxContainer.new()
-	head.add_theme_constant_override("separation", 10)
-	_box.add_child(head)
+	# Шапка: заголовок, кошелёк, «ЗАКРЫТЬ» — всегда на виду (вне прокрутки).
+	var head := _head
 	var title := _label("ОРУЖИЕ · ПРОКАЧКА", 20, UiKit.YELLOW, false)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(title)

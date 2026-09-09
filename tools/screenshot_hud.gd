@@ -49,7 +49,11 @@ func _physics_process(_d: float) -> void:
 			_shot("hud_warn.png")
 		320:
 			_main._warn_panel.visible = false
-			_main._finish_label.text = "ФИНИШ!  Место: 1 из 4"
+			_main._finish_label.text = "ФИНИШ!  МЕСТО 1 ИЗ 8"
+			# Самая длинная реальная строка итога (09.09: в одну строку
+			# вылезала за плиту — теперь две).
+			_main._finish_xp_label.text = ("+110 ОПЫТА  ·  +1625 МОНЕТ  ·  РЕЙТИНГ +22\n"
+					+ "УРОВЕНЬ 19  (775 / 820)")
 			_main._finish_root.visible = true
 		325:
 			_shot("hud_finish.png")

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testshieldpuppet"]
+
+[ext_resource type="Script" path="res://tools/test_shield_puppet.gd" id="1_tsp"]
+
+[node name="TestShieldPuppet" type="Node3D"]
+script = ExtResource("1_tsp")

@@ -1,12 +1,12 @@
 ; Godot 4 project configuration file.
-; Big Head Racing — изометрическая аркадная гонка в стиле Rock'n'Roll Racing.
+; Пыль и Пламя — изометрическая аркадная гонка в стиле Rock'n'Roll Racing.
 ; Управление регистрируется кодом в scripts/InputSetup.gd (autoload).
 
 config_version=5
 
 [application]
 
-config/name="Big Head Racing"
+config/name="Пыль и Пламя"
 config/description="Аркадная изометрическая гонка в стиле Rock'n'Roll Racing"
 run/main_scene="res://scenes/CarSelect.tscn"
 config/features=PackedStringArray("4.3", "Forward Plus")

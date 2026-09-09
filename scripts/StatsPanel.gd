@@ -11,6 +11,7 @@ const CAR_NAMES: Dictionary = preload("res://scripts/CarSelect.gd").DISPLAY_NAME
 
 var _font: FontFile
 var _box: VBoxContainer
+var _head: HBoxContainer          # шапка с «ЗАКРЫТЬ» — вне прокрутки
 
 
 func _ready() -> void:
@@ -22,11 +23,19 @@ func _ready() -> void:
 	style.set_border_width_all(1)
 	style.border_color = Color(UiKit.RIM.r, UiKit.RIM.g, UiKit.RIM.b, 0.45)
 	add_theme_stylebox_override("panel", style)
+	# Корень — колонка: НЕподвижная шапка и прокручиваемый список (09.09 —
+	# «ЗАКРЫТЬ» уезжало вверх вместе с содержимым).
+	var root := VBoxContainer.new()
+	root.add_theme_constant_override("separation", 6)
+	add_child(root)
+	_head = HBoxContainer.new()
+	_head.add_theme_constant_override("separation", 10)
+	root.add_child(_head)
 	var scroll := ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	add_child(scroll)
+	root.add_child(scroll)
 	_box = VBoxContainer.new()
 	_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_box.add_theme_constant_override("separation", 6)
@@ -48,9 +57,11 @@ func rebuild() -> void:
 	for c in _box.get_children():
 		_box.remove_child(c)
 		c.queue_free()
-	var head := HBoxContainer.new()
-	head.add_theme_constant_override("separation", 10)
-	_box.add_child(head)
+	for c in _head.get_children():
+		_head.remove_child(c)
+		c.queue_free()
+	# Шапка с «ЗАКРЫТЬ» — вне прокрутки, всегда на виду.
+	var head := _head
 	var title := _label("СТАТИСТИКА · %s" % GameState.display_name(), 20,
 			UiKit.YELLOW)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -94,8 +105,8 @@ func rebuild() -> void:
 	_row("Подиумов (1–3 место)", "%d" % int(st.podiums)
 			+ _pct(int(st.podiums), races))
 	_row("Среднее место", "%.1f" % GameState.avg_place() if races > 0 else "—")
-	_row("Лучшее место", str(int(st.best_place)) if int(st.best_place) > 0 else "—")
 	_row("Уничтожено соперников", "%d" % int(st.kills))
+	_row("Уничтожали тебя", "%d" % int(st.get("deaths", 0)))
 	_row("Опыт", "%d (до уровня %d: %d / %d)" % [GameState.xp, info.x + 1,
 			info.y, info.z])
 

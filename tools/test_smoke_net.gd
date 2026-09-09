@@ -25,6 +25,13 @@ func _physics_process(_d: float) -> void:
 		for i in _main._cars.size():
 			(_main._cars[i] as Car).controls_enabled = false
 		(_main._cars[1] as Car).debug_smoke = true
+		(_main._cars[1] as Car).debug_skid = true
+		# Как на ВЫДЕЛЕННОМ сервере: эмиттеров у бота нет вовсе (_build_smoke
+		# там не зовётся). Бит в снимке всё равно обязан быть — первая
+		# версия судила по _smoke[0].emitting и на VDS молчала (09.09).
+		for p in (_main._cars[1] as Car)._smoke:
+			p.queue_free()
+		(_main._cars[1] as Car)._smoke.clear()
 		return
 	if _frame != 45:
 		return
@@ -33,6 +40,8 @@ func _physics_process(_d: float) -> void:
 	_ok["бот с дымом — бит 4 в снимке"] = (int(flags[1 * 6 + 1]) & 4) != 0
 	_ok["бот без дыма — бита нет"] = (int(flags[2 * 6 + 1]) & 4) == 0
 	_ok["живой без дыма — бита нет"] = (int(flags[0 * 6 + 1]) & 4) == 0
+	_ok["бот со следом — бит 8 в снимке"] = (int(flags[1 * 6 + 1]) & 8) != 0
+	_ok["бот без следа — бита 8 нет"] = (int(flags[2 * 6 + 1]) & 8) == 0
 	# Марионетка на клиенте: эмиттеры ставятся по снимку.
 	var puppet: Car = _main._cars[2]
 	puppet.net_make_puppet()
@@ -59,6 +68,19 @@ func _physics_process(_d: float) -> void:
 	p.alive = false
 	p.net_apply_snapshot(pos, rot, fwd * 12.0 + right * 8.0, 14.0)
 	_ok["уничтоженная — не дымит"] = not p.smoke_bit()
+	# СЛЕД ШИН (бит 8, 09.09 «след от шин других машин нужно тоже
+	# отображать»): та же цепочка, что у дыма.
+	p.alive = true
+	p.net_apply_snapshot(pos, rot, fwd * 20.0, 14.5)
+	_ok["марионетка: прямой ход — следа нет"] = not p.skid_bit()
+	p.net_apply_snapshot(pos, rot, fwd * 12.0 + right * 8.0, 15.0)
+	_ok["марионетка: снос 8 м/с при 14 м/с — след"] = p.skid_bit()
+	p.net_apply_snapshot(pos, rot, fwd * 8.0 + right * 6.0, 16.0)
+	_ok["марионетка: снос 6 м/с при 10 м/с — следа нет (порог выше дымового)"] = 			not p.skid_bit() and p.smoke_bit()
+	p.net_set_skid(true)
+	_ok["марионетка: net_set_skid(true) включил признак"] = p._skid_active
+	p.net_set_skid(false)
+	_ok["марионетка: net_set_skid(false) выключил"] = not p._skid_active
 	var all_ok := true
 	for k in _ok:
 		print("  %s  %s" % ["ok  " if _ok[k] else "FAIL", k])

@@ -30,6 +30,14 @@ var hit_mult := 1.0
 var homing := false
 var speed_mult := 1.0
 var freeze_time := 3.0
+## ОХОТА ЗА ЛИДЕРОМ (ракета III, просьба 09.09: «летит по первому игроку,
+## если ты первый — по второму»). Цель назначает Main.chase_target ещё при
+## выстреле; пока она жива, конус _home не действует — ракета доворачивает
+## к ней откуда угодно, в том числе разворачивается назад. Цель погибла,
+## стала призраком или укрылась щитом — снаряд доводит обычное
+## самонаведение по ближайшему сопернику в конусе.
+var hunt: Car = null
+var life_mult := 1.0     # ракета III живёт дольше: лидер может быть далеко
 
 ## Полукорпус для проверки по отмотанным положениям: машина ~3.2 x 1.7 м,
 ## снаряд радиусом 0.5. Та же величина, что у коридора лазера.
@@ -53,6 +61,7 @@ func _ready() -> void:
 		_speed = 55.0
 		_life = 2.0
 	_speed *= speed_mult
+	_life *= life_mult
 
 	var col := CollisionShape3D.new()
 	var sphere := SphereShape3D.new()
@@ -185,6 +194,12 @@ func _home(delta: float) -> void:
 	const HOME_RANGE := 26.0
 	const HOME_SIDE := 6.0
 	const HOME_TURN := 2.4
+	const HUNT_TURN := 3.0   # ракета III: круче — ей бывает нужен разворот
+	# Ракета III ведёт НАЗНАЧЕННУЮ цель (лидера), пока та в игре.
+	if hunt != null and is_instance_valid(hunt) and hunt.alive \
+			and not hunt.is_ghost() and not hunt.is_shielded():
+		_turn_to(hunt.global_position, HUNT_TURN * delta)
+		return
 	var best: Car = null
 	var best_score := INF
 	for node in get_tree().get_nodes_in_group("cars"):
@@ -206,14 +221,19 @@ func _home(delta: float) -> void:
 			best = car
 	if best == null:
 		return
-	var want := best.global_position - global_position
+	_turn_to(best.global_position, HOME_TURN * delta)
+
+
+## Доворот курса к точке, не больше max_step радиан за вызов.
+func _turn_to(at: Vector3, max_step: float) -> void:
+	var want := at - global_position
 	want.y = 0.0
 	if want.length_squared() < 1e-4:
 		return
 	want = want.normalized()
 	var angle := direction.signed_angle_to(want, Vector3.UP)
-	var step: float = clampf(angle, -HOME_TURN * delta, HOME_TURN * delta)
-	direction = direction.rotated(Vector3.UP, step).normalized()
+	direction = direction.rotated(Vector3.UP,
+			clampf(angle, -max_step, max_step)).normalized()
 
 
 ## Прижим к полотну (как у ScrambleWave): луч вниз, цель — земля + HOVER,

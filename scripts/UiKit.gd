@@ -105,12 +105,20 @@ static func plate_label(parent: Control, txt: String, font_size: int,
 
 ## Стили кнопки: эмалевая табличка + осветление на hover, затемнение
 ## при нажатии. Текст ставит вызывающий (цвет — text_on(kind)).
-static func style_button(btn: Button, kind: String, font_size: int) -> void:
+## pad — поля текста по горизонтали, px (по умолчанию — как у текстуры,
+## 20): у узких кнопок с длинной надписью («СТАТИСТИКА», «КОМАНДА 2»)
+## минимальная ширина Button = текст + поля, и при 20 кнопка вырастала
+## шире заданного, наезжая на соседей (снимок 09.09).
+static func style_button(btn: Button, kind: String, font_size: int,
+		pad := -1.0) -> void:
 	var tex: Texture2D = load(DIR + "plate_%s_s.png" % kind)
 	for state in ["normal", "hover", "pressed", "disabled"]:
 		var st := StyleBoxTexture.new()
 		st.texture = tex
 		st.set_texture_margin_all(20.0)
+		if pad >= 0.0:
+			st.content_margin_left = pad
+			st.content_margin_right = pad
 		if state == "hover":
 			st.modulate_color = Color(1.12, 1.12, 1.12)
 		elif state == "pressed":

@@ -13,6 +13,7 @@ var _tan := Vector3.FORWARD
 var _right := Vector3.RIGHT
 var _ok := {}
 var _wave_start := Vector3.ZERO
+var _hunted: Car = null   # цель ракеты III (её назначает Main.chase_target)
 var _lead_expect := Vector3.ZERO
 
 
@@ -105,6 +106,16 @@ func _physics_process(_d: float) -> void:
 						(mines[1] as Node3D).global_position)
 				_ok["мина II: под разными колёсами"] = gap > 1.2 and gap < 2.0
 			_free_all(Mine)
+			# III (09.09) — три мины в ряд.
+			_fire(attacker, Weapons.MINE, 3)
+			_ok["мина III: три"] = _nodes(Mine).size() == 3
+			_free_all(Mine)
+			# МАСЛО III (09.09) — пятно крупнее II.
+			_fire(attacker, Weapons.OIL, 3)
+			var big := _nodes(OilSlick)
+			_ok["масло III: пятно ×1.4"] = not big.is_empty() \
+					and is_equal_approx((big[0] as OilSlick).size_mult, 1.4)
+			_free_all(OilSlick)
 			# МАСЛО без II ступени: только замедляет.
 			_fire(attacker, Weapons.OIL, 0)
 		175:
@@ -146,14 +157,14 @@ func _physics_process(_d: float) -> void:
 			# Луч жжёт всё время жизни (0.55 с) — гасим, иначе жертва
 			# упреждения, поставленная на его линию, сгорит (поймано 08.09).
 			attacker._laser_left = 0.0
-			# АВИАУДАР: число ракет по ступени (I — 2, II — 3, III — 4).
+			# АВИАУДАР: число ракет по ступени (I — 4, II — 5, III — 6).
 			_fire(attacker, Weapons.AIRSTRIKE, 1)
 			var a1 := _nodes(Airstrike)
-			_ok["авиаудар I: 2 ракеты"] = a1.size() == 1 and a1[0]._spots.size() == 2
+			_ok["авиаудар I: 4 ракеты"] = a1.size() == 1 and a1[0]._spots.size() == 4
 			_free_all(Airstrike)
 			_fire(attacker, Weapons.AIRSTRIKE, 3)
 			var a3 := _nodes(Airstrike)
-			_ok["авиаудар III: 4 ракеты"] = a3.size() == 1 and a3[0]._spots.size() == 4
+			_ok["авиаудар III: 6 ракет"] = a3.size() == 1 and a3[0]._spots.size() == 6
 			_free_all(Airstrike)
 			# Упреждение (II): жертва едет в 30 м впереди ПО ОСИ трассы со
 			# скоростью 10 м/с — одна из теней должна лечь туда, где она
@@ -177,7 +188,7 @@ func _physics_process(_d: float) -> void:
 			var a2 := _nodes(Airstrike)
 			var best := INF
 			if a2.size() == 1:
-				_ok["авиаудар II: 3 ракеты"] = a2[0]._spots.size() == 3
+				_ok["авиаудар II: 5 ракет"] = a2[0]._spots.size() == 5
 				for s: Vector3 in a2[0]._spots:
 					best = minf(best, s.distance_to(_lead_expect))
 			_ok["авиаудар II: упреждение по жертве"] = best < 4.0
@@ -252,7 +263,62 @@ func _physics_process(_d: float) -> void:
 			if dist <= 9.5:
 				print("  [глушилка II] за 10 кадров %.1f м" % dist)
 			_free_all(ScrambleWave)
-		500:
+			# ГЛУШИЛКА III (09.09): сбитое управление ещё на 1 с дольше.
+			_fire(attacker, Weapons.SCRAMBLE, 3)
+			var w3 := _nodes(ScrambleWave)
+			_ok["глушилка III: +1 с"] = not w3.is_empty() and is_equal_approx(
+					(w3[0] as ScrambleWave).stun_time,
+					ScrambleWave.SCRAMBLE_TIME * 1.15 + 1.0)
+			_free_all(ScrambleWave)
+			# ЗАМОРОЗКА III (09.09): ледышка морозит ещё на 1 с дольше.
+			_fire(attacker, Weapons.FREEZE, 3)
+			var ice := _nodes(Projectile)
+			_ok["заморозка III: 5.45 с"] = not ice.is_empty() \
+					and is_equal_approx((ice[0] as Projectile).freeze_time, 5.45)
+			_free_all(Projectile)
+			# МАГНИТ III (09.09): жертву впереди дёргает назад, а через 0.4 с
+			# она стоит (скорость обнулена уже ПОСЛЕ рывка).
+			_place(attacker, _base, _tan)
+			_place(v1, _base + _tan * 8.0, _tan)
+			v1.linear_velocity = _tan * 14.0
+			_fire(attacker, Weapons.MAGNET, 3)
+		486:
+			_ok["магнит III: сначала дёрнуло назад"] = \
+					v1.linear_velocity.dot(_tan) < -1.0
+			if v1.linear_velocity.dot(_tan) >= -1.0:
+				print("  [магнит III] через 6 кадров вдоль трассы %.1f" % v1.linear_velocity.dot(_tan))
+		520:
+			var hs := Vector2(v1.linear_velocity.x, v1.linear_velocity.z).length()
+			_ok["магнит III: потом встала"] = hs < 1.0
+			if hs >= 1.0:
+				print("  [магнит III] через 0.66 с скорость %.1f" % hs)
+			_park(v1)
+			# РАКЕТА III (09.09): цель — лидер гонки (сам стрелок в цель не
+			# попадает), и ракета ведёт её ВНЕ конуса обычного самонаведения
+			# (сбоку дальше HOME_SIDE = 6 м) — обычная прошла бы мимо.
+			# Живой соперник один (остальные «припаркованы» мёртвыми) — он и
+			# лидер. Ставим его СБОКУ, дальше конуса обычного самонаведения
+			# (HOME_SIDE = 6 м): ступень II прошла бы мимо.
+			_place(attacker, _base, _tan)
+			_place(v3, _base + _tan * 24.0 + _right * 8.0, _tan)
+			var lead: Car = _main.chase_target(attacker)
+			_ok["ракета III: цель — соперник, не стрелок"] = lead == v3
+			_fire(attacker, Weapons.ROCKET, 3)
+			var rk := _nodes(Projectile)
+			_hunted = null
+			if not rk.is_empty():
+				_hunted = (rk[0] as Projectile).hunt
+			_ok["ракета III: цель назначена при выстреле"] = _hunted == v3
+		600:
+			_ok["ракета III: догнала цель в стороне"] = v3.is_ghost()
+			if not v3.is_ghost():
+				print("  [ракета III] цель цела, снарядов в воздухе %d"
+						% _nodes(Projectile).size())
+			if v3.is_ghost():
+				v3._end_ghost()
+			_free_all(Projectile)
+			_park(v3)
+		620:
 			var all_ok := true
 			for k in _ok:
 				print("  %s: %s" % [k, "ok" if _ok[k] else "FAIL"])

@@ -209,14 +209,16 @@ var stats := {}
 ## Пустая статистика (ключи — см. record_race / record_soccer).
 static func empty_stats() -> Dictionary:
 	return {races = 0, net_races = 0, wins = 0, podiums = 0, place_sum = 0,
-			best_place = 0, kills = 0, rating = RATING_START, cars = {},
+			kills = 0, deaths = 0, rating = RATING_START, cars = {},
 			soccer_games = 0, soccer_wins = 0, soccer_goals = 0}
 
 
 ## Итог заезда: место (с единицы) из size машин, kills уничтоженных,
-## base — база машины, online — сетевой заезд. Возвращает изменение рейтинга.
-func record_race(place: int, size: int, kills: int, base: String,
-		online: bool) -> int:
+## deaths — сколько раз уничтожили тебя (просьба 09.09: вместо «лучшего
+## места»), base — база машины, online — сетевой заезд. Возвращает
+## изменение рейтинга. Старые профили без ключа deaths читаются (0).
+func record_race(place: int, size: int, kills: int, deaths: int,
+		base: String, online: bool) -> int:
 	if stats.is_empty():
 		stats = empty_stats()
 	place = clampi(place, 1, maxi(size, 1))
@@ -228,9 +230,8 @@ func record_race(place: int, size: int, kills: int, base: String,
 	if place <= 3:
 		stats.podiums += 1
 	stats.place_sum += place
-	if stats.best_place == 0 or place < stats.best_place:
-		stats.best_place = place
 	stats.kills += maxi(0, kills)
+	stats.deaths = int(stats.get("deaths", 0)) + maxi(0, deaths)
 	if base != "":
 		var cars: Dictionary = stats.cars
 		cars[base] = int(cars.get(base, 0)) + 1
@@ -280,8 +281,64 @@ func rating() -> int:
 	return int(stats.rating) if not stats.is_empty() else RATING_START
 
 
+## Переезд данных со старого имени игры (09.09.2026: «Big Head Racing» →
+## «Пыль и Пламя»). user:// в Godot зависит от application/config/name, так
+## что после переименования игра увидела бы ПУСТУЮ папку и игрок «потерял
+## бы весь прогресс». Здесь один раз копируем profile.cfg и соседей из
+## старой папки в новую; кэш (thumbs, logs, shader_cache) не переносим —
+## он восстановится сам. Ничего не удаляем: старая папка остаётся как
+## резервная копия.
+const OLD_APP_DIR := "Big Head Racing"
+## Что переносим: настройки и данные, а не кэш. rooms — визитки серверов.
+const MIGRATE_EXT := ["cfg", "json"]
+
+
+## Кандидаты старой папки: Windows — %APPDATA%/Godot/app_userdata/…,
+## Linux (VDS) — ~/.local/share/godot/app_userdata/… (регистр разный).
+static func _old_user_dirs() -> Array[String]:
+	var base := OS.get_data_dir()
+	var out: Array[String] = []
+	for godot_dir in ["Godot", "godot"]:
+		out.append("%s/%s/app_userdata/%s" % [base, godot_dir, OLD_APP_DIR])
+	return out
+
+
+static func _migrate_user_dir() -> void:
+	# Профиль на месте — переезд уже был (или игра новая и данных нет).
+	if FileAccess.file_exists("user://profile.cfg"):
+		return
+	for old_dir in _old_user_dirs():
+		if old_dir == OS.get_user_data_dir():
+			continue
+		var d := DirAccess.open(old_dir)
+		if d == null:
+			continue
+		var moved := 0
+		for f in d.get_files():
+			var ext := str(f).get_extension().to_lower()
+			# profile.cfg.bak_* — тоже забираем: это страховка игрока.
+			if not (ext in MIGRATE_EXT or str(f).contains(".cfg.bak")):
+				continue
+			if DirAccess.copy_absolute(old_dir + "/" + f,
+					OS.get_user_data_dir() + "/" + f) == OK:
+				moved += 1
+		if d.dir_exists("rooms"):
+			DirAccess.make_dir_recursive_absolute(
+					OS.get_user_data_dir() + "/rooms")
+			var rd := DirAccess.open(old_dir + "/rooms")
+			if rd != null:
+				for f in rd.get_files():
+					DirAccess.copy_absolute(old_dir + "/rooms/" + f,
+							OS.get_user_data_dir() + "/rooms/" + f)
+		if moved > 0:
+			print("[migrate] перенесено файлов из «%s»: %d"
+					% [old_dir, moved])
+			return
+
+
 func _ready() -> void:
 	var sel := ""
+	_migrate_user_dir()
 	var cf := ConfigFile.new()
 	if cf.load(PROFILE_PATH) == OK:
 		xp = int(cf.get_value("profile", "xp", 0))

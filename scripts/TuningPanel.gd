@@ -92,6 +92,7 @@ var _tab := "engine"
 var _font: FontFile
 var _box: VBoxContainer
 var _foot: VBoxContainer   # подвал панели: строка примерки с «КУПИТЬ»
+var _head: HBoxContainer   # шапка с «ЗАКРЫТЬ» — вне прокрутки
 var _flash_gen := 0
 ## Примерка: ключ комплектации → значение (только НЕкупленное платное).
 var _preview := {}
@@ -114,6 +115,11 @@ func _ready() -> void:
 	var root := VBoxContainer.new()
 	root.add_theme_constant_override("separation", 6)
 	add_child(root)
+	# Шапка с «ЗАКРЫТЬ» — НЕподвижная (09.09: в магазине оружия она уезжала
+	# вверх с прокруткой, тут была та же беда).
+	_head = HBoxContainer.new()
+	_head.add_theme_constant_override("separation", 10)
+	root.add_child(_head)
 	var scroll := ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -326,10 +332,11 @@ func rebuild() -> void:
 	if not tabs.has(_tab):
 		_tab = tabs[0]
 
-	# Шапка: имя машины, кошелёк, «ЗАКРЫТЬ».
-	var head := HBoxContainer.new()
-	head.add_theme_constant_override("separation", 10)
-	_box.add_child(head)
+	# Шапка: имя машины, кошелёк, «ЗАКРЫТЬ» — вне прокрутки, всегда видна.
+	for c in _head.get_children():
+		_head.remove_child(c)
+		c.queue_free()
+	var head := _head
 	var title := _label("ТЮНИНГ · %s" % _car_name(), 20, UiKit.YELLOW, false)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(title)

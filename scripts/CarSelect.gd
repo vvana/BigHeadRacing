@@ -3,7 +3,8 @@ extends Node3D
 ## (тянешь мышью или пальцем — поворачивается), справа — эмалевая доска
 ## «АВТОПАРК» с миниатюрами всех машин. Сверху полка табличек: «ГАРАЖ»,
 ## уровень с полосой опыта, кошелёк, «+500 ЗА РЕКЛАМУ», имя игрока.
-## Снизу слева — имя машины, ряд красок, «РЕЖИМ», «СТАРТ», «ТЮНИНГ».
+## Снизу слева — имя машины, «РЕЖИМ», «СТАРТ» и «МАГАЗИН» (в его меню —
+## «АВТОПАРК», «ОРУЖИЕ», «ТЮНИНГ»).
 ## Стиль — эмалевые таблички с заклёпками и аварийными лентами по
 ## референсам в корне проекта (UiKit). Адреса сервера на экране НЕТ:
 ## «СТАРТ» стучится на адрес из Net (по умолчанию VDS), не ответил —
@@ -102,10 +103,14 @@ var _buy_btn: Button              # «КУПИТЬ · цена» (у закры�
 var _grid_locks: Array[Label] = []    # ярлыки «N ур.» на ячейках доски
 var _buy_flash := 0               # поколение вспышки «НЕ ХВАТАЕТ МОНЕТ»
 var _tuning: TuningPanel          # панель косметики (на месте доски)
-var _tuning_btn: Button           # «ТЮНИНГ» (у купленной аркадной машины)
+var _tuning_btn: Button           # «ТЮНИНГ» — пункт меню «МАГАЗИН»
 var _weapons: WeaponShopPanel     # магазин ступеней оружия (на месте доски)
 var _weapons_btn: Button          # «ОРУЖИЕ» — открыть магазин
 var _board_btn: Button            # «АВТОПАРК» — открыть доску миниатюр
+var _shop_btn: Button             # «МАГАЗИН» — раскрыть меню из трёх пунктов
+var _shop_items: Array[Button] = []   # пункты меню: автопарк, оружие, тюнинг
+var _shop_open := false           # меню «МАГАЗИН» раскрыто
+var _tuning_ok := false           # у выбранной машины тюнинг есть (куплена)
 var _grid_panel: Control          # доска «АВТОПАРК» (скрыта, пока не открыли)
 var _column: Control              # левая колонка HUD (см. COL_*)
 var _arrows: Array[TextureButton] = []   # стрелки листания (прячутся с доской)
@@ -114,6 +119,7 @@ var _panel_open := false          # открыта доска или тюнин�
 var _ui_tween: Tween              # съезд колонки и камеры
 var _party: PartyPanel            # команда друзей (09.09, на месте доски)
 var _party_btn: Button            # «КОМАНДА»
+var _party_badge: Label           # кружок с числом людей в команде на кнопке
 var _stats: StatsPanel            # статистика игрока (09.09, там же)
 var _stats_btn: Button            # «СТАТИСТИКА»
 var _invite_box: Control          # плашка «X зовёт в команду» (null — нет)
@@ -195,6 +201,10 @@ func _process(delta: float) -> void:
 		if Input.is_action_just_pressed("ui_cancel"):
 			_stats.close()
 		return
+	# Esc закрывает раскрытое меню «МАГАЗИН» (09.09, вечер).
+	if _shop_open and Input.is_action_just_pressed("ui_cancel"):
+		_set_shop_menu(false)
+		return
 	# Esc закрывает и доску «АВТОПАРК».
 	if _grid_panel != null and _grid_panel.visible \
 			and Input.is_action_just_pressed("ui_cancel"):
@@ -228,6 +238,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT:
+			# Сюда события доходят только мимо HUD — клик по пустому месту
+			# закрывает раскрытое меню «МАГАЗИН».
+			if mb.pressed and _shop_open:
+				_set_shop_menu(false)
 			_dragging = mb.pressed
 	elif event is InputEventMouseMotion and _dragging:
 		_turntable.rotation.y += (event as InputEventMouseMotion).relative.x \
@@ -329,9 +343,9 @@ func _refresh_start_btn() -> void:
 		_start_btn.disabled = false
 		_start_btn.text = "СТАРТ"
 		_start_btn.add_theme_font_size_override("font_size", 24)
-	if _party_btn:
-		_party_btn.text = "КОМАНДА %d" % Social.members().size() \
-				if Social.in_party() else "КОМАНДА"
+	if _party_badge:
+		_party_badge.visible = Social.in_party()
+		_party_badge.text = str(Social.members().size())
 
 
 ## Оффлайн-заезд: игрок + (race_size−1) ботов, случайная трасса.
@@ -414,19 +428,26 @@ func _show_invite(from: String, count: int) -> void:
 	if _invite_box:
 		_invite_box.queue_free()
 		_invite_box = null
-	var plate := UiKit.plate(_canvas, "teal", Vector2.ZERO, Vector2(520, 96))
+	# Стальная плита (тёмная — на ней читаются и жёлтая, и стальная
+	# кнопки; бирюзовая сливалась с бирюзовой «ПРИНЯТЬ», снимок 09.09).
+	var plate := UiKit.plate(_canvas, "steel", Vector2.ZERO, Vector2(520, 112))
 	# Слева над машиной: панель команды справа остаётся видна.
-	_place(plate, 62, TOP_Y + TOP_H + 60, 520, 96)
+	_place(plate, 62, TOP_Y + TOP_H + 60, 520, 112)
 	_invite_box = plate
 	var txt := UiKit.label(plate, "%s зовёт тебя в команду (%d чел.)"
 			% [from, count + 1], 17, Color.WHITE, 5)
-	txt.position = Vector2(0, 12)
-	txt.size = Vector2(520, 24)
+	txt.position = Vector2(20, 14)
+	txt.size = Vector2(480, 26)
 	txt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	var ok := _mini_button("ПРИНЯТЬ")
-	ok.add_theme_font_size_override("font_size", 16)
-	ok.position = Vector2(110, 46)
-	ok.size = Vector2(140, 36)
+	txt.clip_text = true
+	txt.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	# Две кнопки одного размера на одной линии, 20 px между ними, ряд по
+	# центру плиты: главная — жёлтая эмаль, отказ — стальная.
+	var ok := Button.new()
+	ok.text = "ПРИНЯТЬ"
+	UiKit.style_button(ok, "yellow", 15, 8)
+	ok.position = Vector2(100, 52)
+	ok.size = Vector2(150, 46)
 	ok.pressed.connect(func() -> void:
 		Social.accept_invite()
 		_hide_invite()
@@ -434,9 +455,9 @@ func _show_invite(from: String, count: int) -> void:
 	plate.add_child(ok)
 	var no := Button.new()
 	no.text = "ОТКЛОНИТЬ"
-	UiKit.style_button(no, "steel", 13)
-	no.position = Vector2(270, 44)
-	no.size = Vector2(140, 40)
+	UiKit.style_button(no, "steel", 15, 8)
+	no.position = Vector2(270, 52)
+	no.size = Vector2(150, 46)
 	no.pressed.connect(func() -> void:
 		Social.decline_invite()
 		_hide_invite())
@@ -939,9 +960,10 @@ func _refresh_lock_ui() -> void:
 	if _start_btn:
 		_start_btn.visible = owned
 	# Тюнинг — у любой купленной машины: краски теперь только там (03.09),
-	# у аркадных конструкторов ещё детали и наклейки.
-	if _tuning_btn:
-		_tuning_btn.visible = owned
+	# у аркадных конструкторов ещё детали и наклейки. Кнопка живёт пунктом
+	# меню «МАГАЗИН» — здесь только запоминаем, положен ли он этой машине.
+	_tuning_ok = owned
+	_layout_shop_menu()
 	if _buy_btn == null:
 		return
 	_buy_btn.visible = not owned
@@ -1093,6 +1115,8 @@ func _close_board() -> void:
 ## колонка — через offset_left/right.
 func _set_panel_open(open: bool) -> void:
 	_panel_open = open
+	if open:
+		_set_shop_menu(false)
 	for a in _arrows:
 		a.visible = not open
 	if _ui_tween:
@@ -1516,7 +1540,7 @@ func _build_test_badge(canvas: Node) -> void:
 	sub.position = Vector2(0, 24)
 	sub.size = Vector2(560, 16)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	DisplayServer.window_set_title("Big Head Racing — СТЕНД (тестовый профиль)")
+	DisplayServer.window_set_title("Пыль и Пламя — СТЕНД (тестовый профиль)")
 
 
 ## Верхняя полка табличек: «ГАРАЖ», уровень с полосой опыта, кошелёк,
@@ -1546,7 +1570,7 @@ func _build_top_shelf(canvas: Node) -> void:
 	tag.rotation = -0.045
 	tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	title_plate.add_child(tag)
-	UiKit.plate_label(tag, "BIG HEAD RACING", 13, UiKit.INK)
+	UiKit.plate_label(tag, "ПЫЛЬ И ПЛАМЯ", 13, UiKit.INK)
 
 	# Уровень — жёлтая табличка с полосой опыта. Опыт и монеты даются на
 	# финише (GameState); уровни открывают машины и оружие — ЭКОНОМИКА.md.
@@ -1606,20 +1630,22 @@ func _build_top_shelf(canvas: Node) -> void:
 	canvas.add_child(_name_btn)
 	_refresh_name_btn()
 
-	var help := UiKit.label(_column, "←→ / AD — листать  ·  Enter — в гонку"
-			+ "  ·  Esc — закрыть подменю", 13, Color(1, 1, 1, 0.9), 4)
-	_place(help, 0, TOP_Y + TOP_H + 6, COL_W, 20)
-	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-
 
 ## Низ левой колонки (координаты — внутри колонки, см. COL_*): имя
-## машины, ряд «РЕЖИМ» / «СТАРТ» / «АВТОПАРК» / «ТЮНИНГ». Стрелки
+## машины, ряд «РЕЖИМ» / «СТАРТ» / «МАГАЗИН». Стрелки
 ## листания — на самом холсте по бокам машины, стоящей в центре: они
 ## живут только пока подменю закрыты.
 func _build_podium_ui(canvas: Node, col: Control) -> void:
-	var name_panel := UiKit.plate(col, "steel", Vector2.ZERO, Vector2(420, 54))
-	_place(name_panel, (COL_W - 420) * 0.5, ROW_Y - 66, 420, 54, true)
-	_name_label = UiKit.plate_label(name_panel, "", 26, Color.WHITE, 6)
+	# Ряд над кнопками: «КОМАНДА» 0..116, имя машины 126..530,
+	# «СТАТИСТИКА» 540..656. Имя — БЕЗ ТАБЛИЧКИ (09.09, вечер): оно стояло
+	# на такой же стальной плашке, как соседняя кнопка, и читалось кнопкой
+	# (жалоба игрока). Теперь это просто крупная надпись с обводкой, а
+	# третьего ряда нет вовсе — «СТАТИСТИКА» переехала на место «ОРУЖИЯ».
+	_name_label = UiKit.label(col, "", 30, Color.WHITE, 6)
+	_place(_name_label, 126, ROW_Y - 66, 404, 54, true)
+	_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_name_label.clip_text = true
 
 	# Стрелки листания по бокам машины — оранжевые таблички.
 	_make_arrow(canvas, UI_DIR + "arrow_l.png", 226,
@@ -1646,47 +1672,90 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 	_buy_btn.pressed.connect(_buy_pressed)
 	col.add_child(_buy_btn)
 
-	# «АВТОПАРК» — жёлтая эмаль: открыть доску миниатюр всех машин.
-	_board_btn = Button.new()
-	_board_btn.text = "АВТОПАРК"
-	UiKit.style_button(_board_btn, "yellow", 15)
-	_place(_board_btn, 404, ROW_Y, 120, ROW_H, true)
-	_board_btn.pressed.connect(_open_board)
-	col.add_child(_board_btn)
-
-	# «ТЮНИНГ» — у своей машины: краски (у всех), у аркадных
-	# конструкторов ещё детали кузова и наклейки. Ничего, кроме внешнего
-	# вида, тюнинг не меняет.
-	_tuning_btn = Button.new()
-	_tuning_btn.text = "ТЮНИНГ"
-	UiKit.style_button(_tuning_btn, "teal", 15)
-	_place(_tuning_btn, 536, ROW_Y, 120, ROW_H, true)
-	_tuning_btn.pressed.connect(_open_tuning)
-	col.add_child(_tuning_btn)
-
-	# «ОРУЖИЕ» — магазин ступеней оружия (08.09): над «ТЮНИНГ», справа от
-	# таблички с именем машины (она 118..538 px), не зависит от машины.
-	_weapons_btn = Button.new()
-	_weapons_btn.text = "ОРУЖИЕ"
-	UiKit.style_button(_weapons_btn, "orange", 15)
-	_place(_weapons_btn, 548, ROW_Y - 66, 108, 54, true)
-	_weapons_btn.pressed.connect(_open_weapons)
-	col.add_child(_weapons_btn)
+	# «МАГАЗИН» (09.09, вечер) — одна кнопка вместо трёх: «АВТОПАРК»,
+	# «ОРУЖИЕ» и «ТЮНИНГ» уехали в её выпадающее меню (игрок: «слишком
+	# загромождён интерфейс главного меню»). Меню — _build_shop_menu.
+	_shop_btn = Button.new()
+	_shop_btn.text = "МАГАЗИН"
+	UiKit.style_button(_shop_btn, "yellow", 20, 10)
+	_place(_shop_btn, 404, ROW_Y, 252, ROW_H, true)
+	_shop_btn.pressed.connect(_toggle_shop)
+	col.add_child(_shop_btn)
 
 	# «КОМАНДА» (09.09) — друзья: зеркально «ОРУЖИЮ», слева от таблички с
-	# именем машины; «СТАТИСТИКА» — над ней.
+	# именем машины; «СТАТИСТИКА» — над ней. Обе — одной ширины с «ОРУЖИЕ»,
+	# поля текста 8 px (иначе Button растёт под надпись, см. UiKit).
+	# Число людей в команде — кружок-бейдж в углу, а не в надписи: надпись
+	# «КОМАНДА 2» не влезала и раздвигала кнопку на табличку имени.
 	_party_btn = Button.new()
 	_party_btn.text = "КОМАНДА"
-	UiKit.style_button(_party_btn, "teal", 14)
-	_place(_party_btn, 0, ROW_Y - 66, 108, 54, true)
+	UiKit.style_button(_party_btn, "teal", 14, 8)
+	_place(_party_btn, 0, ROW_Y - 66, 116, 54, true)
 	_party_btn.pressed.connect(_open_party)
 	col.add_child(_party_btn)
+	_party_badge = UiKit.label(_party_btn, "", 13, Color.WHITE, 3)
+	_party_badge.add_theme_stylebox_override("normal", UiKit.steel_box(12, 0.96))
+	_party_badge.position = Vector2(116 - 30, -7)
+	_party_badge.size = Vector2(26, 24)
+	_party_badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_party_badge.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_party_badge.visible = false
 	_stats_btn = Button.new()
 	_stats_btn.text = "СТАТИСТИКА"
-	UiKit.style_button(_stats_btn, "steel", 12)
-	_place(_stats_btn, 0, ROW_Y - 66 - 60, 108, 54, true)
+	UiKit.style_button(_stats_btn, "steel", 12, 8)
+	_place(_stats_btn, 540, ROW_Y - 66, 116, 54, true)
 	_stats_btn.pressed.connect(_open_stats)
 	col.add_child(_stats_btn)
+
+	_build_shop_menu(col)
+
+
+## Выпадающее меню кнопки «МАГАЗИН»: пункты столбиком над ней —
+## «АВТОПАРК» (доска всех машин), «ОРУЖИЕ» (ступени), «ТЮНИНГ»
+## (косметика, только у купленной машины). Закрывается той же кнопкой,
+## Esc, выбором пункта, кликом мимо и открытием любой панели.
+func _build_shop_menu(col: Control) -> void:
+	_board_btn = _shop_item(col, "АВТОПАРК", "yellow", _open_board)
+	_weapons_btn = _shop_item(col, "ОРУЖИЕ", "orange", _open_weapons)
+	_tuning_btn = _shop_item(col, "ТЮНИНГ", "teal", _open_tuning)
+
+
+## Пункт меню «МАГАЗИН» — кнопка 252×54 шириной с саму кнопку; место в
+## столбике раздаёт _layout_shop_menu (скрытый пункт места не занимает).
+func _shop_item(col: Control, txt: String, kind: String,
+		on_press: Callable) -> Button:
+	var b := Button.new()
+	b.text = txt
+	UiKit.style_button(b, kind, 16, 10)
+	_place(b, 404, ROW_Y - 62, 252, 54, true)
+	b.visible = false
+	b.pressed.connect(func() -> void:
+		_set_shop_menu(false)
+		on_press.call())
+	col.add_child(b)
+	_shop_items.append(b)
+	return b
+
+
+## Разложить пункты меню снизу вверх над «МАГАЗИНОМ» (шаг 62 px) —
+## закрыто меню или машина не куплена (тюнинга нет), пункт просто скрыт.
+func _layout_shop_menu() -> void:
+	var y := ROW_Y - 62
+	for b in _shop_items:
+		var show: bool = _shop_open and (b != _tuning_btn or _tuning_ok)
+		b.visible = show
+		if show:
+			_place(b, 404, y, 252, 54, true)
+			y -= 62
+
+
+func _set_shop_menu(open: bool) -> void:
+	_shop_open = open
+	_layout_shop_menu()
+
+
+func _toggle_shop() -> void:
+	_set_shop_menu(not _shop_open)
 
 
 ## Мультяшная кнопка-стрелка листания (x — левая кромка в px, по

@@ -222,6 +222,19 @@ var _play_vel := Vector3.ZERO  # скорость ВОСПРОИЗВОДИМОГ
 # (см. net_view_lead): по сырым числам из снимков упреждение дрожало бы.
 var _lead_vel := Vector3.ZERO
 var _lead_yaw := 0.0
+# ПРЕДСКАЗАНИЕ КАРТИНКИ ПО СОБЫТИЮ (09.09): сдвиг марионетки, которого
+# запись ещё не содержит, — старт по GO и рывок от моего магнита. Запись
+# соперника приходит с отставанием буфер + пинг, и с места он трогался
+# позже меня, а от магнита дёргался через секунду. Сдвиг растёт по кривой
+# до _pred_dist за _pred_rise с и ВЫЧИТАЕТ то, что запись уже показала
+# (see _follow_buffered): когда правда доезжает, добавка сама сходит на
+# нет; не доехала (соперник не газовал) — тает через PRED_HOLD.
+var _pred_t := -1.0             # с от события (<0 — предсказания нет)
+var _pred_dir := Vector3.ZERO   # куда сдвигаем (горизонталь, единичный)
+var _pred_from := Vector3.ZERO  # где была картинка в момент события
+var _pred_dist := 0.0           # полный путь предсказания, м
+var _pred_rise := 0.3           # за сколько с набирается
+var _pred_pow := 2.0            # форма кривой: 2 — разгон с места, <1 — рывок
 # Темп воспроизведения: 1.0 — как записано; <1 — время РАСТЯНУТО (запас
 # буфера кончается, растягиваем вместо замирания), >1 — догоняем пачку.
 var _play_rate := 1.0
@@ -284,8 +297,10 @@ var _track_ang_abs := 0.0       # |угол носа к оси трассы|, с
 var _side_speed := 0.0          # боковой снос с последнего кадра езды (дым)
 var _on_sand := false           # на песчаной трассе съехал с полотна на песок
 var _smoke: Array[CPUParticles3D] = []  # дым из-под задних колёс (занос)
+var _smoking := false           # дымят ли колёса по расчёту физики (и без эмиттеров)
 var _smoke_color := ""          # цвет дыма/пламени из тюнинга ("" — обычный), apply_fx
 var debug_smoke := false        # стенды: дымить и гореть выхлопом без заноса
+var debug_skid := false         # стенды: чертить следы шин без заноса
 var _skid_active := false       # сильный занос: задние колёса чертят следы
 var _skid_trails := {}          # пивот заднего колеса -> текущая SkidTrail
 var _boost_flame: CPUParticles3D        # огонь из выхлопа при ускорении
@@ -294,6 +309,7 @@ var _boost_from_pad := false    # текущий буст — с плиты (с�
 var _shock_fx: Node3D           # волна перед носом — III ступень буста (_build_shock_fx)
 var _shock_rings: Array[MeshInstance3D] = []   # кольца ударной волны, в противофазе
 var _shock_cone: MeshInstance3D                # конус уплотнения остриём вперёд
+var _shock_cloud: CPUParticles3D               # облако конденсата у основания конуса
 var _shock_left := 0.0          # сколько ещё длится вспышка волны, с (0 — нет)
 var _shock_was_on := false      # буст III горел на прошлом кадре (фронт для марионетки)
 var _wheel_pivots: Array[Node3D] = []
@@ -848,8 +864,11 @@ static func make_smoke() -> CPUParticles3D:
 	# вместо 0.67, клубы (0.7 м × рост) перекрываются с рождения.
 	# Тем же днём «ещё плотнее»: 40 → 70 (≈ 117 клубов/с, шаг 0.17 м) и
 	# клуб рождается крупнее (кривая роста стартует с 0.5, а не 0.35).
-	p.amount = 70
-	p.lifetime = 0.6
+	# 09.09 («след от дыма слишком длинный»): жизнь 0.6 → 0.35 с — шлейф
+	# на 20 м/с укоротился с 12 до 7 м; число клубов срезано в той же
+	# пропорции (70 → 41), чтобы плотность (≈117 клубов/с) не изменилась.
+	p.amount = 41
+	p.lifetime = 0.35
 	p.local_coords = false   # клубы остаются позади машины
 	p.direction = Vector3.UP
 	p.spread = 35.0
@@ -1042,8 +1061,15 @@ func _build_boost_flame() -> void:
 ## постоянный нимб на весь буст: крупный конус (основание 2.6 м, длина
 ## 1.6 м) и два кольца до 4.6 м, за полсекунды всё тает. Владелец
 ## запускает её из apply_boost, марионетка — по фронту значка буста.
+## 09.09 («конус побольше, поближе к передку, и облако, как в реале»):
+## конус 2.4 м длиной с основанием 3.8 м, основание отодвинуто НАЗАД на
+## SHOCK_BACK — накрывает капот, а не висит перед бампером; у основания
+## одноразовый выброс белёсых клубов (облако Прандтля-Глоерта — конденсат
+## на скачке уплотнения), они сносятся назад вдоль кузова и тают за
+## вспышку. Клубы в осях узла (local_coords) — облако едет с машиной.
 const SHOCK_TOTAL := 0.5     # с — вся вспышка
-const SHOCK_LEN := 1.6       # м — длина конуса перед бампером
+const SHOCK_LEN := 2.4       # м — длина конуса
+const SHOCK_BACK := 0.7      # м — основание конуса позади плоскости бампера
 const SHOCK_NOSE := Vector3(0.0, 0.55, -1.7)   # нос: кузова пака 3.2 м (-1.6)
 
 func _build_shock_fx() -> void:
@@ -1057,7 +1083,7 @@ func _build_shock_fx() -> void:
 	var cone := MeshInstance3D.new()
 	var cm := CylinderMesh.new()
 	cm.top_radius = 0.0
-	cm.bottom_radius = 1.3
+	cm.bottom_radius = 1.9
 	cm.height = SHOCK_LEN
 	cm.radial_segments = 24
 	cm.rings = 1
@@ -1075,10 +1101,67 @@ func _build_shock_fx() -> void:
 	# SHOCK_LEN впереди — машина «толкает» волну носом. Первый вариант (база
 	# 0.95 м, конус до середины капота) на снимке читался куполом над
 	# кабиной, а не волной перед носом.
-	cone.position = SHOCK_NOSE + Vector3(0.0, 0.0, 0.1 - cm.height * 0.5)
+	cone.position = SHOCK_NOSE + Vector3(0.0, 0.0, SHOCK_BACK - cm.height * 0.5)
 	cone.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
 	root.add_child(cone)
 	_shock_cone = cone
+	# Облако конденсата у основания конуса: кольцо клубов (атлас дыма),
+	# разовый выброс назад вдоль кузова, рост и таяние за вспышку.
+	var cloud := CPUParticles3D.new()
+	cloud.emitting = false
+	cloud.one_shot = true
+	cloud.explosiveness = 1.0
+	# Первый вариант (16 клубов × 1.6-2.6, альфа 0.8) на снимке был серой
+	# копной, накрывшей и машину, и конус: клубы мельче, белее, реже и
+	# летят назад быстрее — облако-«воротник» у основания конуса, кузов
+	# и конус сквозь него читаются.
+	cloud.amount = 12
+	cloud.lifetime = SHOCK_TOTAL
+	cloud.local_coords = true
+	cloud.emission_shape = CPUParticles3D.EMISSION_SHAPE_RING
+	cloud.emission_ring_axis = Vector3(0.0, 0.0, 1.0)
+	cloud.emission_ring_radius = 1.7
+	cloud.emission_ring_inner_radius = 1.2
+	cloud.emission_ring_height = 0.2
+	cloud.direction = Vector3(0.0, 0.15, 1.0)   # назад по ходу (+Z)
+	cloud.spread = 25.0
+	cloud.gravity = Vector3.ZERO
+	cloud.initial_velocity_min = 5.0
+	cloud.initial_velocity_max = 8.0
+	cloud.angle_min = 0.0
+	cloud.angle_max = 360.0
+	cloud.scale_amount_min = 1.0
+	cloud.scale_amount_max = 1.7
+	var puff := Curve.new()
+	puff.add_point(Vector2(0.0, 0.5))
+	puff.add_point(Vector2(0.35, 1.0))
+	puff.add_point(Vector2(1.0, 1.5))
+	cloud.scale_amount_curve = puff
+	cloud.anim_offset_min = 0.0
+	cloud.anim_offset_max = 1.0
+	var ramp := Gradient.new()
+	# Цвет > 1: атлас дыма серый, множитель 1.8 выбеливает клуб до
+	# конденсата (после умножения канал режется единицей).
+	ramp.set_color(0, Color(1.8, 1.8, 1.8, 0.0))
+	ramp.add_point(0.15, Color(1.8, 1.8, 1.85, 0.6))
+	ramp.set_color(1, Color(1.6, 1.7, 1.8, 0.0))
+	cloud.color_ramp = ramp
+	var cq := QuadMesh.new()
+	cq.size = Vector2(1.0, 1.0)
+	var cmm := StandardMaterial3D.new()
+	cmm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	cmm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	cmm.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	cmm.particles_anim_h_frames = 2
+	cmm.particles_anim_v_frames = 2
+	cmm.particles_anim_loop = false
+	cmm.vertex_color_use_as_albedo = true
+	cmm.albedo_texture = SMOKE_TEX
+	cq.material = cmm
+	cloud.mesh = cq
+	cloud.position = SHOCK_NOSE + Vector3(0.0, 0.0, SHOCK_BACK)
+	root.add_child(cloud)
+	_shock_cloud = cloud
 	# Два кольца в противофазе — волна идёт непрерывно, без пауз.
 	for i in 2:
 		var ring := MeshInstance3D.new()
@@ -1104,6 +1187,8 @@ func _build_shock_fx() -> void:
 ## время вспышки начинает её заново.
 func _start_shock() -> void:
 	_shock_left = SHOCK_TOTAL
+	if _shock_cloud != null:
+		_shock_cloud.restart()
 
 
 ## Гонит вспышку: конус вспыхивает и тает, два кольца одно за другим от
@@ -1118,8 +1203,9 @@ func _tick_shock(delta: float) -> void:
 		var ring := _shock_rings[i]
 		# Кольцо рождается у острия конуса 0.8 м, к бамперу дорастает до
 		# 4.6 м — волна идёт по конусу назад.
-		ring.scale = Vector3.ONE * (0.4 + 1.9 * ti)
-		ring.position = SHOCK_NOSE + Vector3(0.0, 0.1 * ti, 0.1 - SHOCK_LEN * (1.0 - ti))
+		ring.scale = Vector3.ONE * (0.5 + 2.3 * ti)
+		ring.position = SHOCK_NOSE + Vector3(0.0, 0.1 * ti,
+				SHOCK_BACK - SHOCK_LEN * (1.0 - ti))
 		var mat := (ring.mesh as QuadMesh).material as StandardMaterial3D
 		mat.albedo_color.a = 0.0 if (i > 0 and ti <= 0.0) else (1.0 - ti) * (1.0 - 0.4 * ti)
 	# Конус: быстрый всплеск (0.1 с) и плавное таяние до конца вспышки.
@@ -1207,6 +1293,10 @@ func _physics_process(delta: float) -> void:
 		if net_fire:
 			net_fire = false
 			use_weapon()
+		# Искры о борт у чужой машины (09.09): её _wall_slide не идёт,
+		# рисуем по положению — на клиенте, где есть экран.
+		if not Net.is_server():
+			_puppet_wall_sparks(delta)
 		# Движение к снимку — здесь, в ФИЗИКЕ. Перенос в _process (ради
 		# плавности на мониторах >60 Гц) ПРОБОВАН и ОТКАЧЕН: метрика
 		# стенда в headless рухнула с 2.6% до 57% с 40 рывками назад —
@@ -1383,6 +1473,9 @@ func _physics_process(delta: float) -> void:
 			or (_slip_time > 0.0 and hh.length() > 3.0)
 			or (_on_sand and hh.length() > 3.0)
 			or debug_smoke)
+	# Признак храним отдельно от эмиттеров: на выделенном сервере их нет
+	# (_build_smoke не зовётся), а в снимок дым ботов класть надо.
+	_smoking = smoking
 	for p in _smoke:
 		p.emitting = smoking
 	# Следы шин на асфальте: пороги ВЫШЕ дымовых — дым идёт от любого
@@ -1391,12 +1484,13 @@ func _physics_process(delta: float) -> void:
 	# только на полотне классической трассы (на песке след резины не
 	# рисуем, на траве за трассой — тоже). Сами ленты тянет
 	# _animate_wheels: у него уже есть лучи к дороге под каждым колесом.
-	_skid_active = alive and on_ground \
-			and ((absf(_side_speed) > 6.5 and hh.length() > 11.0)
-				or (_slip_time > 0.0 and hh.length() > 6.0)) \
-			and (track == null or (track.kind != TrackBuilder.KIND_SAND
-				and track.distance_from_axis_at(global_position, track_offset)
-					< TrackBuilder.TRACK_HALF_WIDTH + 0.3))
+	# Марионетке на клиенте признак приезжает в снимке (net_set_skid) —
+	# сюда она не доходит; на сервере бот считает его здесь, а марионетку
+	# живого игрока судит skid_bit() по присланной скорости.
+	_skid_active = alive and on_ground and (debug_skid
+			or (((absf(_side_speed) > 6.5 and hh.length() > 11.0)
+				or (_slip_time > 0.0 and hh.length() > 6.0))
+			and _skid_surface_ok(global_position)))
 	_ext_push_time = maxf(0.0, _ext_push_time - delta)
 	_blast_time = maxf(0.0, _blast_time - delta)
 	# Память для капов — в самом конце, после всех правок скорости.
@@ -1425,9 +1519,10 @@ func _tick_effects(delta: float) -> void:
 	_shield_age += delta
 	if _shield_mesh:
 		_shield_mesh.visible = alive and _shield_time > 0.0
-	# Сервер: марионетка (машина живого игрока) со щитом II/III сама
-	# _bounce_off_cars не считает — касания ищем здесь (см. _shield_sweep).
-	if Net.is_server() and net_role == NetRole.PUPPET and shield_level() >= 2:
+	# Щит II/III бьёт коснувшихся: касания ищет ДЕРЖАТЕЛЬ капсулами, где
+	# бы он ни считался (сервер, оффлайн), — см. _shield_sweep. Клиент не
+	# считает вовсе: попадания решает сервер.
+	if not Net.is_client() and shield_level() >= 2:
 		_shield_sweep()
 	# Лазер жжёт, пока виден луч: коридор перепроверяется каждый тик от
 	# ТЕКУЩЕГО носа (луч едет со стрелявшим — LaserFx._process делает то же
@@ -1652,13 +1747,13 @@ func _bounce_off_cars() -> void:
 				and not is_shielded():
 			_freeze_time = other._freeze_time
 			FxKit.snow_burst(get_parent(), global_position + Vector3.UP * 0.6)
-		# МОЙ щит II/III бьёт коснувшегося (08.09). Применяет ДЕРЖАТЕЛЬ щита
-		# к сопернику, жертва себя не трогает — иначе оффлайн удар был бы
-		# двойным. На клиенте не считаем вовсе: попадания решает сервер
-		# (у него бот-держатель ловит марионеток здесь же, держатель-
-		# марионетка — в _shield_sweep).
-		if not Net.is_client() and _shield_touch(other):
-			continue
+		# Щит II/III (08.09) касания здесь больше НЕ судит — только
+		# _shield_sweep из _tick_effects (09.09, «красная сфера не убивает
+		# при касании»): на сервере бот, наехав на марионетку-держателя,
+		# в этом же цикле ВЫДАВЛИВАЛ себя из неё позиционно (см. ниже), и к
+		# моменту проверки держателя капсулы уже не пересекались — щит
+		# живого игрока не срабатывал никогда. Теперь держатель меряет
+		# касание по СФЕРЕ (SHIELD_TOUCH_GAP), а не по кузову.
 		var away := global_position - other.global_position
 		away.y = 0.0
 		var dist := away.length()
@@ -2256,6 +2351,18 @@ func _follow_buffered(delta: float) -> void:
 	# картинки зажимаем в полотне: боковое смещение от оси не больше
 	# полуширины минус стенка и полкузова. Отметка на оси — по
 	# непрерывности (track_offset), как у всех расчётов от полотна.
+	# ПРЕДСКАЗАНИЕ ПО СОБЫТИЮ (см. _pred_t): добавка = предсказанный путь
+	# минус то, что запись (с упреждением) уже показала вдоль него.
+	if _pred_t >= 0.0:
+		_pred_t += delta
+		var want := _pred_dist * pow(clampf(_pred_t / _pred_rise, 0.0, 1.0),
+				_pred_pow)
+		var got := (target - _pred_from).dot(_pred_dir)
+		var fade := 1.0 - clampf((_pred_t - _pred_rise - PRED_HOLD) / PRED_FADE,
+				0.0, 1.0)
+		target += _pred_dir * maxf(0.0, want - got) * fade
+		if fade <= 0.0:
+			_pred_t = -1.0
 	target = _clamp_view_inside_walls(target)
 	# Тело к цели: телепорт при большой невязке, иначе быстрая подтяжка
 	# (запись сама гладкая — сглаживание лишь прячет стыки после недоборов)
@@ -2263,6 +2370,7 @@ func _follow_buffered(delta: float) -> void:
 	var k := 1.0 - pow(0.5, delta * 60.0)
 	if global_position.distance_to(target) > 8.0:
 		global_position = target
+		_pred_t = -1.0   # телепорт — предсказание больше не о том месте
 	else:
 		var next := global_position.lerp(target, k)
 		var step := next - global_position
@@ -2277,6 +2385,55 @@ func _follow_buffered(delta: float) -> void:
 	# делает честными сами замеры: без поправки растянутый кусок выглядел бы
 	# «замиранием» на фоне неизменившейся эталонной скорости.
 	linear_velocity = _play_vel * _play_rate
+
+
+## Сколько предсказание держится в полную силу после набора и за сколько
+## тает, с (см. _pred_t).
+const PRED_HOLD := 0.3
+const PRED_FADE := 0.4
+## Разгон с места по GO: ускорение своей машины замерено стендом
+## TestStartNet (~9 м/с²), окно — типичное отставание записи соперника
+## (буфер до 0.35 с + пинг): 0.45 с → 0.9 м.
+const PRED_LAUNCH_ACC := 9.0
+const PRED_LAUNCH_TIME := 0.45
+## Рывок от магнита: сколько метров и за сколько показываем сразу.
+const PRED_MAGNET_DIST := 2.0
+const PRED_MAGNET_TIME := 0.3
+
+
+## Клиент: предсказать сдвиг марионетки по событию (см. _pred_t). dir —
+## куда (горизонталь), dist — путь, rise — за сколько набирается, curve —
+## показатель кривой (2 — разгон с места, 0.6 — рывок с затуханием).
+func net_predict_move(dir: Vector3, dist: float, rise: float,
+		curve := 2.0) -> void:
+	if net_role != NetRole.PUPPET or not alive or is_ghost():
+		return
+	dir.y = 0.0
+	if dir.length_squared() < 1e-6:
+		return
+	_pred_dir = dir.normalized()
+	_pred_from = global_position
+	_pred_dist = dist
+	_pred_rise = maxf(rise, 0.05)
+	_pred_pow = curve
+	_pred_t = 0.0
+
+
+## Клиент, «GO!»: соперник тоже газует с места — показываем его разгон,
+## не дожидаясь записи (жалоба 09.09 «я всегда стартую первым, другие
+## отстают — все же сразу жмут на газ»).
+func net_predict_start() -> void:
+	net_predict_move(-global_transform.basis.z,
+			0.5 * PRED_LAUNCH_ACC * PRED_LAUNCH_TIME * PRED_LAUNCH_TIME,
+			PRED_LAUNCH_TIME, 2.0)
+
+
+## Клиент, мой магнит: жертву дёргает ко мне сразу (жалоба 09.09 «после
+## магнита видимая задержка где-то в секунду»). Сервер решит то же самое
+## (Car._use_magnet), запись довезёт настоящий рывок.
+func net_predict_magnet_pull(to: Vector3) -> void:
+	net_predict_move(to - global_position, PRED_MAGNET_DIST,
+			PRED_MAGNET_TIME, 0.6)
 
 
 ## Курс кватерниона в плане, рад.
@@ -3029,7 +3186,10 @@ func use_weapon() -> void:
 			# игрока 04.09); I — взрыв шире на 15 %.
 			var right := Vector3(-fwd.z, 0.0, fwd.x)
 			var offsets: Array[float] = [0.0]
-			if step >= 2:
+			# III — ТРИ мины в ряд (просьба 09.09).
+			if step >= 3:
+				offsets = [-1.0, 0.0, 1.0]
+			elif step >= 2:
 				offsets = [-0.8, 0.8]
 			for sx: float in offsets:
 				var m := Mine.new()
@@ -3049,11 +3209,22 @@ func use_weapon() -> void:
 			# Ступени: I — снаряд крупнее (ракета) / заморозка дольше
 			# (ледышка); II — самонаведение (ракета) / быстрее (ледышка).
 			if p.freeze:
-				p.freeze_time = 3.45 if step >= 1 else 3.0
+				# Заморозка: I — на 15 % дольше, II и III добавляют ПО
+				# СЕКУНДЕ (спецификация игрока 09.09): 3.0 / 3.45 / 4.45 / 5.45.
+				p.freeze_time = (3.45 if step >= 1 else 3.0) \
+						+ (1.0 if step >= 2 else 0.0) \
+						+ (1.0 if step >= 3 else 0.0)
 				p.speed_mult = 1.2 if step >= 2 else 1.0
 			else:
 				p.hit_mult = 1.15 if step >= 1 else 1.0
 				p.homing = step >= 2
+				# III (просьба 09.09): ракета идёт за ЛИДЕРОМ гонки, а если
+				# лидер — ты сам, за вторым. Цель назначаем при выстреле,
+				# чтобы она не «переезжала» на встречных по пути.
+				if step >= 3:
+					p.life_mult = 1.8
+					if race != null and race.has_method("chase_target"):
+						p.hunt = race.chase_target(self)
 			get_parent().add_child(p)
 			p.global_position = muzzle_at(origin, fwd)
 			FxKit.muzzle_flash(get_parent(), p.global_position,
@@ -3063,7 +3234,8 @@ func use_weapon() -> void:
 			oil.dropper = self
 			# I — пятно крупнее; заносить и крутить масло начинает со II
 			# ступени, ниже — только замедляет (спецификация игрока 04.09).
-			oil.size_mult = 1.15 if step >= 1 else 1.0
+			# III — пятно ещё больше (×1.4, просьба 09.09).
+			oil.size_mult = 1.4 if step >= 3 else (1.15 if step >= 1 else 1.0)
 			oil.slow_only = step < 2
 			get_parent().add_child(oil)
 			oil.global_position = origin - fwd * 3.0 + Vector3.UP * 0.12
@@ -3079,7 +3251,9 @@ func use_weapon() -> void:
 			# экрану (протокол 13).
 			w.lag = net_shot_lag()
 			# Ступени: I — сбитое управление дольше, II — волна быстрее.
-			w.stun_time = ScrambleWave.SCRAMBLE_TIME * (1.15 if step >= 1 else 1.0)
+			# III — ещё на 1 с дольше (просьба 09.09).
+			w.stun_time = ScrambleWave.SCRAMBLE_TIME * (1.15 if step >= 1 else 1.0) \
+					+ (1.0 if step >= 3 else 0.0)
 			w.speed_mult = 1.3 if step >= 2 else 1.0
 			get_parent().add_child(w)
 			w.global_position = muzzle_at(origin, fwd)
@@ -3141,6 +3315,7 @@ func _use_magnet() -> void:
 	const MAGNET_FAR := 8.0       # к чему сходит на дальней дистанции
 	const MAGNET_RANGE := 55.0    # дистанция, на которой спад завершён
 	const MAGNET_SPIN := 2.6      # закрутка от рывка, рад/с
+	const MAGNET_STOP_DELAY := 0.4 # III: через столько после рывка жертва встаёт
 	const MAGNET_ICON_TIME := 1.5 # сколько над жертвой висит значок магнита
 	FlashFx.spawn(get_parent(), global_position + Vector3.UP * 0.5, 3.2,
 			Color(0.8, 0.3, 1.0))
@@ -3180,9 +3355,12 @@ func _use_magnet() -> void:
 		var wear := other.magnet_wear()
 		# Ступени магнита (08.09): I — рывок сильнее на 15 %; II — жертвы
 		# теряют ВСЮ скорость (спецификация игрока 04.09).
+		# III — ОТДЁРГИВАЕТ И ОСТАНАВЛИВАЕТ (просьба 09.09): рывок к магниту
+		# в полтора раза сильнее, а через MAGNET_STOP_DELAY скорость жертвы
+		# обнуляется — её дёрнуло назад, и она встала.
 		var mstep := wstep(Weapons.MAGNET)
 		var power: float = lerpf(MAGNET_PULL, MAGNET_FAR, t) * wear \
-				* (1.15 if mstep >= 1 else 1.0)
+				* (1.5 if mstep >= 3 else (1.15 if mstep >= 1 else 1.0))
 		var spin := MAGNET_SPIN * (1.0 - t) * wear \
 				* (1.0 if randf() < 0.5 else -1.0)
 		# Впередиедущих осаживаем ДО рывка: срежь скорость после — порезался
@@ -3192,6 +3370,11 @@ func _use_magnet() -> void:
 		elif _rival_is_ahead(other):
 			other.apply_speed_cut(lerpf(0.65, 1.0, 1.0 - wear))
 		other.push_from_blast(pull_dir, power, spin, 0.12)
+		if mstep >= 3:
+			get_tree().create_timer(MAGNET_STOP_DELAY).timeout.connect(
+					func() -> void:
+						if is_instance_valid(other) and other.alive:
+							other.apply_speed_cut(0.0))
 		other.show_effect_icon(Weapons.MAGNET, MAGNET_ICON_TIME)
 		other.notify_hit_by(self, Weapons.MAGNET)
 		# Разряд над жертвой — видно, кого дёрнуло.
@@ -3374,11 +3557,12 @@ func _use_airstrike() -> void:
 	strike.track = track
 	strike.target = target
 	strike.attacker = self
-	# Ступени авиаудара (08.09, спецификация игрока 04.09): I — воронки
-	# шире; II — три ракеты с упреждением по едущим впереди; III — четыре.
+	# Ступени авиаудара (спецификация игрока 09.09): без ступеней — две
+	# ракеты; I — ЧЕТЫРЕ (и воронки шире); II — пять с упреждением по
+	# едущим впереди; III — шесть с упреждением.
 	var astep := wstep(Weapons.AIRSTRIKE)
 	strike.hit_mult = 1.15 if astep >= 1 else 1.0
-	strike.rockets = 2 + maxi(0, astep - 1)
+	strike.rockets = 3 + astep if astep >= 1 else 2
 	strike.lead = astep >= 2
 	get_parent().add_child(strike)
 	# Клиентам — точки падения (протокол 18): копия у них больше не гадает.
@@ -3810,11 +3994,15 @@ func shield_left() -> float:
 ## как посчитала его физика; марионетка живого игрока физики не имеет —
 ## судим по присланной скорости: сильный боковой снос на ходу (те же
 ## пороги, что в _physics_process) или песок за полотном, не в полёте.
+## ВАЖНО: не по эмиттерам — на выделенном сервере (VDS, «--server») их
+## нет вовсе, и первая версия (09.09 утро) возвращала false для всех:
+## «дыма у соперников по-прежнему нет». Стенд в одном процессе этого не
+## ловил — там эмиттеры были.
 func smoke_bit() -> bool:
-	if not alive or _smoke.is_empty():
+	if not alive:
 		return false
 	if net_role != NetRole.PUPPET:
-		return _smoke[0].emitting
+		return _smoking
 	if not _snap_seen or absf(_snap_vel.y) > 2.0:
 		return false
 	var hv := Vector3(_snap_vel.x, 0.0, _snap_vel.z)
@@ -3836,8 +4024,95 @@ func smoke_bit() -> bool:
 ## Дым ПРИЕХАЛ В СНИМКЕ (Main._rx_state) — марионетке на клиенте. Её
 ## _physics_process до расчёта дыма не доходит, эмиттеры ставим отсюда.
 func net_set_smoke(on: bool) -> void:
+	_smoking = on and alive
 	for p in _smoke:
-		p.emitting = on and alive
+		p.emitting = _smoking
+
+
+## Где резина чертит: полотно классической трассы (на песке следа нет, на
+## траве за трассой — тоже). Без трассы (футбол, стенды) — везде.
+func _skid_surface_ok(at: Vector3) -> bool:
+	return track == null or (track.kind != TrackBuilder.KIND_SAND
+			and track.distance_from_axis_at(at, track_offset)
+				< TrackBuilder.TRACK_HALF_WIDTH + 0.3)
+
+
+## Бит СЛЕДА ШИН для снимка (протокол 22, бит 8 второго байта; жалоба
+## 09.09 «след от шин других машин нужно тоже отображать»). Как smoke_bit:
+## бот — по своей физике (_skid_active), марионетка живого игрока на
+## сервере — по присланной скорости теми же порогами, что у своей машины
+## (снос > 6.5 м/с на ходу > 11 м/с, либо занос от масла на ходу > 6).
+func skid_bit() -> bool:
+	if not alive:
+		return false
+	if net_role != NetRole.PUPPET:
+		return _skid_active
+	if not _snap_seen or absf(_snap_vel.y) > 2.0:
+		return false
+	var hv := Vector3(_snap_vel.x, 0.0, _snap_vel.z)
+	var right := Basis(_snap_rot).x
+	right.y = 0.0
+	if right.length_squared() < 0.01:
+		return false
+	var side := absf(hv.dot(right.normalized()))
+	if not ((side > 6.5 and hv.length() > 11.0)
+			or (_slip_time > 0.0 and hv.length() > 6.0)):
+		return false
+	return _skid_surface_ok(_snap_pos)
+
+
+## След шин ПРИЕХАЛ В СНИМКЕ — марионетке на клиенте. Ленты тянет
+## _animate_wheels по этому признаку, как у своей машины.
+func net_set_skid(on: bool) -> void:
+	_skid_active = on and alive
+
+
+## Искры о стену у МАРИОНЕТКИ (клиент, жалоба 09.09 «искр от соперников
+## нет»): её _wall_slide не идёт, трение о борт судим по положению тем же
+## аналитическим правилом, что у своей машины (кузов дотянулся до грани
+## ограждения, ниже кромки, на ходу). Косметика локальная — в снимке
+## ничего нового не едет.
+func _puppet_wall_sparks(delta: float) -> void:
+	_wall_spark_time -= delta
+	if _wall_spark_time > 0.0 or not alive or not _snap_seen:
+		return
+	if track == null or not track.has_walls:
+		return
+	var h := Vector3(_snap_vel.x, 0.0, _snap_vel.z)
+	var hspeed := h.length()
+	if hspeed < 3.0:
+		return
+	var curve: Curve3D = track._curve
+	var off := track_offset
+	var axis_pos := curve.sample_baked(off)
+	if global_position.y - 0.3 > axis_pos.y + TrackBuilder.WALL_HEIGHT:
+		return
+	var n := global_position - axis_pos
+	n.y = 0.0
+	var dist := n.length()
+	if dist < 0.01:
+		return
+	n /= dist
+	var reach := 0.0
+	var fwd := -global_transform.basis.z
+	fwd.y = 0.0
+	if fwd.length_squared() > 1e-6:
+		reach += 1.5 * absf(fwd.normalized().dot(n))
+	var right_h := global_transform.basis.x
+	right_h.y = 0.0
+	if right_h.length_squared() > 1e-6:
+		reach += 0.85 * absf(right_h.normalized().dot(n))
+	var wall_face := track.half_width_at_offset(off) \
+			- TrackBuilder.WALL_THICKNESS * 0.5
+	# Допуск шире, чем у хозяина (−0.05): положение приезжает с шагом
+	# буфера, кузов у грани «дышит» на десятки сантиметров.
+	if dist + reach < wall_face - 0.2 or dist > wall_face + 0.3:
+		return
+	_wall_spark_time = WALL_SPARK_PERIOD
+	var at := axis_pos + n * wall_face
+	at.y = global_position.y + 0.25
+	SparksFx.spawn(get_parent(), at, hspeed * 0.35,
+			(-n + Vector3.UP * 0.7).normalized())
 
 
 ## Байт снимка (протокол 21): уровень в старших двух битах, остаток в
@@ -3889,9 +4164,15 @@ func _shield_touch(other: Car) -> bool:
 	return false
 
 
-## Сервер, держатель щита — марионетка (машина живого игрока): её
-## _bounce_off_cars не идёт, касания меряем капсулами, как рикошет о
-## марионетку (см. _bounce_off_cars).
+## Касание СФЕРЫ щита: зазор между осями кузовов (см. _capsule_gap; кузова
+## соприкасаются при 1.7). Сфера радиусом 2.3 × 0.95..1.15 выступает за
+## кузов на ~1.3 м вбок — игрок «касается» именно её (жалоба 09.09), а не
+## металла: 2.4 — соперник въехал в сферу примерно на полкузова.
+const SHIELD_TOUCH_GAP := 2.4
+
+## Держатель щита II/III ищет коснувшихся сферы — единственный путь
+## удара щитом, для бота, своей машины оффлайн и марионетки живого игрока
+## на сервере (её _bounce_off_cars не идёт). Раз за тик из _tick_effects.
 func _shield_sweep() -> void:
 	if is_ghost():
 		return
@@ -3901,7 +4182,7 @@ func _shield_sweep() -> void:
 			continue
 		if absf(other.global_position.y - global_position.y) > 1.3:
 			continue
-		if _capsule_gap(other) < 1.7:
+		if _capsule_gap(other) < SHIELD_TOUCH_GAP:
 			_shield_touch(other)
 
 
