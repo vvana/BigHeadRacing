@@ -1,0 +1,26 @@
+[Unit]
+Description=Big Head Racing — веб-панель аналитики (метрики игры)
+After=network.target
+
+[Service]
+Type=simple
+# Тот же пользователь, что у игрового сервера: панель ЧИТАЕТ его файлы
+# метрик в /home/bighead/.local/share/godot/...
+User=bighead
+Group=bighead
+WorkingDirectory=/opt/bhr-metrics
+Environment=HOME=/home/bighead
+# На VDS 960 МБ: панели хватает и ста мегабайт кучи.
+Environment=NODE_OPTIONS=--max-old-space-size=96
+ExecStart=/usr/bin/node /opt/bhr-metrics/server.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+# read-only, а не yes: иначе служба не увидит файлы метрик в /home/bighead.
+ProtectHome=read-only
+ReadWritePaths=/opt/bhr-metrics
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

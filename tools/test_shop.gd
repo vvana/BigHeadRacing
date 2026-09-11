@@ -75,9 +75,21 @@ func _run() -> void:
 	_ok(gs.set_tuning("vz01", "color_engine", "grey2")
 			and not gs.set_tuning("vz01", "color_engine", "zzz"),
 			"цвет мотора: grey2 да, мусор нет")
-	_ok(not gs.try_buy_item("vz01", "sticker:1") and not gs.try_buy_item("vz01", "line")
+	_ok(not gs.try_buy_item("vz01", "sticker:1")
 			and not gs.try_buy_item("vz01", "metal:red"),
-			"наклейки, полоса и металлик советским не продаются")
+			"наклейки и металлик советским не продаются")
+	# Полоса (04.09) — исключение: продаётся ВСЕМ машинам, включая
+	# советские (у игрока на Пятёрке Спорт куплена и включена, см. ПРОГРЕСС
+	# 07→08.09 и GameState.try_buy_item). Покупаем, включаем и снимаем
+	# обратно, чтобы не менять full_id следующей проверки.
+	var money_line: int = gs.money
+	var price_line: int = gs.item_price("vz01", "line")
+	_ok(price_line > 0 and gs.try_buy_item("vz01", "line")
+			and gs.money == money_line - price_line
+			and gs.set_tuning("vz01", "line", 1)
+			and gs.full_id("vz01").contains("-l1")
+			and gs.set_tuning("vz01", "line", 0),
+			"полоса советским продаётся (%d) и включается" % price_line)
 	_ok(gs.full_id("vz01") == "vz01_green-e1-pegrey2",
 			"полный id Копейки: %s" % gs.full_id("vz01"))
 	_ok(gs.set_tuning("vz01", "color_engine", "") and gs.full_id("vz01") == "vz01_green-e1",

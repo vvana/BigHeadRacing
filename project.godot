@@ -8,8 +8,14 @@ config_version=5
 
 config/name="Пыль и Пламя"
 config/description="Аркадная изометрическая гонка в стиле Rock'n'Roll Racing"
+; Версия сборки — уезжает в метрики (Analytics.session). Держать в
+; согласии с version/name в export_presets.cfg.
+config/version="1.0.1"
 run/main_scene="res://scenes/CarSelect.tscn"
 config/features=PackedStringArray("4.3", "Forward Plus")
+; Android: «Назад» не закрывает игру — InputSetup вешает KEY_BACK на ui_cancel.
+config/quit_on_go_back=false
+config/icon="res://assets/ui/icon/icon_192.png"
 
 [autoload]
 
@@ -18,12 +24,15 @@ GameState="*res://scripts/GameState.gd"
 Net="*res://scripts/Net.gd"
 Music="*res://scripts/Music.gd"
 Social="*res://scripts/Social.gd"
+Analytics="*res://scripts/Analytics.gd"
 
 [display]
 
 window/size/viewport_width=1280
 window/size/viewport_height=720
 window/stretch/mode="canvas_items"
+; Телефон: только горизонтально (sensor_landscape — оба поворота).
+window/handheld/orientation=4
 
 [physics]
 
@@ -36,4 +45,8 @@ common/physics_interpolation=true
 
 [rendering]
 
+; Android: текстуры дополнительно импортируются в ETC2/ASTC — без этого
+; флага экспорт APK в 4.3 падает с ПУСТЫМ списком «configuration errors»
+; (пресетный texture_format/etc2_astc сам по себе не помогает).
+textures/vram_compression/import_etc2_astc=true
 anti_aliasing/quality/msaa_3d=2

@@ -23,6 +23,16 @@ const GS := preload("res://scripts/GameState.gd")
 const NetScript := preload("res://scripts/Net.gd")
 
 const NAMES_PATH := "user://names.json"
+const RATINGS_PATH := "user://ratings.json"   # uid → {name, rating, races, ts}
+const TOP_MAX := 10
+# Метрики (10.09): события игроков строками JSON в user://metrics/<дата>.jsonl.
+# Их читает веб-панель на VDS (server/metrics). Здесь только приём, проверка
+# и запись — никакой аналитики в игровом процессе.
+const METRICS_DIR := "user://metrics"
+const METRIC_EVENTS: Array[String] = ["session", "race", "soccer", "ad",
+		"buy", "level", "party"]
+const METRIC_MAX_LEN := 1200     # символов в строке события
+const METRIC_PER_MIN := 120      # событий в минуту с одного соединения
 const PARTY_MAX := 8
 const INVITE_TTL := 90.0       # секунд живёт приглашение без ответа
 const LAUNCH_TIMEOUT := 45.0   # секунд ждём место для команды, потом отказ
@@ -31,6 +41,10 @@ const LOOKUP_MAX := 16         # имён в одном запросе спис�
 const UID_MAX := 40
 
 var names := {}          # имя в нижнем регистре → {name, uid, ts}
+# Рейтинги игроков для таблицы лучших (10.09): клиент присылает свой
+# рейтинг в hello и после каждого заезда (t = "rating"); в таблицу
+# попадают только сыгравшие хотя бы один заезд.
+var ratings := {}        # uid → {name, rating, races, ts}
 var sessions := {}       # ключ соединения → {uid, name, car, status, party}
 var peer_of_uid := {}    # uid → ключ соединения (кто сейчас на связи)
 var parties := {}        # id → команда (см. шапку)
@@ -38,12 +52,15 @@ var invites := {}        # uid приглашённого → {from: uid, party:
 var outbox: Array = []   # [[ключ, сообщение], …] — транспорт отправляет
 var gate_port: int = NetScript.PORT   # порт ворот: базовый для комнат
 var persist := true      # стенды выключают запись names.json
+var metrics := true      # стенды выключают запись метрик
+var metrics_written := 0 # строк записано (для стендов и журнала)
 var _party_seq := 0
 var _time_accum := 0.0
 
 
 func _init() -> void:
 	_load_names()
+	_load_ratings()
 
 
 # ── переопределяемое стендами (время, визитки, комнаты, диск) ──
@@ -89,6 +106,29 @@ func _save_names() -> void:
 	var f := FileAccess.open(NAMES_PATH, FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(names))
+
+
+func _load_ratings() -> void:
+	if not persist or not FileAccess.file_exists(RATINGS_PATH):
+		return
+	var data: Variant = JSON.parse_string(
+			FileAccess.get_file_as_string(RATINGS_PATH))
+	if typeof(data) != TYPE_DICTIONARY:
+		return
+	for k in data:
+		var v: Variant = data[k]
+		if typeof(v) == TYPE_DICTIONARY and v.has("rating"):
+			ratings[str(k)] = {name = str(v.get("name", "")),
+					rating = int(v.rating), races = int(v.get("races", 0)),
+					ts = float(v.get("ts", 0.0))}
+
+
+func _save_ratings() -> void:
+	if not persist:
+		return
+	var f := FileAccess.open(RATINGS_PATH, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(ratings))
 
 
 # ── транспорт → логика ──
@@ -140,6 +180,12 @@ func handle(key: int, msg: Dictionary) -> void:
 					int(msg.get("size", 0)))
 		"leave":
 			_leave_party(s.uid)
+		"rating":
+			_rating(s, int(msg.get("r", -1)), int(msg.get("races", 0)))
+		"top":
+			_top(key, s)
+		"metric":
+			_metric(s, msg)
 		"ping":
 			pass
 
@@ -220,6 +266,9 @@ func _hello(key: int, s: Dictionary, msg: Dictionary) -> void:
 		else:
 			reason = "taken"
 	s.name = want if ok else ""
+	# Рейтинг для таблицы лучших (10.09) — если клиент его прислал.
+	if msg.has("rating"):
+		_rating(s, int(msg.get("rating", -1)), int(msg.get("races", 0)))
 	# Команда по uid могла пережить обрыв? Нет: обрыв = выход (см.
 	# on_disconnect). Но сессия могла быть подменена (второй запуск) —
 	# членство переносим на новую.
@@ -227,6 +276,12 @@ func _hello(key: int, s: Dictionary, msg: Dictionary) -> void:
 		if parties[pid].members.has(uid):
 			s.party = pid
 	_send(key, {t = "welcome", ok = ok, name = s.name, reason = reason})
+	# Метрика входа пишется САМИМ сервером (10.09): «сколько игроков
+	# заходит» считается и для сборок без autoload Analytics.
+	if metrics and s.uid != "":
+		_write_metric(JSON.stringify({ts = _now(), cts = 0, uid = str(s.uid),
+				name = str(s.name), e = "hello",
+				d = {car = str(s.car), named = ok}}))
 	_broadcast_party(s.party)
 
 
@@ -238,6 +293,63 @@ func _register(n: String, uid: String) -> void:
 			names.erase(old)
 	names[k] = {name = n, uid = uid, ts = _now()}
 	_save_names()
+	# Сменил имя — в таблице лучших он под новым.
+	if ratings.has(uid) and str(ratings[uid].name) != n:
+		ratings[uid].name = n
+		_save_ratings()
+
+
+# ── рейтинг и таблица лучших (10.09) ──
+
+## Клиент прислал свой рейтинг и число заездов. Без подтверждённого или
+## зарегистрированного имени запись не ведём (безымянных в таблице нет).
+func _rating(s: Dictionary, r: int, races: int) -> void:
+	if s.uid == "" or r < 0:
+		return
+	var n: String = s.name if s.name != "" else name_of(s.uid)
+	if n == "":
+		return
+	ratings[s.uid] = {name = n, rating = clampi(r, 0, 999999),
+			races = maxi(0, races), ts = _now()}
+	_save_ratings()
+
+
+## Все сыгравшие по убыванию рейтинга (равный — у кого больше заездов,
+## потом по имени). Элемент: {uid, name, rating, races, online}.
+func top_list() -> Array:
+	var items: Array = []
+	for uid: String in ratings:
+		var rec: Dictionary = ratings[uid]
+		if int(rec.races) <= 0:
+			continue
+		items.append({uid = uid, name = str(rec.name), rating = int(rec.rating),
+				races = int(rec.races), online = peer_of_uid.has(uid)})
+	items.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if int(a.rating) != int(b.rating):
+			return int(a.rating) > int(b.rating)
+		if int(a.races) != int(b.races):
+			return int(a.races) > int(b.races)
+		return str(a.name).to_lower() < str(b.name).to_lower())
+	return items
+
+
+## Ответ на "top": первые TOP_MAX (без чужих uid, со своей пометкой me),
+## rank — место спрашивающего (0 — его в таблице нет), total — всего
+## игроков в таблице.
+func _top(key: int, s: Dictionary) -> void:
+	var all := top_list()
+	var rank := 0
+	for i in all.size():
+		if str(all[i].uid) == s.uid:
+			rank = i + 1
+	var items: Array = []
+	for i in mini(all.size(), TOP_MAX):
+		var it: Dictionary = (all[i] as Dictionary).duplicate()
+		it.me = str(it.uid) == s.uid
+		it.erase("uid")
+		items.append(it)
+	_send(key, {t = "top_result", items = items, rank = rank,
+			total = all.size()})
 
 
 func _claim(key: int, s: Dictionary, raw: String) -> void:
@@ -588,3 +700,56 @@ func _broadcast_party(pid: String) -> void:
 
 func _send(key: int, msg: Dictionary) -> void:
 	outbox.append([key, msg])
+
+
+# ── метрики (10.09) ──
+
+## Событие от игрока: проверяем имя события, размер и частоту, дописываем
+## строкой в файл суток. Ошибок клиенту не шлём — метрики не должны мешать
+## игре; отброшенное просто теряется.
+func _metric(s: Dictionary, msg: Dictionary) -> void:
+	if not metrics or s.uid == "":
+		return
+	var e := str(msg.get("e", ""))
+	if not METRIC_EVENTS.has(e):
+		return
+	var d: Variant = msg.get("d", {})
+	if typeof(d) != TYPE_DICTIONARY:
+		return
+	var now := _now()
+	var line := JSON.stringify({
+		ts = now,                                  # время СЕРВЕРА (главное)
+		cts = int(msg.get("ts", 0)),               # время игрока (для сверки)
+		uid = str(s.uid),
+		name = str(s.name) if s.name != "" else name_of(str(s.uid)),
+		e = e,
+		d = d,
+	})
+	# Длину проверяем ДО счётчика частоты: мусорная строка не должна
+	# съедать минутную квоту настоящих событий.
+	if line.length() > METRIC_MAX_LEN:
+		return
+	# Частота: не больше METRIC_PER_MIN событий в минуту с соединения.
+	if now - float(s.get("m_min", 0.0)) >= 60.0:
+		s["m_min"] = now
+		s["m_cnt"] = 0
+	if int(s.get("m_cnt", 0)) >= METRIC_PER_MIN:
+		return
+	s["m_cnt"] = int(s.get("m_cnt", 0)) + 1
+	_write_metric(line)
+
+
+## Дописать строку в файл суток (переопределяется стендами).
+func _write_metric(line: String) -> void:
+	DirAccess.make_dir_recursive_absolute(METRICS_DIR)
+	var path := "%s/%s.jsonl" % [METRICS_DIR,
+			Time.get_date_string_from_unix_time(int(_now()))]
+	var f := FileAccess.open(path, FileAccess.READ_WRITE) \
+			if FileAccess.file_exists(path) \
+			else FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return
+	f.seek_end()
+	f.store_line(line)
+	f.close()
+	metrics_written += 1

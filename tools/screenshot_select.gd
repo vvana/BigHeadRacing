@@ -3,7 +3,9 @@ extends Node3D
 ## (carselect.png); ключ `--board` — открыта доска «АВТОПАРК», машина
 ## слева (carselect_board.png); `--shop` — раскрыто меню кнопки
 ## «МАГАЗИН» (carselect_shop.png); `--bottom` — открытую панель перед
-## снимком прокрутить донизу (шапка с «ЗАКРЫТЬ» обязана остаться). Запуск С ОКНОМ:
+## снимком прокрутить донизу (шапка с «ЗАКРЫТЬ» обязана остаться);
+## `--offline` (10.09) — прикинуться устройством без сети (Net.debug_offline):
+## в гараже обязана появиться плашка «СЕТИ НЕТ · ЗАЕЗД С БОТАМИ». Запуск С ОКНОМ:
 ## godot --path . res://tools/ScreenshotSelect.tscn -- <папка_вывода> [--board]
 
 var _frame := 0
@@ -20,6 +22,8 @@ func _ready() -> void:
 	# подменю (как в ShotTuning) — имя задаём в памяти, профиль не трогаем.
 	if GameState.player_name == "":
 		GameState.player_name = "Стенд"
+	# Плашку «СЕТИ НЕТ» иначе не снять: у машины разработчика сеть есть.
+	Net.debug_offline = OS.get_cmdline_user_args().has("--offline")
 	_select = (load("res://scenes/CarSelect.tscn") as PackedScene).instantiate()
 	add_child(_select)
 
@@ -86,6 +90,8 @@ func _physics_process(_d: float) -> void:
 			name = "carselect_stats.png"
 		if shop:
 			name = "carselect_shop.png"
+		if OS.get_cmdline_user_args().has("--offline"):
+			name = "carselect_offline.png"
 		img.save_png(_out + "/" + name)
 		print("SHOT " + name)
 		get_tree().quit(0)

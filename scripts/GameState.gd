@@ -6,6 +6,13 @@ extends Node
 ## советского пака, просто база для машин без скинов) — он же уезжает в
 ## сетевой hello и определяет визуал у соперников. Выбор и цвета хранятся
 ## в профиле (select_car/set_car_color).
+## Сигналы для МЕТРИК (10.09, autoload Analytics). GameState про Analytics
+## не знает нарочно: стенды-скрипты (--script) идут без автозагрузок, и
+## прямая ссылка на них валила бы их компиляцию.
+signal purchased(kind: String, key: String, price: int)   # "car"/"item"/"weapon"/"pack"
+signal level_up(level: int)
+signal ad_rewarded(coins: int)
+
 var selected_car_id := "vz01_red"
 
 # ---- Парк машин: стартовые, открытие за уровни, покупка за монеты ----
@@ -520,6 +527,8 @@ func add_xp(amount: int) -> void:
 	for lv in range(before + 1, after + 1):
 		money += LEVEL_MONEY * lv
 	_save_profile()
+	for lv in range(before + 1, after + 1):
+		level_up.emit(lv)
 
 
 ## Начислить монеты и сразу сохранить профиль.
@@ -561,10 +570,12 @@ func try_buy_car(base: String) -> bool:
 		return false
 	if level_info().x < car_unlock_level(base):
 		return false
-	if not try_spend(car_price(base)):
+	var price := car_price(base)
+	if not try_spend(price):
 		return false
 	owned_cars.append(base)
 	_save_profile()
+	purchased.emit("car", base, price)
 	return true
 
 
@@ -717,12 +728,14 @@ func try_buy_item(base: String, key: String) -> bool:
 		return false
 	if level_info().x < item_unlock_level(base, key):
 		return false
-	if not try_spend(item_price(base, key)):
+	var iprice := item_price(base, key)
+	if not try_spend(iprice):
 		return false
 	if not car_items.has(base):
 		car_items[base] = {}
 	car_items[base][key] = true
 	_save_profile()
+	purchased.emit("item", "%s:%s" % [base, key], iprice)
 	return true
 
 
@@ -768,10 +781,12 @@ func try_buy_weapon_step(kind: int) -> bool:
 		return false
 	if level_info().x < Weapons.step_level(kind, s):
 		return false
-	if not try_spend(Weapons.step_price(kind, s)):
+	var wprice := Weapons.step_price(kind, s)
+	if not try_spend(wprice):
 		return false
 	weapon_upgrades[kind] = s
 	_save_profile()
+	purchased.emit("weapon", "%s:%d" % [Weapons.display_name(kind), s], wprice)
 	return true
 
 
@@ -850,12 +865,14 @@ func pack_price(base: String, pack: String) -> int:
 func try_buy_pack(base: String, pack: String) -> bool:
 	if not car_owned(base) or not PACK_PCT.has(pack) or pack_owned(base, pack):
 		return false
-	if not try_spend(pack_price(base, pack)):
+	var pprice := pack_price(base, pack)
+	if not try_spend(pprice):
 		return false
 	if not car_packs.has(base):
 		car_packs[base] = {}
 	car_packs[base][pack] = true
 	_save_profile()
+	purchased.emit("pack", "%s:%s" % [base, pack], pprice)
 	return true
 
 
@@ -989,10 +1006,12 @@ func register_ad() -> int:
 	_ads_in_pair += 1
 	if _ads_in_pair < AD_PAIR_SIZE:
 		_save_profile()
+		ad_rewarded.emit(0)   # первый ролик пары: досмотрен, награды нет
 		return 0
 	_ad_pair_done_at = Time.get_unix_time_from_system()
 	money += AD_PAIR_REWARD
 	_save_profile()
+	ad_rewarded.emit(AD_PAIR_REWARD)
 	return AD_PAIR_REWARD
 
 

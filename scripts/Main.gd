@@ -131,10 +131,12 @@ var _mate_markers := {}
 # Сервер: команды друзей в этом лобби. Слот → id команды (из hello),
 # id → ожидаемая численность и секунда первого прибытия. Пока команда не
 # в сборе (и место ещё есть), старт ждёт — не дольше PARTY_GRACE.
+# 60 с (было 20, 10.09): игрок просил не начинать без всех членов команды,
+# а первый вход с телефона (компиляция шейдеров, 8 машин) в 20 с не влезал.
 var _party_of_slot := {}
 var _party_size := {}
 var _party_first := {}
-const PARTY_GRACE := 20.0
+const PARTY_GRACE := 60.0
 
 var _net_started := false           # сервер: гонка идёт (иначе лобби)
 # Комната-процесс (Net.is_room), простоявшая пустой без гонки столько
@@ -310,6 +312,7 @@ var _weapon_icon: TextureRect   # значок оружия (пустой сло
 var _weapon_name: Label
 var _slot_empty_tex: Texture2D  # гекс пустого слота (нарезан из референса)
 var _last_weapon := -2          # чтобы не перезагружать иконку каждый кадр
+var _touch: TouchControls       # экранные кнопки телефона (null на столе)
 var _warn_panel: Control
 var _warn_label: Label
 var _minimap: Minimap           # мини-карта в правом верхнем углу
@@ -414,6 +417,18 @@ func _ready() -> void:
 	else:
 		Social.report_status("race")
 		_countdown()
+		# Оффлайн-заезд игрок не выбирал — гараж свёл его сюда сам, не
+		# добившись сервера. Говорим об этом прямо (просьба 10.09), иначе
+		# заезд с ботами выглядит как сетевой, где «все тормозят». Причину
+		# гараж кладёт в Net.offline_reason; пусто (стенд, прямой запуск
+		# сцены) — молчим.
+		var why := Net.offline_reason
+		Net.offline_reason = ""
+		if _announcer and why != "":
+			if why == "no_net":
+				_announcer.big("СЕТИ НЕТ", "заезд с ботами", "yellow")
+			else:
+				_announcer.big("НЕТ СВЯЗИ С СЕРВЕРОМ", "заезд с ботами", "yellow")
 
 
 ## Стартовая решётка: 2 колонны. Оффлайн — игрок впереди слева и 3 бота.
@@ -487,14 +502,21 @@ func _spawn_cars() -> void:
 
 	_roster = ids
 	# Имена. Клиент ждёт их с сервера (_rx_names) — до тех пор пустые;
-	# сервер и оффлайн раздают ботам ники сразу (имена живых игроков сервер
+	# сервер и оффлайн раздают их ботам сразу (имена живых игроков сервер
 	# перепишет из hello). Оффлайн нулевой слот — сам игрок.
+	# СЕТЕВОЙ заезд — человеческие ники (01.09: бот занимает слот живого
+	# игрока и не должен от него отличаться). ОФФЛАЙН (сети нет, сервер не
+	# ответил) — честное «Бот N»: подменять некого, и игрок должен видеть,
+	# что едет один (просьба 10.09).
 	_names.resize(_cars.size())
 	if not Net.is_client():
-		var nicks := PlayerNames.pick(_cars.size())
-		for i in _cars.size():
-			_names[i] = nicks[i]
-		if not Net.is_online():
+		if Net.is_online():
+			var nicks := PlayerNames.pick(_cars.size())
+			for i in _cars.size():
+				_names[i] = nicks[i]
+		else:
+			for i in _cars.size():
+				_names[i] = PlayerNames.bot_label(i)
 			_names[0] = GameState.display_name()
 	_car = _cars[0]
 	if Net.is_client():
@@ -858,6 +880,8 @@ func _process(delta: float) -> void:
 			else:
 				_weapon_icon.texture = _slot_empty_tex
 				_weapon_name.text = "возьми бокс"
+			if _touch:
+				_touch.set_bonus_icon(Weapons.icon(shown) if shown >= 0 else null)
 		var lap := clampi(_laps_done[_my_index()] + 1, 1, LAPS)
 		if lap != _hud_lap:
 			_hud_lap = lap
@@ -872,6 +896,9 @@ func _process(delta: float) -> void:
 	if Net.is_server():
 		# У сервера нет ни ввода, ни HUD; автовозврат машин — в _server_tick.
 		return
+
+	if _touch:
+		_touch.show_tap(_touch_hint())
 
 	# Ввод опрашиваем напрямую (как езду в Car), а не через события —
 	# надёжнее: событие может не дойти до _unhandled_input.
@@ -908,6 +935,17 @@ func _process(delta: float) -> void:
 	if Input.is_action_just_pressed("respawn"):
 		_respawn_car(0)
 	_check_recovery(delta)
+
+
+## Что писать на кнопке-подсказке экранного управления (телефон): в лобби
+## «СТАРТ» (= Пробел), после финиша «В ГАРАЖ» (= Enter), в заезде — ничего,
+## тогда видны кнопки езды.
+func _touch_hint() -> String:
+	if _lobby != null and _lobby.visible:
+		return "СТАРТ"
+	if _finished or _my_finished:
+		return "В ГАРАЖ"
+	return ""
 
 
 ## Индекс МОЕЙ машины: оффлайн это всегда 0, по сети — выданный слот.
@@ -1013,6 +1051,16 @@ func _show_finish(place: int) -> void:
 	var rdelta: int = GameState.record_race(place, _cars.size(), _my_kills,
 			_my_deaths, CarModelLibrary.base_id(GameState.selected_car_id),
 			Net.is_online())
+	Social.report_rating()   # таблица лучших на сервере друзей (10.09)
+	# Метрики (10.09): что за заезд это был. Живых игроков на клиенте
+	# считаем по своей маске слотов (_taken_count), вне сети — один.
+	Analytics.race(place, _cars.size(),
+			maxi(1, _taken_count()) if Net.is_online() else 1,
+			Net.is_online(),
+			CarModelLibrary.base_id(GameState.selected_car_id),
+			_my_kills, _my_deaths, _track_kind, int(_race_time * 1000.0),
+			_car.weapon_uses if _car != null else {},
+			Net.party_id != "")
 	_finish_label.text = "ФИНИШ!  МЕСТО %d ИЗ %d" % [place, _cars.size()]
 	if _finish_xp_label:
 		_finish_xp_label.text = ("+%d ОПЫТА  ·  +%d МОНЕТ  ·  РЕЙТИНГ %+d\n"
@@ -1766,6 +1814,15 @@ func _setup_hud() -> void:
 	help.modulate = Color(1, 1, 1, 0.65)
 	canvas.add_child(help)
 
+	# Телефон: экранные кнопки (газ/тормоз слева, руль и бонус справа),
+	# ✕ — левее мини-карты (её offset_left −244); строка клавиш ни к чему.
+	if TouchControls.wanted():
+		_touch = TouchControls.new(244.0)
+		_touch.name = "Touch"
+		add_child(_touch)
+		help.visible = false
+		finish_hint.text = "В ГАРАЖ — КНОПКА ВНИЗУ"
+
 	# Всплывающие анонсы (двойные убийства, последний круг…) — поверх
 	# всего HUD, но ПОД сетевым лобби.
 	_announcer = Announcer.new()
@@ -1992,10 +2049,14 @@ Esc — в гараж")
 ## перестаёт блокировать старт — иначе он держал бы всех вечно.
 func _all_loaded() -> bool:
 	var now := Time.get_ticks_msec() / 1000.0
+	# Команда друзей ещё не в сборе — молчащий пир, скорее всего, её член
+	# с медленным телефоном (первый вход — компиляция шейдеров): ждём его
+	# дольше, столько же, сколько саму команду (PARTY_GRACE).
+	var grace := PARTY_GRACE if _party_missing() else HELLO_GRACE
 	for slot: int in Net.slot_of_peer.values():
 		if _hello_done.has(slot):
 			continue
-		if now - float(_join_time.get(slot, now)) < HELLO_GRACE:
+		if now - float(_join_time.get(slot, now)) < grace:
 			return false
 	return true
 
@@ -2040,14 +2101,29 @@ func _maybe_start() -> void:
 func _party_waiting() -> bool:
 	var now := Time.get_ticks_msec() / 1000.0
 	for pid: String in _party_size:
-		var seen := 0
-		for sl: int in _party_of_slot:
-			if _party_of_slot[sl] == pid and Net.slot_of_peer.values().has(sl):
-				seen += 1
-		if seen < int(_party_size[pid]) \
+		if _party_seen(pid) < int(_party_size[pid]) \
 				and now - float(_party_first.get(pid, now)) < PARTY_GRACE:
 			return true
 	return false
+
+
+## Сервер: есть ли команда, от которой hello пришёл не от всех (без учёта
+## срока) — по ней _all_loaded ждёт молчащих пиров дольше.
+func _party_missing() -> bool:
+	for pid: String in _party_size:
+		if _party_seen(pid) < int(_party_size[pid]):
+			return true
+	return false
+
+
+## Сервер: сколько членов команды pid сейчас в лобби (прислали hello и
+## всё ещё подключены).
+func _party_seen(pid: String) -> int:
+	var seen := 0
+	for sl: int in _party_of_slot:
+		if _party_of_slot[sl] == pid and Net.slot_of_peer.values().has(sl):
+			seen += 1
+	return seen
 
 
 func _start_net_race() -> void:
@@ -2218,7 +2294,15 @@ func _server_tick(delta: float) -> void:
 		return
 	_snap_accum = 0.0
 	var packed := _pack_state()
-	_rx_state.rpc(packed[0], packed[1], packed[2])
+	# Снимки — только тем, чья сцена уже стоит (прислали hello). Пир,
+	# который подключился и ещё строит сцену, на каждый снимок (SNAP_HZ в
+	# секунду) печатал у себя ошибку «Node not found: Main» с трассой —
+	# у стенда (10.09) сцена третьего члена команды из-за этого строилась
+	# 40 с вместо 1.5, он пропускал HELLO_GRACE и попадал в уже идущий
+	# заезд под ботовским ником; на телефоне то же, только медленнее.
+	for pid: int in Net.slot_of_peer:
+		if _hello_done.has(Net.slot_of_peer[pid]):
+			_rx_state.rpc_id(pid, packed[0], packed[1], packed[2])
 
 
 ## Ожидание остальных игроков. Истекло — стартуем «по старинке»: свободные
@@ -2500,6 +2584,8 @@ func _rx_hello(car_id: String, proto: int, want_size := 4,
 			_party_first[pid] = Time.get_ticks_msec() / 1000.0
 		_party_size[pid] = clampi(party_size, 1, Net.race_size)
 		_loading_told = false
+		print("[net] hello: слот %d, команда %s (%d чел.), t=%.1f"
+				% [slot, pid, party_size, Time.get_ticks_msec() / 1000.0])
 	# Игроку ЗДЕСЬ ехать негде: слота нет (гость) или он опоздал к идущему
 	# заезду. Раньше гость получал отказ, а опоздавший ждал конца чужой
 	# гонки — теперь обоих отправляем в параллельный заезд-комнату
@@ -3691,12 +3777,7 @@ func _spawn_weapon_visual(kind: int, pos: Vector3, dir: Vector3,
 	match kind:
 		Weapons.MINE:
 			var right := Vector3(-dir.z, 0.0, dir.x)
-			var offsets: Array[float] = [0.0]
-			if step >= 3:
-				offsets = [-1.0, 0.0, 1.0]
-			elif step >= 2:
-				offsets = [-0.8, 0.8]
-			for sx: float in offsets:
+			for sx: float in Weapons.mine_offsets(step):
 				var m := Mine.new()
 				m.inert = true
 				add_child(m)

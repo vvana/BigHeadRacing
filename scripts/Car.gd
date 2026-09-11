@@ -76,6 +76,9 @@ const WHEEL_POINTS: Array[Vector3] = [
 
 # Состояние боя/гонки.
 var weapon := -1                # текущее оружие (Weapons.*), -1 — пусто
+## Сколько раз эта машина применила каждый вид за заезд (вид → счёт).
+## Только учёт для метрик (Main отправляет на финише) — на бой не влияет.
+var weapon_uses := {}
 ## Ступени оружия ХОЗЯИНА машины (магазин, 08.09): байт на вид, см.
 ## Weapons.STEPS. Игроку ставит Main из GameState.weapon_steps() (оффлайн и
 ## своей машине на клиенте), на сервере — из hello; у ботов пусто (нули).
@@ -3181,18 +3184,16 @@ func use_weapon() -> void:
 	var fwd := true_forward()
 	# Ступень этого вида у хозяина машины (магазин, 08.09) — см. Weapons.
 	var step := wstep(kind)
+	weapon_uses[kind] = int(weapon_uses.get(kind, 0)) + 1
 	match kind:
 		Weapons.MINE:
 			# II ступень — ДВЕ мины, под левое и правое колесо (спецификация
 			# игрока 04.09); I — взрыв шире на 15 %.
 			var right := Vector3(-fwd.z, 0.0, fwd.x)
-			var offsets: Array[float] = [0.0]
-			# III — ТРИ мины в ряд (просьба 09.09).
-			if step >= 3:
-				offsets = [-1.0, 0.0, 1.0]
-			elif step >= 2:
-				offsets = [-0.8, 0.8]
-			for sx: float in offsets:
+			# Смещения по ступеням — общая таблица Weapons.mine_offsets (та же
+			# у клиентской копии в Main._spawn_weapon_visual): III — три мины
+			# в ряд, пошире (просьба 10.09).
+			for sx: float in Weapons.mine_offsets(step):
 				var m := Mine.new()
 				m.dropper = self
 				m.radius_mult = 1.15 if step >= 1 else 1.0

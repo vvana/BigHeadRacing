@@ -14,15 +14,21 @@ var _checks := 0
 
 
 ## Сервер с подменёнными визитками, временем и «подъёмом комнат».
+## Метрики не пишутся на диск, а копятся в lines (см. проверки внизу).
 class Fake:
 	extends SocialServer
 	var cards: Array = []
 	var now := 1000.0
 	var spawned := 0
 	var can_spawn := true
+	var lines: Array = []
 
 	func _init() -> void:
 		persist = false
+
+	func _write_metric(line: String) -> void:
+		lines.append(JSON.parse_string(line))
+		metrics_written += 1
 
 	func _now() -> float:
 		return now
@@ -350,3 +356,91 @@ func _run() -> void:
 	srv.handle(20, {t = "invite", name = "АНДРЕЙ"})
 	_ok(not _take(srv, 20, "error").is_empty(), "без имени приглашать нельзя")
 	_ok(SocialServer.clean_uid("ab-12 c!") == "ab12c", "clean_uid чистит мусор")
+
+	# --- Таблица лучших (10.09): рейтинг из hello и из "rating", только
+	# сыгравшие, порядок по рейтингу, место спрашивающего, без чужих uid.
+	var top_srv := Fake.new()
+	top_srv.on_connect(1)
+	top_srv.handle(1, {t = "hello", uid = "u1", name = "Первый", rating = 1040, races = 5})
+	top_srv.on_connect(2)
+	top_srv.handle(2, {t = "hello", uid = "u2", name = "Новичок", rating = 1000, races = 0})
+	top_srv.on_connect(3)
+	top_srv.handle(3, {t = "hello", uid = "u3", name = "Третий", rating = 1020, races = 2})
+	top_srv.on_connect(4)
+	top_srv.handle(4, {t = "hello", uid = "u4", name = "Первый"})   # имя занято — без имени
+	top_srv.handle(4, {t = "rating", r = 5000, races = 9})
+	top_srv.handle(3, {t = "rating", r = 1060, races = 3})
+	top_srv.handle(2, {t = "top"})
+	var tr := _last(top_srv, 2, "top_result")
+	var titems: Array = tr.get("items", [])
+	_ok(titems.size() == 2, "в таблице только сыгравшие (%d)" % titems.size())
+	_ok(titems.size() == 2 and str(titems[0].name) == "Третий"
+			and int(titems[0].rating) == 1060 and int(titems[0].races) == 3,
+			"rating обновил запись, лидер — Третий 1060")
+	_ok(titems.size() == 2 and str(titems[1].name) == "Первый" and bool(titems[1].online),
+			"второй — Первый, в сети")
+	_ok(titems.size() == 2 and not titems[0].has("uid") and not bool(titems[0].me),
+			"чужих uid в ответе нет, me = false")
+	_ok(int(tr.get("rank", -1)) == 0 and int(tr.get("total", -1)) == 2,
+			"не сыгравший: rank 0, total 2")
+	_ok(not top_srv.ratings.has("u4"), "безымянный (имя занято) в таблицу не попал")
+	top_srv.handle(1, {t = "top"})
+	tr = _last(top_srv, 1, "top_result")
+	titems = tr.get("items", [])
+	_ok(int(tr.get("rank", 0)) == 2 and titems.size() == 2 and bool(titems[1].me),
+			"спрашивающий видит своё место 2 и пометку me")
+	top_srv.handle(1, {t = "claim", name = "Переименованный"})
+	_take(top_srv, 1)
+	_ok(str(top_srv.ratings["u1"].name) == "Переименованный", "смена имени — в таблице новое")
+	# Одинаковый рейтинг — выше тот, у кого больше заездов.
+	top_srv.handle(1, {t = "rating", r = 1060, races = 10})
+	_ok(str(top_srv.top_list()[0].name) == "Переименованный",
+			"равный рейтинг: больше заездов — выше")
+	# Больше TOP_MAX игроков — в ответе ровно TOP_MAX.
+	for i in 15:
+		var k := 100 + i
+		top_srv.on_connect(k)
+		top_srv.handle(k, {t = "hello", uid = "m%d" % i, name = "Масса%d" % i,
+				rating = 900 + i, races = 1})
+	top_srv.handle(2, {t = "top"})
+	tr = _last(top_srv, 2, "top_result")
+	_ok((tr.get("items", []) as Array).size() == SocialServer.TOP_MAX
+			and int(tr.get("total", 0)) == 17, "в ответе TOP_MAX строк, total 17")
+
+	# --- Метрики (10.09): вход пишет сам сервер, события клиента проходят
+	# проверку имени, размера и частоты.
+	var m := Fake.new()
+	m.on_connect(1)
+	m.handle(1, {t = "hello", uid = "mu1", name = "Метрик", car = "vz01_red"})
+	_ok(m.lines.size() == 1 and str(m.lines[0].e) == "hello"
+			and str(m.lines[0].name) == "Метрик", "вход игрока пишется сервером")
+	m.handle(1, {t = "metric", e = "race", ts = 77,
+			d = {place = 1, size = 4, car = "vz21"}})
+	_ok(m.lines.size() == 2 and str(m.lines[1].e) == "race"
+			and int(m.lines[1].d.place) == 1 and float(m.lines[1].ts) == m.now
+			and int(m.lines[1].cts) == 77,
+			"событие race записано, время сервера и клиента рядом")
+	m.handle(1, {t = "metric", e = "ерунда", d = {}})
+	m.handle(1, {t = "metric", e = "race", d = "не словарь"})
+	_ok(m.lines.size() == 2, "незнакомое событие и не-словарь отброшены")
+	var big := ""
+	for i in 400:
+		big += "хвост"
+	m.handle(1, {t = "metric", e = "race", d = {junk = big}})
+	_ok(m.lines.size() == 2, "слишком длинное событие отброшено")
+	for i in SocialServer.METRIC_PER_MIN + 20:
+		m.handle(1, {t = "metric", e = "ad", d = {coins = 500}})
+	_ok(m.lines.size() == 1 + SocialServer.METRIC_PER_MIN,
+			"частота ограничена METRIC_PER_MIN (%d строк)" % m.lines.size())
+	m.now += 61.0
+	m.handle(1, {t = "metric", e = "level", d = {level = 5}})
+	_ok(m.lines.size() == 2 + SocialServer.METRIC_PER_MIN,
+			"через минуту счётчик частоты обнулился")
+	m.on_connect(2)
+	m.handle(2, {t = "metric", e = "race", d = {place = 2}})
+	_ok(m.lines.size() == 2 + SocialServer.METRIC_PER_MIN,
+			"метрика без hello (без uid) не пишется")
+	m.metrics = false
+	m.handle(1, {t = "metric", e = "race", d = {place = 3}})
+	_ok(m.lines.size() == 2 + SocialServer.METRIC_PER_MIN,
+			"metrics = false — запись выключена")

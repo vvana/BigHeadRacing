@@ -2,8 +2,11 @@ extends Node3D
 ## Служебные снимки HUD: грузит Main и снимает кадры интерфейса —
 ## отсчёт «3», момент «GO!», обычная езда (панели, слот оружия),
 ## предупреждение и финишный баннер (включаются принудительно).
+## Ключ `--offline` (10.09) — прикинуться заездом, в который гараж свёл сам,
+## не добившись сервера: в начале заезда обязан вылететь анонс «СЕТИ НЕТ ·
+## заезд с ботами» (hud_offline.png).
 ## Запуск С ОКНОМ (headless не рендерит):
-## godot --path . res://tools/ScreenshotHud.tscn -- <папка_вывода>
+## godot --path . res://tools/ScreenshotHud.tscn -- <папка_вывода> [--offline]
 
 var _main: Node3D
 var _frame := 0
@@ -15,6 +18,11 @@ func _ready() -> void:
 	if args.size() > 0:
 		_out = args[0]
 	DirAccess.make_dir_recursive_absolute(_out)
+	# Причину оффлайна обычно кладёт гараж (CarSelect._start_offline) —
+	# стенд грузит Main напрямую, поэтому ставит её сам.
+	if args.has("--offline"):
+		Net.debug_offline = true
+		Net.offline_reason = "no_net"
 	_main = (load("res://scenes/Main.tscn") as PackedScene).instantiate()
 	add_child(_main)
 	# Позже Main._process: тот каждый кадр гасит плашку предупреждения,
@@ -38,6 +46,8 @@ func _process(_d: float) -> void:
 
 func _physics_process(_d: float) -> void:
 	_frame += 1
+	if _frame == 60 and OS.get_cmdline_user_args().has("--offline"):
+		_shot("hud_offline.png")
 	match _frame:
 		20:
 			_shot("hud_count3.png")

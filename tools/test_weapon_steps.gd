@@ -108,7 +108,21 @@ func _physics_process(_d: float) -> void:
 			_free_all(Mine)
 			# III (09.09) — три мины в ряд.
 			_fire(attacker, Weapons.MINE, 3)
-			_ok["мина III: три"] = _nodes(Mine).size() == 3
+			var three := _nodes(Mine)
+			_ok["мина III: три"] = three.size() == 3
+			# 10.09: «немного подальше друг от друга» — соседние не ближе 1.6 м
+			# (было 1.0 — корпуса слипались), крайние не дальше 4.5 м.
+			if three.size() == 3:
+				var gmin := INF
+				var gmax := 0.0
+				for a in 3:
+					for b in range(a + 1, 3):
+						var g: float = (three[a] as Node3D).global_position.distance_to(
+								(three[b] as Node3D).global_position)
+						gmin = minf(gmin, g)
+						gmax = maxf(gmax, g)
+				_ok["мина III: разнесены (min %.2f, max %.2f)" % [gmin, gmax]] = \
+						gmin > 1.6 and gmax < 4.5
 			_free_all(Mine)
 			# МАСЛО III (09.09) — пятно крупнее II.
 			_fire(attacker, Weapons.OIL, 3)

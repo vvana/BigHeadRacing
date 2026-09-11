@@ -64,6 +64,7 @@ var _speed_label: Label
 var _count_label: Label
 var _end_label: Label
 var _weapon_icon: TextureRect
+var _touch: TouchControls   # экранные кнопки телефона (null на столе)
 var _weapon_name: Label
 var _slot_empty_tex: Texture2D
 var _last_weapon := -2
@@ -177,9 +178,15 @@ func _spawn_cars() -> void:
 		_stuck_time.append(0.0)
 		_escape_time.append(0.0)
 		_want_move.append(false)
-	# Имена: игрок (слот 0) — своё из профиля, боты — человеческие ники
-	# (PlayerNames): в анонсах голов бот выглядит как живой игрок.
-	_names = PlayerNames.pick(_cars.size())
+	# Имена: игрок (слот 0) — своё из профиля. Боты по сети — человеческие
+	# ники (в анонсах голов бот выглядит как живой игрок), а в оффлайне
+	# (футбол сетевым пока и не бывает) — честное «Бот N», просьба 10.09.
+	if Net.is_online():
+		_names = PlayerNames.pick(_cars.size())
+	else:
+		_names = PackedStringArray()
+		for i in _cars.size():
+			_names.append(PlayerNames.bot_label(i))
 	_names[0] = GameState.display_name()
 	_car = _cars[0]
 	if not Net.is_server():
@@ -490,6 +497,8 @@ func _finish_match() -> void:
 	GameState.add_xp(xp)
 	# Статистика (09.09): матчи, победы, голы — в гараже (StatsPanel).
 	GameState.record_soccer(signi(_score[0] - _score[1]), _player_goals)
+	Analytics.soccer(signi(_score[0] - _score[1]), _player_goals,
+			_score[0], _score[1], int((MATCH_TIME - _time_left) * 1000.0))
 	if _announcer:
 		_announcer.big(title, "опыт +%d  ·  монеты +%d" % [xp, coins], kind)
 	if _end_label:
@@ -852,10 +861,15 @@ func _process(delta: float) -> void:
 			else:
 				_weapon_icon.texture = _slot_empty_tex
 				_weapon_name.text = "лови бонус"
+			if _touch:
+				_touch.set_bonus_icon(Weapons.icon(_car.weapon)
+						if _car.weapon >= 0 else null)
 	if _timer_label:
 		var t := int(ceilf(_time_left))
 		_timer_label.text = "%d:%02d" % [t / 60, t % 60]
 
+	if _touch:
+		_touch.show_tap("В ГАРАЖ" if _state == State.OVER else "")
 	if Input.is_action_just_pressed("ui_cancel"):
 		get_tree().change_scene_to_file("res://scenes/CarSelect.tscn")
 		return
@@ -981,6 +995,14 @@ func _setup_hud() -> void:
 	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	help.position.y = -30
 	help.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	# Телефон: экранные кнопки; ✕ в самом углу (мини-карты тут нет).
+	if TouchControls.wanted():
+		_touch = TouchControls.new(0.0)
+		_touch.name = "Touch"
+		add_child(_touch)
+		help.visible = false
+		_end_label.text = "В ГАРАЖ — кнопка внизу"
 
 	_announcer = Announcer.new()
 	canvas.add_child(_announcer)

@@ -11,12 +11,14 @@ extends Node
 ## логику (имена, команды) и умеет гоняться стендом без сети. Здесь только
 ## транспорт: пакет = JSON-словарь с полем "t".
 ##
-## Клиент → сервер: hello{uid,name,car,status}, claim{name}, car{car},
-## status{s}, search{q}, invite{name}, accept, decline, ready{on,size},
-## leave. Сервер → клиент: welcome{ok,name,reason}, claim_result{ok,name,
-## reason}, search_result{q,items}, invite{from,party,count},
+## Клиент → сервер: hello{uid,name,car,status,rating,races}, claim{name},
+## car{car}, status{s}, search{q}, invite{name}, accept, decline,
+## ready{on,size}, leave, rating{r,races}, top. Сервер → клиент:
+## welcome{ok,name,reason}, claim_result{ok,name,reason},
+## search_result{q,items}, invite{from,party,count},
 ## party{id,members,me,launching}, go{port,size,party,count},
-## notice{text}, error{text}.
+## top_result{items,rank,total} (таблица лучших, 10.09), notice{text},
+## error{text}.
 
 const SOCIAL_PORT := 9990
 const CHANNELS := 2
@@ -32,6 +34,7 @@ signal invite_received(from: String, count: int)
 signal party_changed()
 signal go(port: int, size: int, party_id: String, count: int)
 signal notice(text: String)
+signal top_result(items: Array, rank: int, total: int)   # таблица лучших
 
 var server: SocialServer = null   # ворота: логика
 var _host: ENetConnection = null
@@ -46,6 +49,7 @@ var name_reason := ""             # "taken" — занято другим, "empt
 var party := {}                   # последний ростер {id, members, me, launching}
 var pending_invite := {}          # {from, party, count} — ждёт ответа
 var status := "garage"
+var last_top := {}                # последний top_result {items, rank, total}
 var _want := false                # хотим быть на связи
 var _retry := 0.0
 var _addr := ""
@@ -101,7 +105,7 @@ func go_online(addr := "", port := 0) -> void:
 	_addr = addr if addr != "" else Net.host.strip_edges()
 	_port = port if port > 0 else _port
 	_want = true
-	if _host == null and _addr != "":
+	if _host == null and _addr != "" and Net.device_online():
 		_connect_now()
 
 
@@ -113,13 +117,19 @@ func go_offline() -> void:
 func _connect_now() -> void:
 	_retry = RETRY
 	_host = ENetConnection.new()
-	if _host.create_host(1, CHANNELS) != OK:
+	var err := _host.create_host(1, CHANNELS)
+	if err != OK:
+		print("[social] не открыть UDP-сокет: %s" % error_string(err))
 		_host = null
 		return
 	_peer = _host.connect_to_host(_addr, _port, CHANNELS)
 	if _peer == null:
+		print("[social] connect_to_host %s:%d не удался" % [_addr, _port])
 		_host.destroy()
 		_host = null
+		return
+	# Печать — для разбора «не могу найти игрока» по логу (телефон, 09.09).
+	print("[social] подключаемся к %s:%d" % [_addr, _port])
 
 
 func _drop(_why: String) -> void:
@@ -139,8 +149,30 @@ func _drop(_why: String) -> void:
 
 
 func _hello() -> void:
+	var st: Dictionary = GameState.stats
 	send({t = "hello", uid = GameState.uid, name = GameState.player_name,
-			car = GameState.selected_car_id, status = status})
+			car = GameState.selected_car_id, status = status,
+			rating = GameState.rating(),
+			races = int(st.get("races", 0)) if not st.is_empty() else 0})
+
+
+## Рейтинг изменился (финиш заезда) — серверу для таблицы лучших. Не на
+## связи — ничего: рейтинг уедет в следующем hello.
+func report_rating() -> void:
+	var st: Dictionary = GameState.stats
+	send({t = "rating", r = GameState.rating(),
+			races = int(st.get("races", 0)) if not st.is_empty() else 0})
+
+
+## Запросить таблицу лучших — ответ сигналом top_result (и в last_top).
+func request_top() -> void:
+	send({t = "top"})
+
+
+## Метрика (autoload Analytics): событие e с полями d и временем игрока ts.
+## Сервер пишет её в user://metrics/<дата>.jsonl (server/metrics/README.md).
+func send_metric(e: String, d: Dictionary, ts: int) -> void:
+	send({t = "metric", e = e, d = d, ts = ts})
 
 
 func send(msg: Dictionary) -> void:
@@ -253,8 +285,12 @@ func _process(delta: float) -> void:
 	if _host == null:
 		if _want and not _is_server:
 			_retry -= delta
+			# Сети на устройстве нет — не долбимся вовсе (батарея телефона).
 			if _retry <= 0.0 and _addr != "":
-				_connect_now()
+				if Net.device_online():
+					_connect_now()
+				else:
+					_retry = RETRY
 		return
 	for _i in MAX_EVENTS:
 		var ev: Array = _host.service(0)
@@ -309,9 +345,12 @@ func _client_event(kind: int, peer: ENetPacketPeer) -> void:
 		ENetConnection.EVENT_CONNECT:
 			_peer = peer
 			connected = true
+			print("[social] на связи с %s:%d" % [_addr, _port])
 			connected_changed.emit(true)
 			_hello()
 		ENetConnection.EVENT_DISCONNECT:
+			print("[social] связь с %s:%d оборвалась (или не установилась), "
+					% [_addr, _port] + "повтор через %.0f с" % RETRY)
 			_drop("сервер закрыл соединение")
 			_retry = RETRY
 		ENetConnection.EVENT_RECEIVE:
@@ -354,5 +393,9 @@ func _on_message(msg: Dictionary) -> void:
 		"go":
 			go.emit(int(msg.get("port", 0)), int(msg.get("size", 4)),
 					str(msg.get("party", "")), int(msg.get("count", 1)))
+		"top_result":
+			last_top = {items = msg.get("items", []) as Array,
+					rank = int(msg.get("rank", 0)), total = int(msg.get("total", 0))}
+			top_result.emit(last_top.items, last_top.rank, last_top.total)
 		"notice", "error":
 			notice.emit(str(msg.get("text", "")))

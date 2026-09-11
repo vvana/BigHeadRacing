@@ -1,14 +1,15 @@
 extends Node3D
 ## ГАРАЖ — главный экран игры. Слева машина стоит в освещённом боксе
 ## (тянешь мышью или пальцем — поворачивается), справа — эмалевая доска
-## «АВТОПАРК» с миниатюрами всех машин. Сверху полка табличек: «ГАРАЖ»,
-## уровень с полосой опыта, кошелёк, «+500 ЗА РЕКЛАМУ», имя игрока.
+## «АВТОПАРК» с миниатюрами всех машин. Сверху полка табличек: НАЗВАНИЕ
+## игры, уровень с полосой опыта, кошелёк, «+500 ЗА РЕКЛАМУ», имя игрока.
 ## Снизу слева — имя машины, «РЕЖИМ», «СТАРТ» и «МАГАЗИН» (в его меню —
 ## «АВТОПАРК», «ОРУЖИЕ», «ТЮНИНГ»).
 ## Стиль — эмалевые таблички с заклёпками и аварийными лентами по
 ## референсам в корне проекта (UiKit). Адреса сервера на экране НЕТ:
 ## «СТАРТ» стучится на адрес из Net (по умолчанию VDS), не ответил —
-## тихо едем оффлайн с ботами.
+## едем оффлайн с ботами, сказав об этом игроку (плашка «СЕТИ НЕТ» здесь,
+## анонс в начале заезда — Main._ready по Net.offline_reason).
 ## Управление: ←→ / A D — листать, ↑↓ — по рядам доски, мышь — клик по
 ## ячейке (повторный клик по выбранной — старт), Enter/Space — в гонку.
 
@@ -57,6 +58,8 @@ const COL_X_OPEN := 12.0
 const CAM_H_OPEN := 1.59
 const SLIDE_TIME := 0.35
 const UI_DIR := "res://assets/ui/garage/"
+## Название игры на верхней табличке — готовая надпись (tools/gen_logo.py).
+const LOGO_PATH := "res://assets/ui/logo_title.png"
 
 ## Показ ролика на Яндекс Играх. Результат складываем в window.bhrAd и
 ## опрашиваем из _process (JavaScriptBridge не умеет ждать промис).
@@ -125,7 +128,12 @@ var _stats_btn: Button            # «СТАТИСТИКА»
 var _invite_box: Control          # плашка «X зовёт в команду» (null — нет)
 var _name_hint: Label             # подсказка в окне имени («занято…»)
 var _name_wait := false           # ждём ответ сервера друзей на имя
+var _accept_block := 0            # кадров не слушать Enter после окна имени
+var _social_label: Label          # «друзья: на связи / нет связи» под именем
 var _party_join := false          # «СТАРТ» нажат не нами, а командой (go)
+var _connect_wait := 0.0          # сколько висим на «ПОДКЛЮЧЕНИЕ…», с
+var _offline_note: Control        # плашка «СЕТИ НЕТ» (видна без сети)
+var _net_tick := 0.0              # через сколько снова спросить про сеть, с
 
 
 ## Полный id скина машины из сетки: база + её текущий цвет/комплектация.
@@ -156,6 +164,8 @@ func _ready() -> void:
 	# Друзья (09.09): выходим на связь с сервером друзей — поиск по имени,
 	# приглашения, команда. Соединение живёт в автозагрузке Social.
 	Social.welcome.connect(_on_social_welcome)
+	Social.connected_changed.connect(func(_on: bool) -> void:
+		_refresh_name_btn())
 	Social.name_result.connect(_on_name_result)
 	Social.invite_received.connect(_show_invite)
 	Social.party_changed.connect(_refresh_start_btn)
@@ -176,11 +186,42 @@ func _process(delta: float) -> void:
 		_refresh_ad_btn()
 		if _ad_showing and OS.has_feature("web"):
 			_poll_web_ad()
+	# Сеть могла появиться или пропасть, пока игрок стоит в гараже (телефон
+	# выехал из подвала, включили Wi-Fi) — плашку «СЕТИ НЕТ» и строку друзей
+	# пересматриваем раз в 2 с. Чаще незачем: опрос адресов устройства не
+	# бесплатный, а сеть так быстро не мигает.
+	_net_tick -= delta
+	if _net_tick <= 0.0:
+		_net_tick = 2.0
+		_refresh_offline_note()
+		_refresh_name_btn()
 	# Подиум сам не крутится — только рукой (см. _unhandled_input).
 	# Открыто окно ввода имени — клавиши достаются ему, а не выбору машины
 	# (иначе Enter в поле имени тут же запускал бы гонку).
 	if _name_dialog != null or _ad_showing:
 		return
+	# Окно имени закрылось Enter-ом В ЭТОМ ЖЕ кадре (без связи с сервером
+	# друзей имя принимается сразу) — тот же Enter ещё «только что нажат»
+	# и тут же запускал гонку (телефон, 09.09). Пару кадров его не слушаем.
+	if _accept_block > 0:
+		_accept_block -= 1
+	# Страховка от «ПОДКЛЮЧЕНИЕ…» навсегда: обычно гараж сдаётся сам
+	# (_watch_connect_timeout или join_failed), но если ENet на устройстве
+	# не выдал ни одного сигнала, кнопка осталась бы мёртвой — через
+	# CONNECT_TIMEOUT + 3 с уходим в оффлайн (или обратно в гараж, если
+	# ехали к команде).
+	if _connecting:
+		_connect_wait += delta
+		if _connect_wait > Net.CONNECT_TIMEOUT + 3.0:
+			_connect_wait = 0.0
+			if _party_join:
+				_on_join_failed("нет ответа")
+			else:
+				print("[net] сервер молчит — оффлайн-заезд (страховка)")
+				_start_offline()
+			return
+	else:
+		_connect_wait = 0.0
 	# Открыта панель тюнинга — стрелки ей не мешают; Esc закрывает.
 	if _tuning != null and _tuning.visible:
 		if Input.is_action_just_pressed("ui_cancel"):
@@ -214,15 +255,15 @@ func _process(delta: float) -> void:
 	var total := CarModelLibrary.CAR_IDS.size()
 	if Input.is_action_just_pressed("ui_right") \
 			or Input.is_action_just_pressed("steer_right"):
-		_set_index((_index + 1) % total)
+		_step_owned(1)
 	elif Input.is_action_just_pressed("ui_left") \
 			or Input.is_action_just_pressed("steer_left"):
-		_set_index((_index - 1 + total) % total)
+		_step_owned(-1)
 	elif Input.is_action_just_pressed("ui_down"):
 		_set_index(mini(_index + GRID_COLUMNS, total - 1))
 	elif Input.is_action_just_pressed("ui_up"):
 		_set_index(maxi(_index - GRID_COLUMNS, 0))
-	elif Input.is_action_just_pressed("ui_accept"):
+	elif Input.is_action_just_pressed("ui_accept") and _accept_block == 0:
 		_start_race()
 
 
@@ -285,6 +326,13 @@ func _start_race() -> void:
 	if String(target[0]).is_empty():
 		_start_offline()
 		return
+	# Сети на устройстве нет вовсе (самолётный режим, выключен Wi-Fi) —
+	# едем СРАЗУ, без пяти секунд «ПОДКЛЮЧЕНИЕ…» в никуда (жалоба с
+	# телефона 09.09: «без сети игра не начнётся»).
+	if not Net.device_online():
+		print("[net] сети на устройстве нет — сразу оффлайн-заезд")
+		_start_offline()
+		return
 	# Свою сцену строим сразу под желаемый размер: если мы окажемся первым
 	# игроком лобби, сервер примет его и перестройка не понадобится; если
 	# заезд уже другого размера — сервер продиктует свой (_rx_track).
@@ -307,6 +355,7 @@ func _start_race() -> void:
 ## false — комнаты смертны). Не ответил — не оффлайн, а честно обратно в
 ## гараж: ехать без команды игрок не просил.
 func _on_party_go(port: int, size: int, party_id: String, count: int) -> void:
+	Analytics.party_race(count, size)   # метрика: команда поехала (10.09)
 	if _connecting or _name_dialog != null or _ad_showing \
 			or not is_inside_tree():
 		return
@@ -366,8 +415,16 @@ func _refresh_start_btn() -> void:
 
 
 ## Оффлайн-заезд: игрок + (race_size−1) ботов, случайная трасса.
+## Гараж мог уже уйти из дерева (сцена сменилась, а поздний сигнал сети
+## пришёл его подписке — ENet выдаёт connection_failed и через секунду
+## после нашего таймаута): тогда менять сцену нечему и незачем.
 func _start_offline() -> void:
+	if not is_inside_tree():
+		return
 	Net.leave()
+	# Заезд объяснит игроку, почему он без людей (просьба 10.09): сети нет
+	# вовсе — или сеть есть, а сервер не ответил. Флаг заберёт Main._ready.
+	Net.offline_reason = "no_net" if not Net.device_online() else "no_server"
 	GameState.track_kind = TrackBuilder.pick_random_kind()
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
 
@@ -382,6 +439,12 @@ func _watch_connect_timeout() -> void:
 	var peer := multiplayer.multiplayer_peer
 	if peer != null and peer.get_connection_status() \
 			== MultiplayerPeer.CONNECTION_CONNECTED:
+		return
+	# Ехали к команде — оффлайн-заезд с ботами игроку не нужен: он бы
+	# уехал один, а товарищи ждали его в лобби («третьего нет», 10.09).
+	# Назад в гараж с уведомлением, как при отказе (_on_join_failed).
+	if _party_join:
+		_on_join_failed("заезд команды не ответил за %d с" % int(Net.CONNECT_TIMEOUT))
 		return
 	_start_offline()
 
@@ -616,6 +679,22 @@ func _mini_button(txt: String) -> Button:
 func _refresh_name_btn() -> void:
 	if _name_btn:
 		_name_btn.text = "ИМЯ: %s" % GameState.display_name()
+	if _social_label:
+		if Social.connected:
+			_social_label.text = "друзья: на связи" if Social.name_ok \
+					else ("друзья: имя занято" if Social.name_reason == "taken"
+					else "друзья: на связи, имя не принято")
+			_social_label.add_theme_color_override("font_color",
+					UiKit.TEAL if Social.name_ok else UiKit.YELLOW)
+		else:
+			# Адрес сервера на экран НЕ выводим (правило 03.09: игроку он
+			# незачем, а стенд TestSelectPrefill на него ловит — строка
+			# «нет связи (IP)» от 09.09 это правило нарушала). Кому надо —
+			# адрес печатается в лог.
+			_social_label.text = "друзья: нет сети на устройстве" \
+					if not Net.device_online() \
+					else "друзья: нет связи с сервером"
+			_social_label.add_theme_color_override("font_color", UiKit.YELLOW)
 
 
 ## Модальное окно ввода имени. first — первый запуск: имени ещё нет,
@@ -727,6 +806,7 @@ func _close_name_dialog() -> void:
 		_name_dialog.queue_free()
 		_name_dialog = null
 	_name_hint = null
+	_accept_block = 3
 	_refresh_name_btn()
 
 
@@ -872,6 +952,19 @@ func _flash_coins(txt: String) -> void:
 
 # ---- Подиум и доска ----
 
+## Листание стрелками (кнопки по бокам подиума, клавиши/руль влево-вправо):
+## только по КУПЛЕННЫМ машинам по кругу — чужие из магазина пропускаются
+## (просьба 10.09.2026); чужую по-прежнему можно выбрать на доске «АВТОПАРК».
+func _step_owned(dir: int) -> void:
+	var total := CarModelLibrary.CAR_IDS.size()
+	var i := _index
+	for _n in range(total):
+		i = (i + dir + total) % total
+		if GameState.car_owned(CarModelLibrary.CAR_IDS[i]):
+			_set_index(i)
+			return
+
+
 func _set_index(i: int) -> void:
 	var prev := _index
 	_index = i
@@ -889,7 +982,15 @@ func _set_index(i: int) -> void:
 	# Команде друзей видно, на чём поедешь (09.09).
 	if owned:
 		Social.report_car(GameState.full_id(base))
-	_count_label.text = "%d / %d" % [_index + 1, CarModelLibrary.CAR_IDS.size()]
+	# Счётчик — среди купленных (по ним и листаем); чужая с доски — по всем.
+	var owned_ids: Array[String] = []
+	for c in CarModelLibrary.CAR_IDS:
+		if GameState.car_owned(c):
+			owned_ids.append(c)
+	if owned and owned_ids.has(base):
+		_count_label.text = "%d / %d" % [owned_ids.find(base) + 1, owned_ids.size()]
+	else:
+		_count_label.text = "%d / %d" % [_index + 1, CarModelLibrary.CAR_IDS.size()]
 	# Закрытая машина стоит на подиуме «тенью» — видно, но не наша.
 	if _model and not owned:
 		_dim_model(_model)
@@ -1527,6 +1628,7 @@ func _setup_hud() -> void:
 	canvas.add_child(_column)
 	_build_top_shelf(canvas)
 	_build_test_badge(canvas)
+	_build_offline_note(canvas)
 	_build_podium_ui(canvas, _column)
 	_build_mode_ui(_column)
 	_apply_mode_ui()
@@ -1560,34 +1662,61 @@ func _build_test_badge(canvas: Node) -> void:
 	DisplayServer.window_set_title("Пыль и Пламя — СТЕНД (тестовый профиль)")
 
 
-## Верхняя полка табличек: «ГАРАЖ», уровень с полосой опыта, кошелёк,
+## Плашка «СЕТИ НЕТ» под верхней полкой (просьба 10.09: «если сети нет,
+## должно быть уведомление, что сети нет»). До сих пор игра молчала: без
+## сети «СТАРТ» просто увозил в заезд с ботами, и с телефона это выглядело
+## как «соперники какие-то ненастоящие» — а сети не было. Плашка видна,
+## только пока сети нет (_refresh_offline_note опрашивает Net раз в 2 с:
+## Wi-Fi может появиться, пока игрок стоит в гараже).
+## Под тестовым профилем её опускаем на ряд: там уже висит красная плашка
+## стенда, и они наложились бы друг на друга.
+func _build_offline_note(canvas: Node) -> void:
+	var y := TOP_Y + TOP_H + 8
+	if GameState.is_test_profile():
+		y += 52
+	_offline_note = UiKit.plate(canvas, "red", Vector2.ZERO, Vector2(360, 40))
+	_place(_offline_note, 16, y, 360, 40)
+	# Мышью ничего не ловит: под ней крутят подиум протяжкой (как у плашки
+	# стенда — TestSpin ловил именно это).
+	_offline_note.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	UiKit.plate_label(_offline_note, "СЕТИ НЕТ · ЗАЕЗД С БОТАМИ", 18,
+			UiKit.text_on("red"))
+	_refresh_offline_note()
+
+
+func _refresh_offline_note() -> void:
+	if _offline_note:
+		_offline_note.visible = not Net.device_online()
+
+
+## Верхняя полка табличек: название игры, уровень с полосой опыта, кошелёк,
 ## «+500 ЗА РЕКЛАМУ», имя игрока. Все — мелкие эмалевые таблички одной
 ## высоты (крупная девятислайс-табличка с полями 40 в 80 px не влезает).
 func _build_top_shelf(canvas: Node) -> void:
-	# Заголовок — белая эмаль, аварийная лента по низу, сверху наискось
-	# приклеен жёлтый ярлык с названием игры.
+	# Заголовок — белая эмаль с аварийной лентой по низу. На ней НАЗВАНИЕ
+	# игры: слово «ГАРАЖ» игроку ничего не сообщало (он и так стоит в
+	# гараже), а название на главном экране — единственное место, где оно
+	# вообще написано (просьба 10.09). Жёлтого ярлычка сверху больше нет:
+	# он нёс то же название и стал повтором.
 	var title_plate := UiKit.plate(canvas, "white", Vector2.ZERO,
 			Vector2(320, TOP_H))
 	_place(title_plate, 16, TOP_Y, 320, TOP_H)
 	UiKit.hazard(title_plate, Vector2(12, TOP_H - 18), Vector2(320 - 24, 9), 0.95)
-	var title := UiKit.plate_label(title_plate, "ГАРАЖ", 34, UiKit.INK)
-	title.offset_top = 4
-	title.offset_bottom = -12
-	var tag := Panel.new()
-	var tag_sb := StyleBoxFlat.new()
-	tag_sb.bg_color = UiKit.YELLOW
-	tag_sb.set_corner_radius_all(4)
-	tag_sb.set_border_width_all(2)
-	tag_sb.border_color = UiKit.INK
-	tag.add_theme_stylebox_override("panel", tag_sb)
-	# Ярлык приподнят на 7 px и повёрнут на −0.045 рад: правый край
-	# поднимается ещё на 8 — итого до кромки окна остаётся 3 px.
-	tag.position = Vector2(12, -7)
-	tag.size = Vector2(176, 26)
-	tag.rotation = -0.045
-	tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	title_plate.add_child(tag)
-	UiKit.plate_label(tag, "ПЫЛЬ И ПЛАМЯ", 13, UiKit.INK)
+	# Название — не текст, а КАРТИНКА (assets/ui/logo_title.png): игрок
+	# прислал ключевой арт и попросил писать название тем же шрифтом
+	# (11.09). Шрифт арта нам недоступен, надпись собрана из системного
+	# Impact с наклоном, градиентом и обводкой — см. tools/gen_logo.py.
+	# KEEP_ASPECT_CENTERED: пропорции держим, в табличку вписываем по
+	# ширине 268 — поля 26 по краям, иначе надпись упирается в заклёпки
+	# таблички (снимок 11.09), снизу — аварийная лента.
+	var title := TextureRect.new()
+	title.texture = load(LOGO_PATH)
+	title.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	title.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	title.position = Vector2(26, 8)
+	title.size = Vector2(268, 46)
+	title_plate.add_child(title)
 
 	# Уровень — жёлтая табличка с полосой опыта. Опыт и монеты даются на
 	# финише (GameState); уровни открывают машины и оружие — ЭКОНОМИКА.md.
@@ -1645,6 +1774,12 @@ func _build_top_shelf(canvas: Node) -> void:
 	_name_btn.pressed.connect(func() -> void: _open_name_dialog(false))
 	_place(_name_btn, 1050, TOP_Y, 214, TOP_H)
 	canvas.add_child(_name_btn)
+	# Связь с сервером друзей (09.09, телефон): игроку не видно, дошёл ли
+	# он до сервера — без этого «не могу найти игрока» не разобрать.
+	_social_label = UiKit.label(canvas, "", 14, Color(1, 1, 1, 0.9), 5)
+	_place(_social_label, 1050, TOP_Y + TOP_H + 2, 214, 20)
+	_social_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_social_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_refresh_name_btn()
 
 
@@ -1666,12 +1801,9 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 
 	# Стрелки листания по бокам машины — оранжевые таблички.
 	_make_arrow(canvas, UI_DIR + "arrow_l.png", 226,
-			func() -> void: _set_index(
-					(_index - 1 + CarModelLibrary.CAR_IDS.size())
-					% CarModelLibrary.CAR_IDS.size()))
+			func() -> void: _step_owned(-1))
 	_make_arrow(canvas, UI_DIR + "arrow_r.png", 978,
-			func() -> void: _set_index(
-					(_index + 1) % CarModelLibrary.CAR_IDS.size()))
+			func() -> void: _step_owned(1))
 
 	# «СТАРТ» — красная эмаль, единственная главная кнопка экрана.
 	_start_btn = Button.new()

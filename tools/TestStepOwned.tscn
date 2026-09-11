@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_teststepowned"]
+
+[ext_resource type="Script" path="res://tools/test_step_owned.gd" id="1_teststep"]
+
+[node name="TestStepOwned" type="Node" ]
+script = ExtResource("1_teststep")

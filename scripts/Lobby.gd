@@ -76,7 +76,9 @@ func _ready() -> void:
 		_build_slot(s)
 
 	var hint := _label(self,
-			"Пробел — старт, не дожидаясь остальных  |  Esc — в гараж",
+			"СТАРТ — не дожидаясь остальных  |  ✕ — в гараж"
+			if TouchControls.wanted()
+			else "Пробел — старт, не дожидаясь остальных  |  Esc — в гараж",
 			16, Color(1, 1, 1, 0.7), 4)
 	hint.anchor_left = 0.0
 	hint.anchor_right = 1.0

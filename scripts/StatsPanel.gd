@@ -3,7 +3,9 @@ extends PanelContainer
 ## СТАТИСТИКА ИГРОКА в гараже (09.09): на месте доски «АВТОПАРК». Всё —
 ## из GameState.stats (копится на финише: record_race / record_soccer):
 ## рейтинг, заезды, победы, подиумы, среднее и лучшее место, уничтоженные
-## соперники, любимая машина, футбол.
+## соперники, любимая машина, футбол. Плюс ТАБЛИЦА ЛУЧШИХ (10.09):
+## десять игроков с наибольшим рейтингом — с сервера друзей
+## (Social.request_top → top_result), своя строка подсвечена.
 
 signal closed
 
@@ -12,6 +14,10 @@ const CAR_NAMES: Dictionary = preload("res://scripts/CarSelect.gd").DISPLAY_NAME
 var _font: FontFile
 var _box: VBoxContainer
 var _head: HBoxContainer          # шапка с «ЗАКРЫТЬ» — вне прокрутки
+var _top_box: VBoxContainer       # таблица лучших (перестраивается по ответу)
+var _asked_at := 0                # когда спросили таблицу (мс тиков)
+
+const TOP_WAIT := 6.0             # секунд ждём ответ сервера
 
 
 func _ready() -> void:
@@ -41,11 +47,23 @@ func _ready() -> void:
 	_box.add_theme_constant_override("separation", 6)
 	scroll.add_child(_box)
 	visible = false
+	Social.top_result.connect(_on_top)
+	Social.connected_changed.connect(func(_on: bool) -> void:
+		if visible:
+			Social.request_top()
+			_fill_top())
 
 
 func open() -> void:
 	visible = true
+	_asked_at = Time.get_ticks_msec()
 	rebuild()
+	Social.request_top()
+	# Сервер старой версии про запрос «top» не знает и молчит — не держим
+	# игрока на «Загрузка…» вечно.
+	await get_tree().create_timer(TOP_WAIT).timeout
+	if visible and is_inside_tree():
+		_fill_top()
 
 
 func close() -> void:
@@ -97,6 +115,14 @@ func rebuild() -> void:
 	# значения строк уехали бы за правый край (поймано снимком 09.09).
 	about.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_box.add_child(about)
+	_box.add_child(HSeparator.new())
+
+	_section("ЛУЧШИЕ ИГРОКИ · ТОП-10")
+	_top_box = VBoxContainer.new()
+	_top_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_top_box.add_theme_constant_override("separation", 3)
+	_box.add_child(_top_box)
+	_fill_top()
 	_box.add_child(HSeparator.new())
 
 	_section("ГОНКИ")
@@ -162,6 +188,79 @@ func rebuild() -> void:
 	_row("Матчей", str(games))
 	_row("Побед", "%d" % int(st.soccer_wins) + _pct(int(st.soccer_wins), games))
 	_row("Голов", str(int(st.soccer_goals)))
+
+
+func _on_top(_items: Array, _rank: int, _total: int) -> void:
+	if visible and is_inside_tree():
+		_fill_top()
+
+
+## Таблица лучших из Social.last_top: «№  имя  рейтинг · заездов». Нет
+## связи — так и пишем; ответа ещё нет — «загрузка».
+func _fill_top() -> void:
+	if _top_box == null or not is_instance_valid(_top_box):
+		return
+	for c in _top_box.get_children():
+		_top_box.remove_child(c)
+		c.queue_free()
+	if not Social.connected and Social.last_top.is_empty():
+		var why := "нет сети на устройстве" if not Net.device_online() \
+				else "нет связи с сервером"
+		_top_box.add_child(_label("Таблица лучших недоступна: %s" % why, 13,
+				Color(1, 1, 1, 0.6)))
+		return
+	if Social.last_top.is_empty():
+		var waited := (Time.get_ticks_msec() - _asked_at) / 1000.0
+		_top_box.add_child(_label("Загрузка…" if waited < TOP_WAIT
+				else "Сервер не прислал таблицу — обновите сервер игры",
+				13, Color(1, 1, 1, 0.6)))
+		return
+	var items: Array = Social.last_top.items
+	if items.is_empty():
+		_top_box.add_child(_label("Пока никто не проехал ни одного заезда", 13,
+				Color(1, 1, 1, 0.6)))
+		return
+	for i in items.size():
+		var it: Dictionary = items[i]
+		var me := bool(it.get("me", false))
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		_top_box.add_child(row)
+		var color := UiKit.YELLOW if me else Color.WHITE
+		var num := _label("%d." % (i + 1), 15, color)
+		num.custom_minimum_size.x = 30
+		num.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		num.autowrap_mode = TextServer.AUTOWRAP_OFF
+		num.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		row.add_child(num)
+		var nm := _label(str(it.get("name", "")) + (" (ты)" if me else ""), 15,
+				color)
+		nm.autowrap_mode = TextServer.AUTOWRAP_OFF
+		nm.clip_text = true
+		nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(nm)
+		if bool(it.get("online", false)):
+			var dot := _label("●", 11, UiKit.TEAL)
+			dot.tooltip_text = "в сети"
+			dot.size_flags_horizontal = Control.SIZE_SHRINK_END
+			row.add_child(dot)
+		var val := _label("%d · заездов %d" % [int(it.get("rating", 0)),
+				int(it.get("races", 0))], 15, color)
+		val.autowrap_mode = TextServer.AUTOWRAP_OFF
+		val.size_flags_horizontal = Control.SIZE_SHRINK_END
+		row.add_child(val)
+	var rank := int(Social.last_top.rank)
+	var total := int(Social.last_top.total)
+	var foot: String
+	if rank <= 0:
+		foot = "Тебя в таблице пока нет — проедь заезд, будучи на связи" \
+				if int(GameState.stats.get("races", 0) if not GameState.stats.is_empty() else 0) <= 0 \
+				else "Ты появишься в таблице после следующего заезда на связи"
+	elif rank > items.size():
+		foot = "Твоё место: %d из %d" % [rank, total]
+	else:
+		foot = "Игроков в таблице: %d" % total
+	_top_box.add_child(_label(foot, 11, Color(1, 1, 1, 0.5)))
 
 
 func _pct(n: int, total: int) -> String:
