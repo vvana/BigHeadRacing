@@ -246,6 +246,16 @@ var _lobby_wait := -1.0             # сервер: остаток ожидан�
 # hello (клиент шлёт его из готовой сцены Main). _want_start — старт уже
 # запрошен (Пробел или таймаут лобби), ждём только загрузки всех.
 var _hello_done := {}               # слот → true: клиент прислал hello
+# Мало «прислал hello»: hello уходит из _ready сцены, когда трасса и машины
+# только ПОСТРОЕНЫ, а ни одного кадра ещё не нарисовано — на телефоне между
+# этим и первой картинкой уходят секунды (шейдеры, текстуры), и заезд
+# начинался, пока человек смотрел на экран лобби (жалоба 11.09: «трое
+# стояли на трассе, один был в лобби»). Плюс сцена могла отправиться на
+# перестройку (чужой вид трассы, другой размер заезда) — тогда hello уже
+# был, а мир строится заново. Поэтому клиент из СВОЕЙ окончательной сцены,
+# отрисовав первые кадры, подтверждает готовность отдельным _rx_ready;
+# только после этого его слот перестаёт держать старт (см. _all_loaded).
+var _ready_done := {}               # слот → true: у клиента сцена на экране
 var _join_time := {}                # слот → секунда подключения (для грейса)
 var _want_start := false
 # Сервер: старт решён, но лобби ещё показывает ботов, занявших пустые
@@ -297,6 +307,16 @@ var _race_humans := 0
 # без своей машины и стрелок. Гонка ЖИВАЯ: успел пакет в тот же кадр —
 # зависли, пришёл кадром позже — RPC не нашёл узла и всё сходилось.
 var _rebuilding := false
+# Клиент: подтверждение готовности серверу уже отправлено (см. _say_ready).
+var _ready_sent := false
+# Сколько ОТРИСОВАННЫХ кадров ждём, прежде чем сказать серверу «я готов».
+# Два: на первом появляется мир, на втором видно, что кадры идут дальше
+# (а не встали на компиляции шейдеров). Потолок ожидания — READY_WAIT_MS:
+# если картинка так и не пошла, держать заезд бесконечно нельзя (у
+# остальных это выглядело бы как зависшее лобби), а отсчёт впереди даёт
+# опоздавшему ещё три секунды.
+const READY_FRAMES := 2
+const READY_WAIT_MS := 5000
 # Клиент: пришёл к УЖЕ ИДУЩЕМУ заезду и ждёт в лобби следующего. Запасной
 # путь на случай, когда своей комнаты поднять не вышло (ROOMS_MAX):
 # управление выключено, машину в его слоте ведёт бот сервера; дождётся
@@ -1929,6 +1949,7 @@ func _on_peer_left(_id: int, slot: int) -> void:
 	var car := _cars[slot]
 	car.net_make_local()
 	_hello_done.erase(slot)
+	_ready_done.erase(slot)
 	_join_time.erase(slot)
 	_late_slots.erase(slot)
 	_party_of_slot.erase(slot)
@@ -2044,9 +2065,11 @@ Esc — в гараж")
 		_lobby.show_screen()
 
 
-## Загрузились ли ВСЕ подключённые игроки (прислали hello). Подключённый,
-## но молчащий дольше HELLO_GRACE (старый клиент, зависшая загрузка),
-## перестаёт блокировать старт — иначе он держал бы всех вечно.
+## Загрузились ли ВСЕ подключённые игроки. «Загрузился» — это ДВА шага:
+## прислал hello (сцена построена) и прислал ready (сцена уже на экране,
+## см. _ready_done). Подключённый, но молчащий дольше HELLO_GRACE (старый
+## клиент, зависшая загрузка), перестаёт блокировать старт — иначе он
+## держал бы всех вечно.
 func _all_loaded() -> bool:
 	var now := Time.get_ticks_msec() / 1000.0
 	# Команда друзей ещё не в сборе — молчащий пир, скорее всего, её член
@@ -2054,7 +2077,7 @@ func _all_loaded() -> bool:
 	# дольше, столько же, сколько саму команду (PARTY_GRACE).
 	var grace := PARTY_GRACE if _party_missing() else HELLO_GRACE
 	for slot: int in Net.slot_of_peer.values():
-		if _hello_done.has(slot):
+		if _hello_done.has(slot) and _ready_done.has(slot):
 			continue
 		if now - float(_join_time.get(slot, now)) < grace:
 			return false
@@ -2659,11 +2682,36 @@ func _rx_hello(car_id: String, proto: int, want_size := 4,
 		_rx_bots.rpc_id(id, _bot_mask)
 	_rx_lobby.rpc(_lobby_players(),
 			0 if _net_started else maxi(ceili(_lobby_wait), 0))
-	# hello приходит из ГОТОВОЙ сцены клиента — значит, он загрузился и не
-	# пропустит отсчёт. Только теперь его слот перестаёт блокировать старт.
-	# Отметка — ПОСЛЕ ветки «заезд уже идёт»: если старт случится прямо
-	# сейчас, этому игроку положен отсчёт, а не «включайся сразу».
+	# hello приходит из ПОСТРОЕННОЙ сцены клиента. Отметка — ПОСЛЕ ветки
+	# «заезд уже идёт»: если старт случится прямо сейчас, этому игроку
+	# положен отсчёт, а не «включайся сразу».
+	# Прежняя готовность (если этот слот уже был в лобби) снимается: hello
+	# повторяется из НОВОЙ сцены клиента, когда он перестраивает мир под
+	# присланный вид трассы, и подтвердить её он обязан заново.
 	_hello_done[slot] = true
+	_ready_done.erase(slot)
+	_loading_told = false
+	_maybe_start()
+
+
+## Клиент подтвердил: сцена заезда у него НА ЭКРАНЕ — трасса и машины
+## нарисованы, он видит лобби поверх готового мира и отсчёт не пропустит.
+## Шлётся один раз из той сцены, которая получила welcome (см. _say_ready).
+@rpc("any_peer", "call_remote", "reliable")
+func _rx_ready() -> void:
+	if not Net.is_server():
+		return
+	_mark_ready(Net.slot_of_peer.get(multiplayer.get_remote_sender_id(), -1))
+
+
+## Сервер: слот подтвердил, что сцена у него на экране. Отдельной
+## функцией — её же зовёт стенд TestReadyStart (у него нет настоящих пиров).
+func _mark_ready(slot: int) -> void:
+	if slot < 0 or not _hello_done.has(slot) or _ready_done.has(slot):
+		return
+	_ready_done[slot] = true
+	print("[net] слот %d: сцена на экране, к старту готов" % slot)
+	_loading_told = false
 	_maybe_start()
 
 
@@ -2990,6 +3038,48 @@ func _rx_welcome(slot: int, roster: PackedStringArray, taken: int) -> void:
 		_minimap.my_index = slot
 	# Товарищи по команде друзей — голубые стрелки (имена уже могли прийти).
 	_refresh_mate_markers()
+	# И подтверждаем серверу готовность — но не раньше, чем мир появится
+	# на экране (см. _say_ready): до этого отсчёт нам начинать нельзя.
+	_say_ready()
+
+
+## Клиент: сказать серверу, что сцена заезда УЖЕ НА ЭКРАНЕ (_rx_ready).
+## Ждём не «кадр обработки», а настоящие отрисованные кадры: именно на
+## первых из них телефон компилирует шейдеры и подгружает модели машин —
+## пока это не прошло, игрок смотрит на застывшую картинку, а заезд для
+## остальных уже мог начаться (жалоба 11.09). READY_FRAMES кадров хватает,
+## чтобы трасса, машины и HUD были нарисованы хотя бы раз.
+## Сцена, отправленная на перестройку (_rebuilding), готовность не шлёт:
+## её welcome недействителен, подтвердит уже новая.
+func _say_ready() -> void:
+	if _ready_sent or not Net.is_client() or _rebuilding:
+		return
+	_ready_sent = true
+	# Без экрана (стенды и выделенный сервер гоняются с --headless) кадры
+	# не рисуются вовсе — frames_drawn там всегда 0, и ждать их значило бы
+	# держать лобби до самого HELLO_GRACE. Хватает кадра обработки.
+	if DisplayServer.get_name() == "headless":
+		await get_tree().process_frame
+	else:
+		var drawn := [0]
+		var cb := func() -> void: drawn[0] += 1
+		RenderingServer.frame_post_draw.connect(cb)
+		var t0 := Time.get_ticks_msec()
+		while drawn[0] < READY_FRAMES \
+				and Time.get_ticks_msec() - t0 < READY_WAIT_MS:
+			await get_tree().process_frame
+			if not is_inside_tree() or _rebuilding:
+				if RenderingServer.frame_post_draw.is_connected(cb):
+					RenderingServer.frame_post_draw.disconnect(cb)
+				_ready_sent = false
+				return
+		if RenderingServer.frame_post_draw.is_connected(cb):
+			RenderingServer.frame_post_draw.disconnect(cb)
+	if not is_inside_tree() or _rebuilding or Net.my_slot < 0:
+		_ready_sent = false
+		return
+	print("[net] сцена на экране — подтверждаем готовность серверу")
+	_rx_ready.rpc_id(1)
 
 
 ## Клиент: голубая стрелка над машиной каждого ТОВАРИЩА по команде друзей
@@ -3473,6 +3563,26 @@ func _rx_proj_fx(at: Vector3, freeze: bool) -> void:
 	if best != null:
 		best.global_position = at
 		best._boom()
+
+
+## Сервер: волна глушилки кого-то накрыла — клиентам вспышку в этой
+## точке. Сама волна летит дальше и глушит всех по пути (просьба игрока
+## 11.09: «гаснет от времени, а не от первого столкновения»), поэтому
+## попадание видно только по вспышке на жертве.
+func net_broadcast_wave_hit(at: Vector3) -> void:
+	if not Net.is_server():
+		return
+	_rx_wave_fx.rpc(at)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_wave_fx(at: Vector3) -> void:
+	if not at.is_finite():
+		return
+	# Волну копия ведёт сама (она живёт свой срок), с сервера приезжает
+	# только отметка попадания — вспышка и колечко на жертве.
+	FlashFx.spawn(self, at, 1.2, Color(0.4, 0.95, 1.0))
+	FxKit.ring(self, at, ScrambleWave.HIT_R * 0.6, Color(0.4, 0.95, 1.0))
 
 
 ## По НАШЕЙ машине применили оружие — физику эффекта (толчок, закрутку,

@@ -13,7 +13,7 @@ const CARD_W := 128.0
 const CARD_H := 150.0
 const RESULTS_MAX := 6
 const FRIENDS_POLL := 5.0     # секунд между опросами статусов друзей
-const FRIENDS_SHOWN := 4      # строк друзей без прокрутки
+# (список друзей прокручивается вместе со всей серединой панели, 11.09)
 const FRIEND_ROW_H := 28.0
 
 var _font: FontFile
@@ -22,7 +22,9 @@ var _status: Label
 var _search: LineEdit
 var _results: VBoxContainer
 var _friends_title: Label
-var _friends_scroll: ScrollContainer
+var _mid: ScrollContainer      # прокручиваемая середина панели (11.09)
+var _sec_find: VBoxContainer    # секция «друзья + поиск»
+var _sec_members: VBoxContainer # секция «состав команды»
 var _friends_box: VBoxContainer
 var _friend_state := {}       # имя в нижнем регистре → запись статуса (lookup)
 var _friends_poll := 0.0
@@ -113,27 +115,53 @@ func _build() -> void:
 	_box.add_child(_status)
 	_box.add_child(HSeparator.new())
 
+	# СЕРЕДИНА ПАНЕЛИ ПРОКРУЧИВАЕТСЯ (11.09): друзья, поиск и карточки
+	# состава вместе перерастали доску (замер стендом: при команде из 4 —
+	# 741 px в отведённых 594, при 8 — 919), панель тянулась вниз, и ряд
+	# «ГОТОВ»/«ВЫЙТИ» уходил за нижнюю кромку экрана. Теперь всё, что
+	# может расти, живёт в ScrollContainer: он отдаёт ровно столько,
+	# сколько осталось от доски, а кнопки прибиты к её низу и видны всегда.
+	_mid = ScrollContainer.new()
+	_mid.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_mid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_mid.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_box.add_child(_mid)
+	var mid_box := VBoxContainer.new()
+	mid_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mid_box.add_theme_constant_override("separation", 6)
+	_mid.add_child(mid_box)
+
+	# Две секции середины: «кого позвать» (друзья + поиск) и «состав».
+	# Порядок меняется в _refresh: пока команды нет, сверху поиск, а в
+	# команде сверху состав — иначе карточки товарищей оказывались под
+	# списком друзей и их приходилось прокручивать.
+	_sec_find = VBoxContainer.new()
+	_sec_find.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_sec_find.add_theme_constant_override("separation", 6)
+	mid_box.add_child(_sec_find)
+	_sec_members = VBoxContainer.new()
+	_sec_members.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_sec_members.add_theme_constant_override("separation", 6)
+	mid_box.add_child(_sec_members)
+
 	# Друзья (09.09, вечер): кого звал в команду или с кем в ней был —
 	# списком, с кнопкой «ПРИГЛАСИТЬ»: заново искать по имени не надо.
 	_friends_title = _label("ДРУЗЬЯ", 15, Color.WHITE)
-	_box.add_child(_friends_title)
-	# Строки компактные (плоские кнопки, ~FRIEND_ROW_H px), видно не больше
-	# FRIENDS_SHOWN — остальные прокруткой: иначе список из 12 друзей
-	# выталкивал карточки команды за край экрана.
-	_friends_scroll = ScrollContainer.new()
-	_friends_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	_friends_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_box.add_child(_friends_scroll)
+	_sec_find.add_child(_friends_title)
+	# Строки компактные (плоские кнопки, ~FRIEND_ROW_H px). Своей прокрутки
+	# у списка больше нет — она была вложенной, и палец на телефоне попадал
+	# то в список, то в панель. Прокручивается вся середина целиком (_mid),
+	# а список показывает всех друзей (их не больше GameState.FRIENDS_MAX).
 	_friends_box = VBoxContainer.new()
 	_friends_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_friends_box.add_theme_constant_override("separation", 3)
-	_friends_scroll.add_child(_friends_box)
-	_box.add_child(HSeparator.new())
+	_sec_find.add_child(_friends_box)
+	_sec_find.add_child(HSeparator.new())
 
 	# Поиск по имени.
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
-	_box.add_child(row)
+	_sec_find.add_child(row)
 	_search = LineEdit.new()
 	_search.placeholder_text = "имя друга"
 	_search.max_length = GameState.NAME_MAX
@@ -157,21 +185,17 @@ func _build() -> void:
 
 	_results = VBoxContainer.new()
 	_results.add_theme_constant_override("separation", 3)
-	_box.add_child(_results)
-	_box.add_child(HSeparator.new())
+	_sec_find.add_child(_results)
+	_sec_find.add_child(HSeparator.new())
 
 	# Состав команды.
 	_members_title = _label("", 15, Color.WHITE)
-	_box.add_child(_members_title)
+	_sec_members.add_child(_members_title)
 	_grid = GridContainer.new()
 	_grid.columns = 4
 	_grid.add_theme_constant_override("h_separation", 8)
 	_grid.add_theme_constant_override("v_separation", 8)
-	_box.add_child(_grid)
-
-	var spacer := Control.new()
-	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_box.add_child(spacer)
+	_sec_members.add_child(_grid)
 
 	_notice = _label("", 13, UiKit.TEAL)
 	_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -264,11 +288,6 @@ func _refresh_friends() -> void:
 	var names: Array = GameState.friends
 	_friends_title.text = "ДРУЗЬЯ (%d)" % names.size() if not names.is_empty() \
 			else "ДРУЗЬЯ"
-	# В команде ниже стоят карточки состава — друзьям оставляем две строки,
-	# иначе кнопки «ГОТОВ»/«ВЫЙТИ» уезжают за нижний край экрана.
-	var shown := 2 if Social.in_party() else FRIENDS_SHOWN
-	_friends_scroll.custom_minimum_size = Vector2(0,
-			(FRIEND_ROW_H + 3.0) * clampi(names.size(), 1, shown))
 	if names.is_empty():
 		_friends_box.add_child(_label(
 				"Пока никого: найди друга ниже и пригласи — он останется здесь",
@@ -376,6 +395,12 @@ func _refresh() -> void:
 			if in_party else "Команды пока нет — пригласи друга"
 	_ready_btn.visible = in_party
 	_leave_btn.visible = in_party
+	# В команде состав — первым (см. _build).
+	if _sec_members and _sec_find:
+		var top: Control = _sec_members if in_party else _sec_find
+		var bottom_sec: Control = _sec_find if in_party else _sec_members
+		top.get_parent().move_child(top, 0)
+		bottom_sec.get_parent().move_child(bottom_sec, 1)
 	if in_party:
 		var mine := Social.my_ready()
 		_ready_btn.text = "ГОТОВ ✓ — ждём остальных" if mine else "ГОТОВ"

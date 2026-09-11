@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testwavelife"]
+
+[ext_resource type="Script" path="res://tools/test_wave_life.gd" id="1_twlf"]
+
+[node name="TestWaveLife" type="Node3D"]
+script = ExtResource("1_twlf")

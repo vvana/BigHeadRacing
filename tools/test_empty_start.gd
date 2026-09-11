@@ -28,7 +28,10 @@ func _physics_process(_d: float) -> void:
 		print("игрок вошёл")
 		Net.slot_of_peer[777] = 0
 		Net.player_joined.emit(777, 0)
-		_main._hello_done[0] = true   # hello «пришёл» — загрузку не ждём
+		# hello «пришёл» и сцена «на экране» — загрузку не ждём (11.09
+		# старт держится до подтверждения готовности, см. Main._all_loaded).
+		_main._hello_done[0] = true
+		_main._ready_done[0] = true
 		return
 	# Ждём начала показа ботов (лобби истекло, _start_with_bots взвёл флаг).
 	if _bots_seen_at < 0:

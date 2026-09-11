@@ -61,6 +61,7 @@ var _first_check := true   # первый кадр: отрезок тянетс�
 var _rings: Array[MeshInstance3D] = []
 var _ring_mats: Array[StandardMaterial3D] = []
 var _track_off := -1.0   # своя отметка на оси трассы (непрерывность)
+var _stunned := {}       # id уже оглушённых машин: каждую волна берёт раз
 
 
 func _ready() -> void:
@@ -82,7 +83,8 @@ func _ready() -> void:
 	# глушат»): на сервере она умирала о рельс, а копия у клиента (без
 	# слежения) летела дальше, и её кольца «касались» машин, которых
 	# сервер уже не проверял. Теперь обе одинаково ЗАЖИМАЮТСЯ в полотне
-	# (_clamp_inside_walls) — как картинка марионетки у стены.
+	# (_clamp_inside_walls) — как картинка марионетки у стены. С 11.09
+	# волна не гаснет и о машины: только срок жизни (см. _physics_process).
 	set_deferred("monitoring", false)
 
 
@@ -142,12 +144,22 @@ func _physics_process(delta: float) -> void:
 	# ВСЕ машины, задетые кольцами в этот кадр, а не первая по списку:
 	# раньше волна в куче машин гасла об соседа, а второго — визуально
 	# накрытого теми же кольцами — не трогала.
+	# ВОЛНА ГАСНЕТ ТОЛЬКО ОТ ВРЕМЕНИ (просьба игрока 11.09). Раньше она
+	# умирала об первую же задетую машину, а её КОПИЯ на экранах летела
+	# дальше и «касалась» тех, кого сервер уже не проверял, — это и видно
+	# было как «круги коснулись, а не оглушило». Теперь и настоящая волна,
+	# и копия живут свой срок (_life), а кольца глушат ВСЕХ, кого накрыли
+	# по дороге. Каждую машину — ОДИН РАЗ (_stunned): волна быстрее машин,
+	# но цель на бусте остаётся в кольцах несколько кадров, и без памяти
+	# эффект продлевался бы, пока волна рядом.
+	# Копия у клиента (inert) попаданий не считает вовсе: оглушение вешает
+	# сервер, а вспышку на жертве он присылает отдельно (Main._rx_wave_fx).
 	if not inert:
-		var hit_any := false
 		for node in get_tree().get_nodes_in_group("cars"):
 			var car := node as Car
 			if car == null or car == shooter \
-					or not car.alive or car.is_ghost():
+					or not car.alive or car.is_ghost() \
+					or _stunned.has(car.get_instance_id()):
 				continue
 			# Цель — и ТЕКУЩАЯ (что жертва видит у себя), и ОТМОТАННАЯ (что
 			# видел стрелявший): коснулось на любом из экранов — оглушает (09.09).
@@ -157,13 +169,12 @@ func _physics_process(delta: float) -> void:
 				hit = _touches_body(prev, global_position,
 						car.past_position(Car.aim_lag(lag, car)), fwd)
 			if hit:
+				_stunned[car.get_instance_id()] = true
 				_hit_car(car)
-				hit_any = true
-		if hit_any:
-			_boom()
-			return
 	_life -= delta
 	if _life <= 0.0:
+		# Срок вышел — волна тает там, где её застало время.
+		_fade()
 		queue_free()
 
 
@@ -258,16 +269,28 @@ func _touches_body(a: Vector3, b: Vector3, center: Vector3,
 
 
 func _hit_car(car: Car) -> void:
-	# Щит (08.09): волна гаснет о сферу (hit_any у вызывающего — да),
-	# управление цело.
+	# Щит (08.09): о сферу волна больше не гаснет — она вообще ни обо что
+	# не гаснет, кроме своего срока, — но управление под щитом цело.
 	if car.is_shielded():
 		car.shield_block_fx()
 		return
 	car.notify_hit_by(shooter, Weapons.SCRAMBLE)
 	car.apply_scramble(stun_time)
+	_hit_fx(car.global_position)
 
 
-func _boom() -> void:
-	FlashFx.spawn(get_parent(), global_position, 1.4, Color(0.4, 0.95, 1.0))
-	FxKit.ring(get_parent(), global_position, HIT_R, Color(0.4, 0.95, 1.0))
-	queue_free()
+## Волна прошла свой путь и растаяла — мягкая вспышка на месте.
+func _fade() -> void:
+	FlashFx.spawn(get_parent(), global_position, 0.9, Color(0.4, 0.95, 1.0))
+
+
+## Вспышка НА ЖЕРТВЕ: волна летит дальше, и без этой отметки попадание
+## было бы незаметно — раньше его показывал взрыв самой волны. Сервер
+## повторяет ту же вспышку на экранах клиентов (Main._rx_wave_fx).
+func _hit_fx(at: Vector3) -> void:
+	FlashFx.spawn(get_parent(), at, 1.2, Color(0.4, 0.95, 1.0))
+	FxKit.ring(get_parent(), at, HIT_R * 0.6, Color(0.4, 0.95, 1.0))
+	if not inert and shooter != null and is_instance_valid(shooter) \
+			and shooter.race != null \
+			and shooter.race.has_method("net_broadcast_wave_hit"):
+		shooter.race.net_broadcast_wave_hit(at)

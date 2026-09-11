@@ -510,14 +510,20 @@ func _show_invite(from: String, count: int) -> void:
 		_invite_box = null
 	# Стальная плита (тёмная — на ней читаются и жёлтая, и стальная
 	# кнопки; бирюзовая сливалась с бирюзовой «ПРИНЯТЬ», снимок 09.09).
-	var plate := UiKit.plate(_canvas, "steel", Vector2.ZERO, Vector2(520, 112))
+	# Высота 160 (было 112): у плиты-девятислайса поля текстуры по 20 px, и
+	# у эмалевой кнопки свой минимальный рост — 70 px, а не заданные 46
+	# (замер стендом DbgInviteBox). В прежней высоте ряд кнопок выходил за
+	# нижнюю кромку плиты — жалоба 11.09 «кнопки находятся на границе
+	# рамки». Теперь текст стоит в 26, кнопки 70…140, и до канта снизу
+	# остаётся ровно поле рамки.
+	var plate := UiKit.plate(_canvas, "steel", Vector2.ZERO, Vector2(520, 160))
 	# Слева над машиной: панель команды справа остаётся видна.
-	_place(plate, 62, TOP_Y + TOP_H + 60, 520, 112)
+	_place(plate, 62, TOP_Y + TOP_H + 60, 520, 160)
 	_invite_box = plate
 	var txt := UiKit.label(plate, "%s зовёт тебя в команду (%d чел.)"
 			% [from, count + 1], 17, Color.WHITE, 5)
-	txt.position = Vector2(20, 14)
-	txt.size = Vector2(480, 26)
+	txt.position = Vector2(24, 26)
+	txt.size = Vector2(472, 26)
 	txt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	txt.clip_text = true
 	txt.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -526,8 +532,8 @@ func _show_invite(from: String, count: int) -> void:
 	var ok := Button.new()
 	ok.text = "ПРИНЯТЬ"
 	UiKit.style_button(ok, "yellow", 15, 8)
-	ok.position = Vector2(100, 52)
-	ok.size = Vector2(150, 46)
+	ok.position = Vector2(100, 70)
+	ok.size = Vector2(150, 70)
 	ok.pressed.connect(func() -> void:
 		Social.accept_invite()
 		_hide_invite()
@@ -536,8 +542,8 @@ func _show_invite(from: String, count: int) -> void:
 	var no := Button.new()
 	no.text = "ОТКЛОНИТЬ"
 	UiKit.style_button(no, "steel", 15, 8)
-	no.position = Vector2(270, 52)
-	no.size = Vector2(150, 46)
+	no.position = Vector2(270, 70)
+	no.size = Vector2(150, 70)
 	no.pressed.connect(func() -> void:
 		Social.decline_invite()
 		_hide_invite())

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testreadystart"]
+
+[ext_resource type="Script" path="res://tools/test_ready_start.gd" id="1_trst"]
+
+[node name="TestReadyStart" type="Node3D"]
+script = ExtResource("1_trst")

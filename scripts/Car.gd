@@ -61,6 +61,11 @@ const WALL_ALIGN_FREE := deg_to_rad(10.0)  # угол к оси, который 
 ## (просьба 07.09), руль прочь от стены доворота не получает вовсе.
 const WALL_TURN_LOSS := 0.5
 const WALL_SPARK_PERIOD := 0.07         # искры о стену: сноп раз в столько с
+# Потолок визуального подъёма кузова (см. _animate_wheels и _body_lift).
+# 0.25 м хватает на самую глубокую просадку подвески; выше поднимать
+# нельзя — машина «поплывёт» над дорогой, а приседание на приземлении
+# должно оставаться видимым.
+const BODY_LIFT_MAX := 0.25
 
 # Откуда вылетает оружие (см. muzzle_at): передняя кромка машины.
 const MUZZLE_AHEAD := 1.6               # нос от центра, м (длина модели 3.2)
@@ -318,6 +323,9 @@ var _shock_left := 0.0          # сколько ещё длится вспыш�
 var _shock_was_on := false      # буст III горел на прошлом кадре (фронт для марионетки)
 var _wheel_pivots: Array[Node3D] = []
 var _steer_visual := 0.0
+# Насколько КАРТИНКА кузова приподнята над телом (см. _animate_wheels):
+# спасает от «машина ушла под текстуру» на прожатой подвеске.
+var _body_lift := 0.0
 var _ai_fire_cd := 2.0
 
 
@@ -4410,6 +4418,11 @@ func _animate_wheels(delta: float) -> void:
 	# неона (см. _fit_underglow).
 	var road_sum := 0.0
 	var road_hits := 0
+	# Замеры первого прохода: утопание, ступица и радиус каждого колеса.
+	var pens: Array[float] = []
+	var hubs: Array[Vector3] = []
+	var radii: Array[float] = []
+	var all_on_road := true
 	# Машины луч не ловит и так: они на слое 0b100, маска — 1 (дорога).
 	for pivot in _wheel_pivots:
 		var radius: float = pivot.get_meta("wheel_radius")
@@ -4440,7 +4453,9 @@ func _animate_wheels(delta: float) -> void:
 			else:
 				_end_skid(pivot)
 		var pen := 0.0
-		if not hit.is_empty():
+		if hit.is_empty():
+			all_on_road = false
+		else:
 			pen = (hit["position"] as Vector3).y - (hub.y - radius)
 			road_sum += (hit["position"] as Vector3).y
 			road_hits += 1
@@ -4456,16 +4471,48 @@ func _animate_wheels(delta: float) -> void:
 					+ angular_velocity.cross(hub - global_position)
 			var approach := -point_v.dot(hit["normal"])
 			pen += maxf(0.0, approach) * delta * 2.0
-		# Подъём ограничен долей РАДИУСА колеса: при жёсткой посадке pen с
+		pens.append(pen)
+		hubs.append(hub)
+		radii.append(radius)
+
+	# КУЗОВ ПОДНИМАЕТСЯ ВМЕСТЕ С КОЛЁСАМИ (11.09). Колёса запечены в модель,
+	# и кламп выше поднимал только их — а корпус на прожатой подвеске
+	# оставался там, где его держит тело. На подножии горки подвеска
+	# доседает почти до упора (замер DbgUphill: 0.77 хода), и низ модели
+	# уходил под асфальт на два десятка сантиметров: «на подъёме машина
+	# немного уходит под текстуру». Теперь, когда ВСЕ колёса разом ушли
+	# под полотно (равномерная просадка, а не кочка под одним колесом),
+	# картинка машины целиком поднимается на глубину самого мелкого из
+	# утоплений — кузов остаётся над дорогой, колёса встают на неё.
+	# Вверх — сразу, вниз — плавно, иначе кузов дрожал бы на стыках.
+	var lift_target := 0.0
+	if all_on_road and not pens.is_empty() \
+			and global_transform.basis.y.y > 0.5:
+		var least: float = pens[0]
+		for v: float in pens:
+			least = minf(least, v)
+		lift_target = clampf(least, 0.0, BODY_LIFT_MAX)
+	_body_lift = lift_target if lift_target > _body_lift \
+			else lerpf(_body_lift, lift_target, 12.0 * delta)
+	if _model != null and is_instance_valid(_model) and _body_lift > 0.001:
+		_model.global_position.y += _body_lift
+
+	for i in _wheel_pivots.size():
+		var pivot: Node3D = _wheel_pivots[i]
+		var radius: float = radii[i]
+		var hub: Vector3 = hubs[i]
+		# Потолок подъёма колеса — доля РАДИУСА: при жёсткой посадке pen с
 		# упреждением доходил до десятков сантиметров, пивот взлетал и колесо
-		# вылезало НАД кузовом («колёса поверх машины»). Выше 60% радиуса
-		# колесо гарантированно торчит из арки — дальше пусть лучше на
-		# кадр-два нырнёт в асфальт (обычное утопание ≤ 11 см и так меньше).
-		var target := clampf(pen, 0.0, radius * 0.6)
+		# вылезало НАД кузовом («колёса поверх машины»). К потолку добавлен
+		# подъём кузова: арка уехала вверх вместе с ним, и настолько же выше
+		# может встать колесо, не вылезая из неё.
+		var target := clampf(pens[i], 0.0, radius * 0.6 + _body_lift)
 		var lift: float = pivot.get_meta("lift")
 		lift = target if target > lift else lerpf(lift, target, 12.0 * delta)
 		pivot.set_meta("lift", lift)
-		if lift > 0.001:
+		# Место колеса — АБСОЛЮТНОЕ (от замера до подъёма кузова): колесо
+		# стоит на дороге независимо от того, куда уехала картинка кузова.
+		if lift > 0.001 or _body_lift > 0.001:
 			pivot.global_position = hub + Vector3.UP * lift
 	if road_hits > 0:
 		_fit_underglow(road_sum / float(road_hits))

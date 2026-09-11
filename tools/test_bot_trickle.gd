@@ -39,6 +39,7 @@ func _join(id: int) -> int:
 	Net.slot_of_peer[id] = slot
 	Net.player_joined.emit(id, slot)
 	_main._hello_done[slot] = true
+	_main._ready_done[slot] = true
 	return slot
 
 

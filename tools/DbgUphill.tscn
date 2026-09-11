@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_dbguphill"]
+
+[ext_resource type="Script" path="res://tools/dbg_uphill.gd" id="1_dup"]
+
+[node name="DbgUphill" type="Node3D"]
+script = ExtResource("1_dup")
