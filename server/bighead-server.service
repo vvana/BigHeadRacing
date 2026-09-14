@@ -1,5 +1,5 @@
 [Unit]
-Description=Big Head Racing — выделенный сервер гонки
+Description=Пыль и Пламя (Dust and Flame) — выделенный сервер гонки
 After=network-online.target
 Wants=network-online.target
 

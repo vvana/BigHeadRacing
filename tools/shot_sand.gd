@@ -52,7 +52,7 @@ func _run() -> void:
 	await _shot(Vector3(0, 190, 130), Vector3.ZERO, "sand_overview.png")
 	await _shot(start + fwd * 30.0 + Vector3(0, 14, 0),
 			start + Vector3(0, 4, 0), "sand_start.png")
-	# Кромка полотна без ограждений — виден съезд на песок.
+	# Кромка полотна с отбойником (14.09) — стена на фоне песка.
 	var mid := track._curve.sample_baked(length * 0.45)
 	await _shot(mid + Vector3(0, 26, 34), mid, "sand_edge.png")
 	# Первый ускоритель крупным планом.

@@ -1,26 +1,28 @@
 extends Node3D
 ## Автотест ПЕСЧАНОЙ трассы (TrackBuilder.KIND_SAND).
-## Фаза 1 (0-60 с): ИИ накатывают круги по пустыне без ограждений —
-## худший должен проехать больше полукруга (как TestLap).
-## Фаза 2 (60-64 с): машину игрока ставим НА ПЕСОК рядом с полотном и
-## давим газ: скорость должна упереться заметно ниже максимума (песок
-## замедляет), флаг _on_sand гореть, а из-под колёс идти пыль.
-## Фаза 3 (01.09 «песок должен тормозить сильнее»): влетаем на песок на
-## полном ходу БЕЗ газа — скорость выше песчаного потолка активно гасится
-## (старый код: тяга просто отключалась, и машина неслась накатом,
-## теряя лишь ~3 м/с за секунду — честный FAIL).
+## Фаза 1 (0-60 с): ИИ накатывают круги по пустыне — худший должен
+## проехать больше полукруга (как TestLap). Трасса обязана быть песчаной
+## И С ОТБОЙНИКАМИ (14.09: «на трассе пустыня нужно установить отбойники»;
+## до того пустыня была без ограждений, и стенд проверял езду по песку —
+## теперь за отбойник не попасть, те фазы убраны).
+## Фаза 2 (60-62 с): игрока ставим на полотно в 3 м от борта, курс 60°
+## к нему, 25 м/с без газа: отбойник обязан удержать машину на полотне
+## (не дальше полуширины + 1 м от оси) и не убить её. Чтобы стенд не
+## проходил «даром», ведение вдоль борта (Car._wall_slide: касание или
+## упреждающий перехват _wall_align_time) обязано сработать хоть в одном
+## кадре, а кузов — подойти к кромке ближе 2.5 м (перехват идёт за кадр до
+## касания, и «касание» как таковое при ударе под углом может не
+## подняться вовсе — скорость уже направлена вдоль стены).
+## Запуск: godot --headless --path . res://tools/TestSandLap.tscn
 
 var _main: Node3D
 var _t := 0.0
 var _next_log := 0.0
 var _phase := 1
 var _lap_ok := false
-var _slow_ok := false
-var _dust_ok := false
-var _brake_t := 0.0         # момент влёта на песок в фазе 3
-var _sand_top := 0.0        # максимум скорости на песке
-var _sand_frames := 0       # кадров с _on_sand за фазу 2
-var _smoke_frames := 0      # кадров с включённой пылью за фазу 2
+var _hit_t := 0.0           # момент броска на отбойник
+var _worst_out := -999.0    # максимум выхода за полуширину, м
+var _hit_frames := 0        # кадров, когда борт вёл машину (касание/перехват)
 
 
 func _ready() -> void:
@@ -44,10 +46,10 @@ func _physics_process(delta: float) -> void:
 	if _phase == 1:
 		if _t < 60.0:
 			return
-		# Сама трасса обязана быть песчаной и БЕЗ ограждений.
-		if track.kind != TrackBuilder.KIND_SAND or track.has_walls \
-				or track.get_node_or_null("Walls") != null:
-			print("SAND LAP TEST: FAIL (трасса не песчаная или есть стены)")
+		# Сама трасса обязана быть песчаной и С ОТБОЙНИКАМИ.
+		if track.kind != TrackBuilder.KIND_SAND or not track.has_walls \
+				or track.get_node_or_null("Walls") == null:
+			print("SAND LAP TEST: FAIL (трасса не песчаная или нет отбойников)")
 			get_tree().quit(1)
 			return
 		var length: float = track._curve.get_baked_length()
@@ -57,7 +59,7 @@ func _physics_process(delta: float) -> void:
 		_lap_ok = worst > length * 0.5
 		print("  фаза 1: худший ИИ проехал %.0f м (круг %.0f м) — %s" % [
 			worst, length, "ok" if _lap_ok else "FAIL"])
-		# Фаза 2: игрок на песок сбоку от полотна, газ в пол вдоль трассы.
+		# Фаза 2: игрок в 3 м от борта, курс 60° к нему, 25 м/с без газа.
 		var car: Car = _main._cars[0]
 		var off := length * 0.3
 		var pos: Vector3 = track._curve.sample_baked(off)
@@ -65,60 +67,35 @@ func _physics_process(delta: float) -> void:
 				fmod(off + 3.0, length))
 		var dir := (ahead - pos).normalized()
 		var side := dir.cross(Vector3.UP)
+		var run := (dir * 0.5 + side * 0.87).normalized()
 		var half: float = track.half_width_at_offset(off)
-		var start: Vector3 = pos + side * (half + 4.0)
-		start.y = track._ground_height(start.x, start.z) + 0.7
-		car.global_transform = Transform3D(Basis.looking_at(dir), start)
-		car.linear_velocity = Vector3.ZERO
+		var start: Vector3 = pos + side * (half - 3.0)
+		start.y = pos.y + 0.7
+		car.global_transform = Transform3D(Basis.looking_at(run), start)
+		car.linear_velocity = run * 25.0
 		car.angular_velocity = Vector3.ZERO
 		car.reset_speed_memory()
-		Input.action_press("accelerate")
+		_hit_t = _t
 		_phase = 2
 		return
 	var car: Car = _main._cars[0]
-	if _phase == 2:
-		# Фаза 2: копим метрики песка.
-		if car._on_sand:
-			_sand_frames += 1
-			_sand_top = maxf(_sand_top, car.linear_velocity.length())
-			if not car._smoke.is_empty() and car._smoke[0].emitting:
-				_smoke_frames += 1
-		if _t < 64.0:
-			return
-		Input.action_release("accelerate")
-		# Песок должен пускать (машина едет), но душить: максимум скорости
-		# на песке заметно ниже max_speed. Пыль — почти в каждом кадре езды.
-		_slow_ok = _sand_top > 5.0 and _sand_top < car.max_speed * 0.75
-		_dust_ok = _sand_frames > 30 and _smoke_frames > _sand_frames / 2
-		print("  фаза 2: на песке %d кадров, максимум %.1f м/с (лимит %.1f), " % [
-				_sand_frames, _sand_top, car.max_speed * 0.75]
-				+ "пыль в %d кадрах" % _smoke_frames)
-		# Фаза 3: влёт на песок на полном ходу без газа, наискось от полотна
-		# (строго вдоль оси машина за поворотом дороги вернулась бы на неё).
-		var length: float = track._curve.get_baked_length()
-		var off := length * 0.3
-		var pos: Vector3 = track._curve.sample_baked(off)
-		var ahead: Vector3 = track._curve.sample_baked(fmod(off + 3.0, length))
-		var dir := (ahead - pos).normalized()
-		var side := dir.cross(Vector3.UP)
-		var run := (dir * 0.87 + side * 0.5).normalized()
-		var half: float = track.half_width_at_offset(off)
-		var start: Vector3 = pos + side * (half + 4.0)
-		start.y = track._ground_height(start.x, start.z) + 0.7
-		car.global_transform = Transform3D(Basis.looking_at(run), start)
-		car.linear_velocity = run * 30.0
-		car.angular_velocity = Vector3.ZERO
-		car.reset_speed_memory()
-		_brake_t = _t
-		_phase = 3
+	# Фаза 2: 2 с меряем выход за полуширину полотна.
+	var p := car.global_position
+	var out := track.distance_from_axis(p) - track.half_width_at_pos(p)
+	_worst_out = maxf(_worst_out, out)
+	if car._wall_touch or car._wall_align_time > 0.0:
+		_hit_frames += 1
+	if int(_t * 8.0) != int((_t - delta) * 8.0):
+		print("    t+%.2f: кромка %+.2f м, ход %.1f м/с%s" % [_t - _hit_t, out,
+				car.linear_velocity.length(), ", борт" if car._wall_touch else ""])
+	if _t < _hit_t + 2.0:
 		return
-	# Фаза 3: через 1.2 c замеряем, сколько хода съел песок.
-	if _t < _brake_t + 1.2:
-		return
-	var speed := car.linear_velocity.length()
-	var brake_ok := speed < 20.0
-	print("  фаза 3: влетели на песок 30.0 м/с, через 1.2 c — %.1f м/с (%s)"
-			% [speed, "ok" if brake_ok else "FAIL"])
-	var ok := _lap_ok and _slow_ok and _dust_ok and brake_ok
+	var hold_ok := _worst_out > -2.5 and _worst_out < 1.0 and car.alive \
+			and _hit_frames > 0
+	var moving := car.linear_velocity.length()
+	print("  фаза 2: бросок на отбойник 25 м/с — выход за кромку %.2f м, "
+			% _worst_out + "ведение борта %d кадров, ход через 2 с %.1f м/с (%s)"
+			% [_hit_frames, moving, "ok" if hold_ok else "FAIL"])
+	var ok := _lap_ok and hold_ok
 	print("SAND LAP TEST: %s" % ("PASS" if ok else "FAIL"))
 	get_tree().quit(0 if ok else 1)

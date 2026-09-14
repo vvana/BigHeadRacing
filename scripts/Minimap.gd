@@ -62,6 +62,9 @@ func setup(track: TrackBuilder, cars_ref: Array[Car]) -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if not track.has_walls:
 		edge_color = Color(0.93, 0.85, 0.6, 0.7)
+	elif track.kind == TrackBuilder.KIND_SAND:
+		# Пустыня: кромки в цвет стальных отбойников (14.09).
+		edge_color = Color(0.86, 0.86, 0.82, 0.85)
 	elif track.kind == TrackBuilder.KIND_NEON:
 		# Ночной город: кромки на карте в цвет неоновых трубок.
 		edge_color = Color(0.25, 0.95, 1.0, 0.85)

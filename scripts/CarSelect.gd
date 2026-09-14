@@ -548,7 +548,7 @@ func _show_invite(from: String, count: int) -> void:
 	ok.pressed.connect(func() -> void:
 		Social.accept_invite()
 		_hide_invite()
-		_open_party())
+		_open_party(false))
 	plate.add_child(ok)
 	var no := Button.new()
 	no.text = "ОТКЛОНИТЬ"
@@ -570,7 +570,9 @@ func _hide_invite() -> void:
 		_invite_box = null
 
 
-func _open_party() -> void:
+## focus_search — см. PartyPanel.open(): после «ПРИНЯТЬ» приглашение
+## поле поиска фокус не получает (на телефоне вылезала клавиатура).
+func _open_party(focus_search: bool = true) -> void:
 	if _party == null:
 		return
 	_grid_panel.visible = false
@@ -580,7 +582,7 @@ func _open_party() -> void:
 		_weapons.visible = false
 	if _stats != null:
 		_stats.visible = false
-	_party.open()
+	_party.open(focus_search)
 	_set_panel_open(true)
 
 

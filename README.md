@@ -73,10 +73,9 @@ Godot 4.3 / GDScript, 3D с фиксированной ортографичес�
   нельзя — задом наперёд, как и в RnRR, не поедешь.
 - **Четыре трассы, выбираются случайно на каждый заезд**:
   - *классика* (~730 м): трава, красные ограждения, горка и трамплины;
-  - *пустыня* (~690 м): песок вокруг, **ограждений нет** — с полотна можно
-    съехать, но рыхлый песок сильно душит тягу и потолок скорости, а
-    влетевшую на полном ходу машину активно тормозит до песчаного
-    потолка; из-под колёс всегда летит песчаная пыль (на песчаной трассе
+  - *пустыня* (~690 м): песок вокруг, вдоль полотна стальные отбойники
+    (с 14.09; раньше ограждений не было и с полотна можно было съехать на
+    рыхлый песок); из-под колёс летит песчаная пыль (на песчаной трассе
     пыль песочного цвета и при дрифте);
   - *ночной город* (~700 м): улицы с прямоугольными перекрёстками, тёмный
     асфальт, неоновые трубки по верху ограждений (голубая внутри, маджента
@@ -151,7 +150,7 @@ Godot 4.3 / GDScript, 3D с фиксированной ортографичес�
 ## Запуск
 
 **Проще всего — готовая сборка (Windows):** в папке `dist/` лежит
-`BigHeadRacing.exe` (+ `BigHeadRacing.pck` рядом — нужен обязательно).
+`DustAndFlame.exe` (+ `DustAndFlame.pck` рядом — нужен обязательно).
 После `git pull` просто запустить exe — никакой Godot и пути не нужны.
 Сборка пересобирается при изменениях игры; версию протокола
 (`Net.PROTOCOL`) сверяют и сервер заезда, и сервер друзей: старая сборка
@@ -164,8 +163,8 @@ Godot 4.3 / GDScript, 3D с фиксированной ортографичес�
 ассеты (создаёт кэш `.godot/`, в git он не хранится), затем запускать:
 
 ```bash
-godot --headless --path "путь/к/BigHeadRacing" --import
-godot --path "путь/к/BigHeadRacing"
+godot --headless --path "путь/к/проекту" --import
+godot --path "путь/к/проекту"
 ```
 
 Или просто открыть `project.godot` в редакторе Godot (импорт пройдёт сам)
@@ -174,7 +173,7 @@ godot --path "путь/к/BigHeadRacing"
 ### Сборка APK (Android)
 
 Экспорт идёт из командной строки; Godot берёт настройки из
-`export_presets.cfg` (пресет `Android`, пакет `ru.bighead.racing`).
+`export_presets.cfg` (пресет `Android`, пакет `ru.dustandflame.game`).
 
 **Для друзей — отладочная сборка.** `apksigner` ищет Java по `JAVA_HOME`, а
 Godot её не выставляет: без переменной APK выйдет НЕПОДПИСАННЫМ и не
@@ -182,28 +181,32 @@ Godot её не выставляет: без переменной APK выйде
 
 ```powershell
 $env:JAVA_HOME='C:\Program Files\Android\Android Studio\jbr'
-godot --headless --path . --export-debug "Android" dist/BigHeadRacing.apk
-E:\Android\Sdk\build-tools\34.0.0\apksigner.bat verify dist/BigHeadRacing.apk
+godot --headless --path . --export-debug "Android" dist/DustAndFlame.apk
+E:\Android\Sdk\build-tools\34.0.0\apksigner.bat verify dist/DustAndFlame.apk
 ```
 
 **Для магазина — релизная.** Отладочный ключ (`CN=Android Debug`) магазины
 не принимают: он одинаков у всех разработчиков, и обновить таким
-приложение потом нельзя. Нужен свой keystore; путь и пароль Godot 4.3
-читает из переменных окружения, так что в `export_presets.cfg` (он в git!)
-пароль писать не надо:
+приложение потом нельзя. Ключ игры — `E:\UnityProjects\dustflame.keystore`,
+алиас `dustflame` (создан 14.09.2026, владелец Andrei Sukhoverkhov); пароль
+знает только игрок, в репозитории его нет. Порядок, который реально
+сработал: Godot собирает НЕПОДПИСАННЫЙ релиз (без ключа в пресете он
+ругается «failed», но файл кладёт), затем apksigner подписывает его, спросив
+пароль в консоли — в аргументах пароль не светится:
 
 ```powershell
 $env:JAVA_HOME='C:\Program Files\Android\Android Studio\jbr'
-$env:GODOT_ANDROID_KEYSTORE_RELEASE_PATH='полный\путь\release.keystore'
-$env:GODOT_ANDROID_KEYSTORE_RELEASE_USER='алиас-ключа'
-$env:GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD='пароль'
-godot --headless --path . --export-release "Android" dist/BigHeadRacing.apk
-E:\Android\Sdk\build-tools\34.0.0\apksigner.bat verify --print-certs dist/BigHeadRacing.apk
+godot --headless --path . --export-release "Android" dist/DustAndFlame-unsigned.apk
+E:\Android\Sdk\build-tools\34.0.0\apksigner.bat sign --ks E:\UnityProjects\dustflame.keystore --ks-key-alias dustflame --out dist\DustAndFlame-release.apk dist\DustAndFlame-unsigned.apk
+E:\Android\Sdk\build-tools\34.0.0\apksigner.bat verify --print-certs dist\DustAndFlame-release.apk
 ```
 
-В выводе `verify` должно стоять имя ВАШЕГО сертификата, а не
+В выводе `verify` должно стоять `CN=Andrei Sukhoverkhov`, а не
 `CN=Android Debug`. Ключ и пароль от него терять нельзя: без них в магазин
 не выложить следующую версию — она обязана быть подписана тем же ключом.
+Держите копию keystore вне диска с проектом. Отладочная и релизная сборки
+подписаны разными ключами, поэтому поверх друг друга на телефон не
+встают — сначала удалить прежнюю.
 
 Перед каждой загрузкой в магазин поднимайте `version/code` в
 `export_presets.cfg` (магазин не примет тот же код дважды) и держите
@@ -226,13 +229,13 @@ E:\Android\Sdk\build-tools\34.0.0\apksigner.bat verify --print-certs dist/BigHea
 2. Запустить на упрощённом рендерере (картинка почти та же):
 
    ```bash
-   godot --path "путь/к/BigHeadRacing" --rendering-method mobile
+   godot --path "путь/к/проекту" --rendering-method mobile
    ```
 
 3. Не помогло — на самом совместимом (OpenGL, работает почти везде):
 
    ```bash
-   godot --path "путь/к/BigHeadRacing" --rendering-method gl_compatibility
+   godot --path "путь/к/проекту" --rendering-method gl_compatibility
    ```
 
 4. Обновить драйверы видеокарты.

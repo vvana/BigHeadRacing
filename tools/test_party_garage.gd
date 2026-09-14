@@ -162,6 +162,38 @@ func _ready() -> void:
 	Social.connected = false
 	Social.name_ok = false
 
+	# 6. Фокус поля «имя друга» (14.09: на телефоне после «ПРИНЯТЬ»
+	# приглашение вылезала клавиатура — фокус в LineEdit). Обычное
+	# открытие на столе фокус даёт, на телефоне (ключ --touch) — нет;
+	# после «ПРИНЯТЬ» — нигде.
+	var touch := TouchControls.wanted()
+	panel.close()
+	panel.open()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var focused := panel._search.has_focus()
+	_ok(focused == (not touch), "open(): фокус поиска %s (touch=%s)"
+			% [str(focused), str(touch)])
+	panel._search.release_focus()
+	panel.close()
+	Social.invite_received.emit("Жека", 1)
+	await get_tree().process_frame
+	var accept: Button = null
+	if sel._invite_box:
+		for c in sel._invite_box.get_children():
+			if c is Button and (c as Button).text == "ПРИНЯТЬ":
+				accept = c
+	_ok(accept != null, "плашка приглашения с «ПРИНЯТЬ»")
+	if accept:
+		accept.pressed.emit()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_ok(sel._invite_box == null and panel.visible,
+			"после «ПРИНЯТЬ» плашка убрана, панель команды открыта")
+	_ok(not panel._search.has_focus(),
+			"после «ПРИНЯТЬ» поле поиска БЕЗ фокуса (клавиатура не вылезает)")
+	panel.close()
+
 	# Прибираем тестовый профиль.
 	GameState.friends = []
 	GameState._save_profile()

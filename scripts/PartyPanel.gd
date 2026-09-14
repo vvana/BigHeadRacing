@@ -81,12 +81,18 @@ func _process(delta: float) -> void:
 			_notice.text = ""
 
 
-func open() -> void:
+## focus_search — дать фокус полю «имя друга» (на столе удобно сразу
+## печатать). На телефоне фокус в LineEdit поднимает экранную клавиатуру,
+## поэтому там поле фокус не получает никогда (жалоба 14.09: после
+## «ПРИНЯТЬ» приглашение открывалась панель — и вылезала клавиатура).
+## После «ПРИНЯТЬ» и на столе фокус не даём: игрок вступает в команду,
+## а не ищет друга (ответ сервера ещё не пришёл, in_party() пока ложно).
+func open(focus_search: bool = true) -> void:
 	visible = true
 	_refresh()
 	_friends_poll = FRIENDS_POLL
 	_poll_friends()
-	if not Social.in_party() and _search:
+	if focus_search and not TouchControls.wanted() 			and not Social.in_party() and _search:
 		_search.call_deferred("grab_focus")
 
 

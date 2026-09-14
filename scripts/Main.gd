@@ -1390,8 +1390,8 @@ func _check_recovery(delta: float) -> void:
 				continue
 		else:
 			_under_time[i] = 0.0
-		# Запас — у трассы: классика 0.5 м (за ним ограждение), песчаная
-		# 12 м (съезд на песок легален, возвращаем только уехавших в дюны).
+		# Запас — у трассы 0.5 м (за ним ограждение; до 14.09 у песчаной
+		# было 12 м — съезд на песок был легален, теперь там отбойники).
 		if dist > _track.half_width_at_offset(car.track_offset) \
 				+ _track.offtrack_margin:
 			_offtrack_time[i] += delta

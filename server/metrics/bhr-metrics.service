@@ -1,5 +1,5 @@
 [Unit]
-Description=Big Head Racing — веб-панель аналитики (метрики игры)
+Description=Пыль и Пламя (Dust and Flame) — веб-панель аналитики (метрики игры)
 After=network.target
 
 [Service]
