@@ -133,6 +133,7 @@ var _social_label: Label          # «друзья: на связи / нет с�
 var _party_join := false          # «СТАРТ» нажат не нами, а командой (go)
 var _connect_wait := 0.0          # сколько висим на «ПОДКЛЮЧЕНИЕ…», с
 var _offline_note: Control        # плашка «СЕТИ НЕТ» (видна без сети)
+var _offline_note_label: Label    # её текст: «СЕТИ НЕТ…» / «ОБНОВИТЕ ИГРУ»
 var _net_tick := 0.0              # через сколько снова спросить про сеть, с
 
 
@@ -170,6 +171,7 @@ func _ready() -> void:
 	Social.invite_received.connect(_show_invite)
 	Social.party_changed.connect(_refresh_start_btn)
 	Social.go.connect(_on_party_go)
+	Social.outdated_changed.connect(_on_outdated_changed)
 	Social.report_status("garage")
 	Social.go_online()
 	if Social.connected:
@@ -307,6 +309,11 @@ func _net_target() -> Array:
 func _start_race() -> void:
 	if _name_dialog != null or _connecting or _ad_showing:
 		return   # сначала имя — окно модальное; либо уже стучимся
+	if Social.outdated:
+		# Старая сборка не играет вовсе (просьба 14.09): плашка уже висит,
+		# а «СТАРТ» подписан «ОБНОВИТЕ ИГРУ».
+		_refresh_offline_note()
+		return
 	var base: String = CarModelLibrary.CAR_IDS[_index]
 	if not GameState.car_owned(base):
 		return   # закрытая машина — сперва купить (кнопка «КУПИТЬ»)
@@ -357,7 +364,7 @@ func _start_race() -> void:
 func _on_party_go(port: int, size: int, party_id: String, count: int) -> void:
 	Analytics.party_race(count, size)   # метрика: команда поехала (10.09)
 	if _connecting or _name_dialog != null or _ad_showing \
-			or not is_inside_tree():
+			or not is_inside_tree() or Social.outdated:
 		return
 	var base: String = CarModelLibrary.CAR_IDS[_index]
 	if not GameState.car_owned(base):
@@ -395,7 +402,11 @@ func _refresh_start_btn() -> void:
 	if _start_btn == null or _connecting:
 		return
 	_start_btn.disabled = false
-	if Social.in_party():
+	if Social.outdated:
+		_start_btn.text = "ОБНОВИТЕ ИГРУ"
+		_start_btn.disabled = true
+		UiKit.style_button(_start_btn, "red", 17)
+	elif Social.in_party():
 		if bool(Social.party.get("launching", false)):
 			_start_btn.text = "ИЩЕМ ЗАЕЗД…"
 			_start_btn.disabled = true
@@ -686,7 +697,10 @@ func _refresh_name_btn() -> void:
 	if _name_btn:
 		_name_btn.text = "ИМЯ: %s" % GameState.display_name()
 	if _social_label:
-		if Social.connected:
+		if Social.outdated:
+			_social_label.text = "версия игры устарела"   # 214 px — коротко
+			_social_label.add_theme_color_override("font_color", UiKit.RED)
+		elif Social.connected:
 			_social_label.text = "друзья: на связи" if Social.name_ok \
 					else ("друзья: имя занято" if Social.name_reason == "taken"
 					else "друзья: на связи, имя не принято")
@@ -1685,14 +1699,27 @@ func _build_offline_note(canvas: Node) -> void:
 	# Мышью ничего не ловит: под ней крутят подиум протяжкой (как у плашки
 	# стенда — TestSpin ловил именно это).
 	_offline_note.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	UiKit.plate_label(_offline_note, "СЕТИ НЕТ · ЗАЕЗД С БОТАМИ", 18,
-			UiKit.text_on("red"))
+	_offline_note_label = UiKit.plate_label(_offline_note,
+			"СЕТИ НЕТ · ЗАЕЗД С БОТАМИ", 18, UiKit.text_on("red"))
 	_refresh_offline_note()
 
 
+## Та же красная плашка служит и «ОБНОВИТЕ ИГРУ» (14.09): сервер друзей
+## сказал, что наша сборка старее, — играть нельзя, пока не обновимся.
 func _refresh_offline_note() -> void:
 	if _offline_note:
-		_offline_note.visible = not Net.device_online()
+		if Social.outdated:
+			_offline_note_label.text = "ОБНОВИТЕ ИГРУ · ВЕРСИЯ УСТАРЕЛА"
+			_offline_note.visible = true
+		else:
+			_offline_note_label.text = "СЕТИ НЕТ · ЗАЕЗД С БОТАМИ"
+			_offline_note.visible = not Net.device_online()
+
+
+func _on_outdated_changed() -> void:
+	_refresh_offline_note()
+	_refresh_start_btn()
+	_refresh_name_btn()
 
 
 ## Верхняя полка табличек: название игры, уровень с полосой опыта, кошелёк,

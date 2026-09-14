@@ -153,8 +153,10 @@ Godot 4.3 / GDScript, 3D с фиксированной ортографичес�
 **Проще всего — готовая сборка (Windows):** в папке `dist/` лежит
 `BigHeadRacing.exe` (+ `BigHeadRacing.pck` рядом — нужен обязательно).
 После `git pull` просто запустить exe — никакой Godot и пути не нужны.
-Сборка пересобирается при изменениях игры; сервер проверяет версию
-протокола, так что несовпадающие версии честно скажут «обнови игру».
+Сборка пересобирается при изменениях игры; версию протокола
+(`Net.PROTOCOL`) сверяют и сервер заезда, и сервер друзей: старая сборка
+в команду не попадёт и ни один заезд не начнёт — в гараже висит плашка
+«ОБНОВИТЕ ИГРУ», пока игрок не поставит свежую сборку (с 14.09.2026).
 
 Из исходников: нужен [Godot 4.3](https://godotengine.org/download)
 (обычная сборка, не .NET).
@@ -168,6 +170,48 @@ godot --path "путь/к/BigHeadRacing"
 
 Или просто открыть `project.godot` в редакторе Godot (импорт пройдёт сам)
 и нажать `F5`.
+
+### Сборка APK (Android)
+
+Экспорт идёт из командной строки; Godot берёт настройки из
+`export_presets.cfg` (пресет `Android`, пакет `ru.bighead.racing`).
+
+**Для друзей — отладочная сборка.** `apksigner` ищет Java по `JAVA_HOME`, а
+Godot её не выставляет: без переменной APK выйдет НЕПОДПИСАННЫМ и не
+установится. Из PowerShell:
+
+```powershell
+$env:JAVA_HOME='C:\Program Files\Android\Android Studio\jbr'
+godot --headless --path . --export-debug "Android" dist/BigHeadRacing.apk
+E:\Android\Sdk\build-tools\34.0.0\apksigner.bat verify dist/BigHeadRacing.apk
+```
+
+**Для магазина — релизная.** Отладочный ключ (`CN=Android Debug`) магазины
+не принимают: он одинаков у всех разработчиков, и обновить таким
+приложение потом нельзя. Нужен свой keystore; путь и пароль Godot 4.3
+читает из переменных окружения, так что в `export_presets.cfg` (он в git!)
+пароль писать не надо:
+
+```powershell
+$env:JAVA_HOME='C:\Program Files\Android\Android Studio\jbr'
+$env:GODOT_ANDROID_KEYSTORE_RELEASE_PATH='полный\путь\release.keystore'
+$env:GODOT_ANDROID_KEYSTORE_RELEASE_USER='алиас-ключа'
+$env:GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD='пароль'
+godot --headless --path . --export-release "Android" dist/BigHeadRacing.apk
+E:\Android\Sdk\build-tools\34.0.0\apksigner.bat verify --print-certs dist/BigHeadRacing.apk
+```
+
+В выводе `verify` должно стоять имя ВАШЕГО сертификата, а не
+`CN=Android Debug`. Ключ и пароль от него терять нельзя: без них в магазин
+не выложить следующую версию — она обязана быть подписана тем же ключом.
+
+Перед каждой загрузкой в магазин поднимайте `version/code` в
+`export_presets.cfg` (магазин не примет тот же код дважды) и держите
+`version/name` в согласии с `config/version` в `project.godot` — эта строка
+уезжает в метрики.
+
+Материалы карточки магазина (тексты, иконка 512×512, скриншоты) лежат в
+`dist/store/` — см. `dist/store/КАРТОЧКА.md`.
 
 ### Если чёрный экран
 

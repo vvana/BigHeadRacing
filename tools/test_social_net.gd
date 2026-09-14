@@ -55,7 +55,7 @@ func _pump(c: Dictionary) -> void:
 			break
 		if ev[0] == ENetConnection.EVENT_CONNECT:
 			c.connected = true
-			_send(c, {t = "hello", uid = c.uid, name = c.name, car = "vz01_red",
+			_send(c, {t = "hello", proto = Net.PROTOCOL, uid = c.uid, name = c.name, car = "vz01_red",
 					status = "garage"})
 		elif ev[0] == ENetConnection.EVENT_RECEIVE:
 			var m: Variant = JSON.parse_string(

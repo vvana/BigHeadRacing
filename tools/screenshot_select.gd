@@ -66,6 +66,13 @@ func _physics_process(_d: float) -> void:
 			{name = "Жека_777", online = true, party = true, status = "garage"},
 			{name = "Вован", online = false, party = false, status = "offline"}])
 		_select.call("_show_invite", "Пельмень", 2)
+	# `--outdated` (14.09) — сервер друзей сказал «обновите игру»: красная
+	# плашка, «СТАРТ» → «ОБНОВИТЕ ИГРУ» (выключен), строка под именем.
+	if _frame == 40 and OS.get_cmdline_user_args().has("--outdated"):
+		Social.outdated = true
+		Social.outdated_text = SocialServer.outdated_text(Net.PROTOCOL + 1,
+				Net.PROTOCOL)
+		Social.outdated_changed.emit()
 	if _frame == 40 and stats:
 		GameState.stats = {races = 37, net_races = 21, wins = 9, podiums = 19,
 				place_sum = 118, best_place = 1, kills = 44, rating = 1187,
@@ -92,6 +99,9 @@ func _physics_process(_d: float) -> void:
 			name = "carselect_shop.png"
 		if OS.get_cmdline_user_args().has("--offline"):
 			name = "carselect_offline.png"
+		if OS.get_cmdline_user_args().has("--outdated"):
+			name = ("carselect_party_outdated.png" if party
+					else "carselect_outdated.png")
 		img.save_png(_out + "/" + name)
 		print("SHOT " + name)
 		get_tree().quit(0)

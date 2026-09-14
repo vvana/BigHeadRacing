@@ -135,7 +135,14 @@ func _save_ratings() -> void:
 
 func on_connect(key: int) -> void:
 	sessions[key] = {uid = "", name = "", car = "", status = "garage",
-			party = ""}
+			party = "", outdated = false}
+
+
+## Текст для игрока со старой сборкой (14.09). Без «git pull»: на телефоне
+## это бессмысленно, а игроки ставят готовые сборки.
+static func outdated_text(server: int, client: int) -> String:
+	return ("Обновите игру: у сервера версия %d, у вас %d. "
+			+ "Пока версии не совпадут, играть нельзя.") % [server, client]
 
 
 func on_disconnect(key: int) -> void:
@@ -154,7 +161,14 @@ func handle(key: int, msg: Dictionary) -> void:
 	var s: Variant = sessions.get(key)
 	if s == null:
 		return
-	match str(msg.get("t", "")):
+	var t := str(msg.get("t", ""))
+	# Старой сборке отвечаем одним и тем же на всё, кроме hello (после
+	# обновления она поздоровается заново и запрет снимется).
+	if bool(s.get("outdated", false)) and t != "hello":
+		_send(key, {t = "error", text = outdated_text(NetScript.PROTOCOL,
+				int(s.get("proto", 0)))})
+		return
+	match t:
 		"hello":
 			_hello(key, s, msg)
 		"claim":
@@ -241,6 +255,23 @@ func _hello(key: int, s: Dictionary, msg: Dictionary) -> void:
 	if uid == "":
 		_send(key, {t = "error", text = "Профиль без идентификатора"})
 		return
+	# Версия игры (14.09). Сборки до 25 поля proto не шлют — для них это 0.
+	# Старого клиента не регистрируем и в команду не пускаем: сервер заезда
+	# его всё равно отвергнет, а друзья ждали бы его на старте зря.
+	var proto := int(msg.get("proto", 0))
+	s.proto = proto
+	if proto != NetScript.PROTOCOL:
+		s.outdated = true
+		var text := outdated_text(NetScript.PROTOCOL, proto)
+		print("[social] %s: протокол %d, наш %d — обновите игру" % [
+				GS.sanitize_name(str(msg.get("name", ""))), proto,
+				NetScript.PROTOCOL])
+		_send(key, {t = "outdated", server = NetScript.PROTOCOL,
+				client = proto, text = text})
+		# Старая сборка про outdated не знает, но error показывает.
+		_send(key, {t = "error", text = text})
+		return
+	s.outdated = false
 	# Тот же uid уже на связи (второй запуск игры, переподключение до
 	# таймаута) — старая сессия теряет право голоса: её отключение больше
 	# не выбьет игрока из команды.

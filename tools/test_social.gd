@@ -11,6 +11,8 @@ extends SceneTree
 
 var _failed := 0
 var _checks := 0
+# Версия протокола для hello (14.09): без неё сервер друзей отвечает outdated.
+const PROTO := preload("res://scripts/Net.gd").PROTOCOL
 
 
 ## Сервер с подменёнными визитками, временем и «подъёмом комнат».
@@ -79,12 +81,12 @@ func _run() -> void:
 	var srv := Fake.new()
 	# --- Имена.
 	srv.on_connect(1)
-	srv.handle(1, {t = "hello", uid = "aaa1", name = "Андрей", car = "vz01_red"})
+	srv.handle(1, {t = "hello", proto = PROTO, uid = "aaa1", name = "Андрей", car = "vz01_red"})
 	var w := _last(srv, 1, "welcome")
 	_ok(bool(w.get("ok", false)), "первый hello: имя свободно — принято")
 	_ok(srv.owner_of("андрей") == "aaa1", "реестр без регистра: владелец aaa1")
 	srv.on_connect(2)
-	srv.handle(2, {t = "hello", uid = "bbb2", name = "андрей", car = "vz02_blue"})
+	srv.handle(2, {t = "hello", proto = PROTO, uid = "bbb2", name = "андрей", car = "vz02_blue"})
 	w = _last(srv, 2, "welcome")
 	_ok(not bool(w.get("ok", true)) and str(w.get("reason")) == "taken",
 			"чужой hello с тем же именем (другой регистр) — занято")
@@ -106,7 +108,7 @@ func _run() -> void:
 	_ok(srv.name_of("aaa1") == "АНДРЕЙ", "имя обновилось в реестре")
 	# Тот же uid с другого соединения — старое теряет голос.
 	srv.on_connect(3)
-	srv.handle(3, {t = "hello", uid = "aaa1", name = "АНДРЕЙ"})
+	srv.handle(3, {t = "hello", proto = PROTO, uid = "aaa1", name = "АНДРЕЙ"})
 	w = _last(srv, 3, "welcome")
 	_ok(bool(w.get("ok", false)) and int(srv.peer_of_uid["aaa1"]) == 3,
 			"второе подключение того же uid — имя своё, сессия новая")
@@ -115,7 +117,7 @@ func _run() -> void:
 
 	# --- Поиск.
 	srv.on_connect(4)
-	srv.handle(4, {t = "hello", uid = "ccc3", name = "Настя", status = "race"})
+	srv.handle(4, {t = "hello", proto = PROTO, uid = "ccc3", name = "Настя", status = "race"})
 	_take(srv, 4)
 	srv.handle(3, {t = "search", q = "ж"})
 	var sr := _last(srv, 3, "search_result")
@@ -170,7 +172,7 @@ func _run() -> void:
 	_ok(srv.parties.size() == 1 and srv.sessions[3].party != "",
 			"у приглашающего появилась команда")
 	srv.on_connect(5)
-	srv.handle(5, {t = "hello", uid = "ddd4", name = "Макс", car = "ac1"})
+	srv.handle(5, {t = "hello", proto = PROTO, uid = "ddd4", name = "Макс", car = "ac1"})
 	_take(srv, 5)
 	srv.handle(5, {t = "accept"})
 	_ok(not _take(srv, 5, "error").is_empty(), "accept без приглашения — ошибка")
@@ -281,7 +283,7 @@ func _run() -> void:
 	var keys := [10, 11, 12, 13, 14, 15]
 	for i in keys.size():
 		srv.on_connect(keys[i])
-		srv.handle(keys[i], {t = "hello", uid = "u%d" % i, name = "Игрок%d" % i})
+		srv.handle(keys[i], {t = "hello", proto = PROTO, uid = "u%d" % i, name = "Игрок%d" % i})
 		_take(srv, keys[i])
 		srv.handle(3, {t = "invite", name = "Игрок%d" % i})
 		var inv_i := _last(srv, keys[i], "invite")
@@ -349,7 +351,7 @@ func _run() -> void:
 	_ok(not _take(srv, 3, "error").is_empty(), "просроченное приглашение не принять")
 	# Без подтверждённого имени приглашать нельзя.
 	srv.on_connect(20)
-	srv.handle(20, {t = "hello", uid = "zzz", name = ""})
+	srv.handle(20, {t = "hello", proto = PROTO, uid = "zzz", name = ""})
 	w = _last(srv, 20, "welcome")
 	_ok(not bool(w.get("ok", true)) and str(w.get("reason")) == "empty",
 			"hello без имени — reason empty")
@@ -361,13 +363,13 @@ func _run() -> void:
 	# сыгравшие, порядок по рейтингу, место спрашивающего, без чужих uid.
 	var top_srv := Fake.new()
 	top_srv.on_connect(1)
-	top_srv.handle(1, {t = "hello", uid = "u1", name = "Первый", rating = 1040, races = 5})
+	top_srv.handle(1, {t = "hello", proto = PROTO, uid = "u1", name = "Первый", rating = 1040, races = 5})
 	top_srv.on_connect(2)
-	top_srv.handle(2, {t = "hello", uid = "u2", name = "Новичок", rating = 1000, races = 0})
+	top_srv.handle(2, {t = "hello", proto = PROTO, uid = "u2", name = "Новичок", rating = 1000, races = 0})
 	top_srv.on_connect(3)
-	top_srv.handle(3, {t = "hello", uid = "u3", name = "Третий", rating = 1020, races = 2})
+	top_srv.handle(3, {t = "hello", proto = PROTO, uid = "u3", name = "Третий", rating = 1020, races = 2})
 	top_srv.on_connect(4)
-	top_srv.handle(4, {t = "hello", uid = "u4", name = "Первый"})   # имя занято — без имени
+	top_srv.handle(4, {t = "hello", proto = PROTO, uid = "u4", name = "Первый"})   # имя занято — без имени
 	top_srv.handle(4, {t = "rating", r = 5000, races = 9})
 	top_srv.handle(3, {t = "rating", r = 1060, races = 3})
 	top_srv.handle(2, {t = "top"})
@@ -400,7 +402,7 @@ func _run() -> void:
 	for i in 15:
 		var k := 100 + i
 		top_srv.on_connect(k)
-		top_srv.handle(k, {t = "hello", uid = "m%d" % i, name = "Масса%d" % i,
+		top_srv.handle(k, {t = "hello", proto = PROTO, uid = "m%d" % i, name = "Масса%d" % i,
 				rating = 900 + i, races = 1})
 	top_srv.handle(2, {t = "top"})
 	tr = _last(top_srv, 2, "top_result")
@@ -411,7 +413,7 @@ func _run() -> void:
 	# проверку имени, размера и частоты.
 	var m := Fake.new()
 	m.on_connect(1)
-	m.handle(1, {t = "hello", uid = "mu1", name = "Метрик", car = "vz01_red"})
+	m.handle(1, {t = "hello", proto = PROTO, uid = "mu1", name = "Метрик", car = "vz01_red"})
 	_ok(m.lines.size() == 1 and str(m.lines[0].e) == "hello"
 			and str(m.lines[0].name) == "Метрик", "вход игрока пишется сервером")
 	m.handle(1, {t = "metric", e = "race", ts = 77,
@@ -444,3 +446,36 @@ func _run() -> void:
 	m.handle(1, {t = "metric", e = "race", d = {place = 3}})
 	_ok(m.lines.size() == 2 + SocialServer.METRIC_PER_MIN,
 			"metrics = false — запись выключена")
+
+	# --- Версия игры (14.09): старая сборка (без proto или с чужим) получает
+	# outdated + error, имя не регистрируется, дальнейшие команды — тот же
+	# error; после hello с верной версией запрет снимается.
+	var o := Fake.new()
+	o.on_connect(1)
+	o.handle(1, {t = "hello", uid = "old1", name = "Старый", car = "vz01_red"})
+	var od := _last(o, 1, "outdated")
+	_ok(int(od.get("server", -1)) == PROTO and int(od.get("client", -1)) == 0,
+			"hello без proto — outdated{server=%d, client=0}" % PROTO)
+	_ok(str(_last(o, 1, "error").get("text", "")).begins_with("Обновите игру"),
+			"старой сборке продублировано error «Обновите игру»")
+	_ok(_take(o, 1, "welcome").is_empty(), "welcome старой сборке не шлём")
+	_ok(o.owner_of("Старый") == "", "имя старой сборки не зарегистрировано")
+	o.handle(1, {t = "search", q = "Андрей"})
+	_ok(_take(o, 1, "search_result").is_empty()
+			and str(_last(o, 1, "error").get("text", "")).begins_with("Обновите игру"),
+			"поиск от старой сборки — только error «Обновите игру»")
+	o.on_connect(2)
+	o.handle(2, {t = "hello", proto = PROTO, uid = "new2", name = "Новый"})
+	_take(o, 2)
+	o.handle(2, {t = "invite", name = "Старый"})
+	_ok(str(_last(o, 2, "error").get("text", "")).find("не найден") >= 0,
+			"старого не пригласить — его нет в реестре")
+	o.handle(1, {t = "hello", proto = PROTO + 1, uid = "old1", name = "Старый"})
+	_ok(int(_last(o, 1, "outdated").get("client", -1)) == PROTO + 1,
+			"чужой proto (новее сервера) — тоже outdated")
+	o.handle(1, {t = "hello", proto = PROTO, uid = "old1", name = "Старый"})
+	_ok(bool(_last(o, 1, "welcome").get("ok", false))
+			and o.owner_of("Старый") == "old1",
+			"после обновления hello с верной версией — welcome, имя принято")
+	o.handle(1, {t = "search", q = "Новый"})
+	_ok(not _take(o, 1, "search_result").is_empty(), "и поиск снова работает")

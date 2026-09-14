@@ -59,6 +59,7 @@ func _ready() -> void:
 	Social.name_result.connect(func(_ok: bool, _n: String, _r: String) -> void:
 		_refresh())
 	Social.party_changed.connect(_refresh)
+	Social.outdated_changed.connect(_refresh)   # «обновите игру» (14.09)
 	Social.search_result.connect(_on_results)
 	Social.friends_result.connect(_on_friends)
 	Social.notice.connect(_on_notice)
@@ -376,7 +377,9 @@ func _toggle_ready() -> void:
 func _refresh() -> void:
 	if not is_inside_tree():
 		return
-	if not Social.connected:
+	if Social.outdated:
+		_status.text = Social.outdated_text
+	elif not Social.connected:
 		_status.text = "Нет связи с сервером друзей — проверь интернет " \
 				+ "или подожди: подключаемся…"
 	elif not Social.name_ok:

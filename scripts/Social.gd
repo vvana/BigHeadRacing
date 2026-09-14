@@ -11,14 +11,16 @@ extends Node
 ## логику (имена, команды) и умеет гоняться стендом без сети. Здесь только
 ## транспорт: пакет = JSON-словарь с полем "t".
 ##
-## Клиент → сервер: hello{uid,name,car,status,rating,races}, claim{name},
+## Клиент → сервер: hello{uid,name,car,status,rating,races,proto}, claim{name},
 ## car{car}, status{s}, search{q}, invite{name}, accept, decline,
 ## ready{on,size}, leave, rating{r,races}, top. Сервер → клиент:
 ## welcome{ok,name,reason}, claim_result{ok,name,reason},
 ## search_result{q,items}, invite{from,party,count},
 ## party{id,members,me,launching}, go{port,size,party,count},
 ## top_result{items,rank,total} (таблица лучших, 10.09), notice{text},
-## error{text}.
+## error{text}, outdated{server,client,text} — версия игры устарела
+## (14.09): сервер друзей сверяет Net.PROTOCOL из hello и старого клиента
+## в команду не пускает; гараж по флагу outdated запрещает любой старт.
 
 const SOCIAL_PORT := 9990
 const CHANNELS := 2
@@ -35,6 +37,7 @@ signal party_changed()
 signal go(port: int, size: int, party_id: String, count: int)
 signal notice(text: String)
 signal top_result(items: Array, rank: int, total: int)   # таблица лучших
+signal outdated_changed()          # сервер сказал «обновите игру» (14.09)
 
 var server: SocialServer = null   # ворота: логика
 var _host: ENetConnection = null
@@ -50,6 +53,8 @@ var party := {}                   # последний ростер {id, members
 var pending_invite := {}          # {from, party, count} — ждёт ответа
 var status := "garage"
 var last_top := {}                # последний top_result {items, rank, total}
+var outdated := false             # наша версия старее серверной (14.09)
+var outdated_text := ""           # что показать игроку
 var _want := false                # хотим быть на связи
 var _retry := 0.0
 var _addr := ""
@@ -152,7 +157,7 @@ func _hello() -> void:
 	var st: Dictionary = GameState.stats
 	send({t = "hello", uid = GameState.uid, name = GameState.player_name,
 			car = GameState.selected_car_id, status = status,
-			rating = GameState.rating(),
+			proto = Net.PROTOCOL, rating = GameState.rating(),
 			races = int(st.get("races", 0)) if not st.is_empty() else 0})
 
 
@@ -365,7 +370,20 @@ func _on_message(msg: Dictionary) -> void:
 		"welcome":
 			name_ok = bool(msg.get("ok", false))
 			name_reason = str(msg.get("reason", ""))
+			if outdated:
+				# Сервер принял нашу версию — запрет снят (обновились).
+				outdated = false
+				outdated_text = ""
+				outdated_changed.emit()
 			welcome.emit(name_ok, name_reason)
+		"outdated":
+			# Наша сборка старее серверной: играть нельзя ни в команде, ни
+			# в одиночку — сервер заезда всё равно откажет (14.09).
+			outdated = true
+			outdated_text = str(msg.get("text", "Обновите игру"))
+			print("[social] версия устарела: у сервера %s, у нас %s" % [
+					str(msg.get("server", "?")), str(msg.get("client", "?"))])
+			outdated_changed.emit()
 		"claim_result":
 			var ok := bool(msg.get("ok", false))
 			if ok:
