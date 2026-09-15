@@ -10358,3 +10358,24 @@ pck 94 525 536 Б → export-debug «Android (test)» dist/test/DustAndFlame.apk
 TestSnowLap PASS. Снимки tools/shots_dbg удалены.
 **Файлы:** scripts/Car.gd, tools/shot_wheel_steer.gd (--track), новые
 tools/ShotWheelHeading.tscn + shot_wheel_heading.gd. Не закоммичено.
+
+## 2026-09-15 (вечер, 3) — «обнови dist»
+
+Пересобраны ТОЛЬКО тестовые сборки (боевые dist/DustAndFlame.* не трогались)
+с кодом коммита 6e70247 (диски колёс, неон на подиуме, декор у полотна, снег):
+`--import`, «Windows Desktop (test)» → dist/test/DustAndFlame.exe/.pck (16:31),
+«Android (test)» → dist/test/DustAndFlame.apk (16:32, 113 МБ).
+ГРАБЛЯ: `--export-release "Android (test)"` падает «Не удалось найти хранилище
+ключей» — у тестового пресета релизный ключ не задан; тестовый APK собирать
+`--export-debug` (подпись Android Debug, apksigner verify — ок).
+Тестовый сервер не обновлялся.
+
+СБОРКА ТЕСТОВЫХ 15.09 16:35 («dist обнови»; по правилу — только пресеты
+«(test)», JAVA_HOME задан): --import 0 → export-release «Windows Desktop
+(test)» dist/test/DustAndFlame.exe 84 214 784 Б, pck 94 529 888 Б →
+export-debug «Android (test)» dist/test/DustAndFlame.apk 113 367 130 Б,
+apksigner verify 0, пакет ru.dustandflame.game.test, строка test_server в
+pck есть. Внутри: мелкие снежинки, неон без блика, декор у полотна,
+колёса без переворота диска. Боевые dist/DustAndFlame.* не трогались.
+Тестовый сервер игрок обновляет сам («Обновить тестовый сервер.bat»),
+если нужны серверные правки (декор — клиентский, колёса — клиентские).
