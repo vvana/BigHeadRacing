@@ -6,8 +6,9 @@ extends Node
 ## порт комнаты как постоянный — дальше вечное «Сервер не ответил за 5 с».
 ## Проверяем:
 ##   1) цель «СТАРТ» (_net_target) — домашний порт, а не порт комнаты;
-##   2) амнистию cfg: сохранённый порт из диапазона комнат при загрузке
-##      откатывается к воротам (net.cfg бережно восстанавливается).
+##   2) порт из net.cfg НЕ читается (15.09): чужой порт в cfg (комнаты,
+##      другая сборка на этом же ПК) не сбивает ворота сборки —
+##      Net.gate_port() (net.cfg бережно восстанавливается).
 
 func _ready() -> void:
 	# Состояние «нас только что перенаправили»: дом — ворота, порт — комната.
@@ -32,9 +33,11 @@ func _ready() -> void:
 	cfg.set_value("net", "host", "139.100.234.166")
 	cfg.set_value("net", "port", Net.PORT + 1)
 	cfg.save(Net.CONFIG_PATH)
+	Net.port = Net.gate_port()   # как после Net._ready
+	Net.home_port = Net.port
 	Net._load_config()
-	var ok2: bool = Net.port == Net.PORT and Net.home_port == Net.PORT
-	print("амнистия cfg: порт %d, дом %d %s"
+	var ok2: bool = Net.port == Net.gate_port() and Net.home_port == Net.gate_port()
+	print("порт cfg игнорируется (ворота сборки): порт %d, дом %d %s"
 			% [Net.port, Net.home_port, "ok" if ok2 else "FAIL"])
 	if had_cfg:
 		var f := FileAccess.open(Net.CONFIG_PATH, FileAccess.WRITE)

@@ -73,15 +73,17 @@ func _ready() -> void:
 	Engine.max_fps = 120
 	_main = get_parent() as Node3D
 	var addr := "127.0.0.1"
+	var port := Net.PORT   # `--port=N` — например, тестовый сервер VDS (9877)
 	for a: String in OS.get_cmdline_user_args():
-		if not a.begins_with("--"):
+		if a.begins_with("--port="):
+			port = maxi(1, int(a.trim_prefix("--port=")))
+		elif not a.begins_with("--"):
 			addr = a
-			break
-	print("  сервер: %s:%d" % [addr, Net.PORT])
+	print("  сервер: %s:%d" % [addr, port])
 	# remember=false: иначе каждый прогон стенда затирал бы игроку
 	# сохранённый адрес VDS в user://net.cfg своим 127.0.0.1.
 	_main._loss_probe = true   # считать пропажи снимков по меткам
-	Net.join_server(addr, Net.PORT, false)
+	Net.join_server(addr, port, false)
 
 
 func _physics_process(delta: float) -> void:

@@ -46,7 +46,14 @@ const KIND_GRASS := "grass"   # классика: трава, ограждени
 const KIND_SAND := "sand"     # пустыня: песок, отбойники вдоль полотна (14.09)
 const KIND_NEON := "neon"     # ночной город: тёмный асфальт, неон на стенах
 const KIND_SPACE := "space"   # космос: трасса среди звёзд, планеты вокруг
-const KINDS: Array[String] = [KIND_GRASS, KIND_SAND, KIND_NEON, KIND_SPACE]
+const KIND_SNOW := "snow"     # зима: укатанный снег, лёд, ели и деревня (15.09)
+const KINDS: Array[String] = [KIND_GRASS, KIND_SAND, KIND_NEON, KIND_SPACE,
+		KIND_SNOW]
+
+## Сцепление шин на полотне ЭТОЙ трассы — множитель Car.grip (1.0 —
+## обычный асфальт). Зима: укатанный снег со льдом держит хуже, машину
+## в повороте заметно сносит (Car._drive).
+const SNOW_GRIP := 0.6
 
 ## Вид трассы. Выставить ДО добавления узла в дерево (читается в _ready).
 var kind := KIND_GRASS
@@ -60,6 +67,11 @@ var _ground_drop := GROUND_DROP
 
 static func pick_random_kind() -> String:
 	return KINDS[randi() % KINDS.size()]
+
+
+## Множитель сцепления полотна (см. SNOW_GRIP).
+func road_grip() -> float:
+	return SNOW_GRIP if kind == KIND_SNOW else 1.0
 
 
 var _curve := Curve3D.new()
@@ -287,6 +299,32 @@ const SEGMENTS_SPACE: Array = [
 	["A", 48.0, 130.0, 11.0],    # 11 размашистый выход на стартовую прямую
 ]
 
+## ЗИМА (kind == KIND_SNOW): «зимнее ралли» — две длинные прямые (~162 и
+## ~141 м), шпилька у сугроба (R=20), эска и связка коротких поворотов.
+## Плоско, ограждения ЕСТЬ (синие борта на белом снегу), полотно —
+## укатанный снег: сцепление ниже (SNOW_GRIP), в повороте машину сносит.
+## Длина 737 м — как классика (727). Конфигурация подобрана численным
+## перебором (как песок, неон и космос; радиусы, углы и длины — круглые,
+## чтобы не подгонять руками): замыкание точное, свободные прямые 162.2 и
+## 140.5 м, витки не сближаются ближе 46 м, габарит 249×176 м.
+## Сумма углов: правые 110+125+100+50+40+45 = 470, левые 65+45 = 110 →
+## 470−110 = 360. ✓
+const SEGMENTS_SNOW: Array = [
+	["S", -1.0, 10.5],           # 0  СТАРТОВАЯ ПРЯМАЯ (свободная, ~162 м)
+	["A", 42.0, 110.0, 9.5],     # 1  размашистый правый
+	["S", 36.0, 9.0],            # 2  прямая
+	["A", 26.0, -65.0, 8.0],     # 3  левый
+	["A", 20.0, 125.0, 6.5],     # 4  ШПИЛЬКА — самое узкое место
+	["S", -1.0, 10.0],           # 5  ДЛИННАЯ ПРЯМАЯ (свободная, ~141 м)
+	["A", 38.0, 100.0, 9.0],     # 6  правый
+	["A", 34.0, -45.0, 9.0],     # 7  эска: влево
+	["S", 33.0, 9.5],            # 8  прямая
+	["A", 44.0, 50.0, 10.0],     # 9  быстрый правый
+	["S", 28.0, 8.5],            # 10 прямая, сужается
+	["A", 24.0, 40.0, 7.5],      # 11 тесный правый
+	["A", 45.0, 45.0, 10.5],     # 12 выход на стартовую прямую
+]
+
 const TURTLE_STEP := 3.0   # шаг опорных точек вдоль трассы, м
 
 
@@ -300,12 +338,14 @@ static func segments_for(kind_: String) -> Array:
 			return SEGMENTS_NEON
 		KIND_SPACE:
 			return SEGMENTS_SPACE
+		KIND_SNOW:
+			return SEGMENTS_SNOW
 		_:
 			return SEGMENTS
 
 
 ## Высота оси для ЭТОЙ трассы: классика — профиль с горкой, остальные
-## (песок, ночной город, космос) — плоско; рельеф только на земле за полотном.
+## (песок, ночной город, космос, зима) — плоско; рельеф только на земле за полотном.
 func _height_at(t: float) -> float:
 	return _profile_height(t) if kind == KIND_GRASS else 0.0
 
@@ -571,6 +611,10 @@ func _ground_height(x: float, z: float) -> float:
 	if kind == KIND_NEON:
 		# Город: пустыри почти плоские — на них стоят здания (TrackDecor).
 		return base - away * 0.03 + hills * 0.15 * blend
+	if kind == KIND_SNOW:
+		# Зима: заснеженные поля с пологими сугробами; обочина чуть ниже
+		# полотна (сугроб у борта), дальше — мягкие холмы под ёлками.
+		return base - away * 0.06 + hills * 0.45 * blend
 	return base - away * 0.28 + hills * blend
 
 
@@ -604,9 +648,15 @@ func _build_ground() -> void:
 			var d := Vector3(x0, h[ix][iz + 1], z1)
 			for v in [a, b, c, a, c, d]:
 				# Планарная UV по миру: тайл травы 14 м; у космоса тайл
-				# звёздного поля 50 м — повтор звёзд не бросается в глаза.
-				st.set_uv(Vector2(v.x, v.z)
-						* (0.02 if kind == KIND_SPACE else 0.07))
+				# звёздного поля 50 м — повтор звёзд не бросается в глаза;
+				# у снега 40 м — пятна между сугробами не повторяются
+				# «обоями» с высоты.
+				var uv_k := 0.07
+				if kind == KIND_SPACE:
+					uv_k = 0.02
+				elif kind == KIND_SNOW:
+					uv_k = 0.025
+				st.set_uv(Vector2(v.x, v.z) * uv_k)
 				# Низкочастотная вариация яркости по вершинам ломает
 				# видимую повторяемость тайла (пятна «одинаково
 				# расположенные» бросались в глаза).
@@ -640,6 +690,11 @@ func _build_ground() -> void:
 		# видны независимо от тусклого космического освещения.
 		mat.albedo_texture = _space_ground_texture()
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	elif kind == KIND_SNOW:
+		# Зима: снег — белое поле с голубоватыми тенями между сугробами и
+		# редкими искрами наста (текстура печётся кодом, тайл 14 м).
+		mat.albedo_texture = _snow_ground_texture()
+		mat.roughness = 0.9
 	else:
 		# Зелёные поля — трава из Cartoon Tracks Pack (пятна текстуры
 		# смягчены при конвертации, см. ПРОГРЕСС.md).
@@ -705,6 +760,37 @@ static func _space_ground_texture() -> ImageTexture:
 	return ImageTexture.create_from_image(img)
 
 
+## Снег для земли зимней трассы: белое поле, мягкие голубоватые пятна
+## (тени между сугробами) и редкие блёстки наста. Тайлится (пятна гаснут
+## к краям, блёстки не у кромки), зерно фиксировано.
+static func _snow_ground_texture() -> ImageTexture:
+	const S := 256
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20260915
+	var img := Image.create(S, S, false, Image.FORMAT_RGB8)
+	img.fill(Color(0.93, 0.95, 0.98))
+	# Пятна редкие и мягкие: тайл 40 м (см. _build_ground), и повтор
+	# резкого рисунка с высоты читался бы как обои.
+	for _n in 9:
+		var cx := rng.randf_range(30, S - 30)
+		var cy := rng.randf_range(30, S - 30)
+		var r := rng.randf_range(28.0, 60.0)
+		var depth := rng.randf_range(0.02, 0.05)
+		for py in range(maxi(0, int(cy - r)), mini(S, int(cy + r))):
+			for px in range(maxi(0, int(cx - r)), mini(S, int(cx + r))):
+				var d := Vector2(px - cx, py - cy).length() / r
+				if d >= 1.0:
+					continue
+				var k := (1.0 - d) * (1.0 - d) * depth
+				var c := img.get_pixel(px, py)
+				img.set_pixel(px, py, Color(c.r - k * 1.3, c.g - k * 0.9, c.b - k * 0.3))
+	for _i in 160:
+		var x := rng.randi_range(1, S - 2)
+		var y := rng.randi_range(1, S - 2)
+		img.set_pixel(x, y, Color(1.0, 1.0, 1.0))
+	return ImageTexture.create_from_image(img)
+
+
 ## Полотно трассы: непрерывная лента по кривой с собственной коллизией —
 ## именно по ней едут машины (земля под ней может уходить вниз).
 func _build_road() -> void:
@@ -743,6 +829,12 @@ func _build_road() -> void:
 			# Космос: сине-фиолетовое «покрытие станции», чуть светлее
 			# пустоты вокруг — полотно читается на фоне звёзд.
 			mat.albedo_color = Color(0.13, 0.13, 0.22)
+		KIND_SNOW:
+			# Зима: укатанный снег со льдом — серо-голубой, темнее рыхлого
+			# снега вокруг и с ледяным бликом (низкая шероховатость).
+			mat.albedo_color = Color(0.66, 0.72, 0.80)
+			mat.roughness = 0.35
+			mat.metallic = 0.1
 		_:
 			mat.albedo_color = Color(0.18, 0.18, 0.2)
 	road.material_override = mat
@@ -819,6 +911,9 @@ func _build_walls() -> void:
 			mat.albedo_color = Color(0.10, 0.10, 0.16)
 		KIND_SPACE:
 			mat.albedo_color = Color(0.14, 0.12, 0.24)
+		KIND_SNOW:
+			# Зима: синие борта — на белом снегу читаются с любого ракурса.
+			mat.albedo_color = Color(0.16, 0.30, 0.62)
 		_:
 			mat.albedo_color = Color(0.75, 0.2, 0.15)
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED

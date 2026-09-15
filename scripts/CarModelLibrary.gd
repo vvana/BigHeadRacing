@@ -1405,6 +1405,11 @@ static func _attach_underglow(m: Node3D, color: String, base_y: float) -> void:
 	light.light_energy = 1.4 if black else 2.2
 	light.omni_range = 3.2
 	light.omni_attenuation = 1.4
+	# Без зеркального блика: на металлическом листе подиума (гараж, лобби)
+	# точечный свет давал яркую «дорожку» от центра машины к камере
+	# (жалоба 15.09 «свет уходит странно вниз»). Диффузная засветка
+	# днища и колёс остаётся.
+	light.light_specular = 0.0
 	light.shadow_enabled = false
 	light.position = Vector3(0.0, base_y + 0.25, 0.0)
 	holder.add_child(light)

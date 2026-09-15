@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_shotwheelheading"]
+
+[ext_resource type="Script" path="res://tools/shot_wheel_heading.gd" id="1_swh"]
+
+[node name="ShotWheelHeading" type="Node3D"]
+script = ExtResource("1_swh")

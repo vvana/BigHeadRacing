@@ -23,6 +23,9 @@ extends Node
 ## в команду не пускает; гараж по флагу outdated запрещает любой старт.
 
 const SOCIAL_PORT := 9990
+## Сервер друзей ТЕСТОВОГО сервера (15.09): Net.PORT_TEST + 13, как и
+## боевой. Тестовая сборка (Net.is_test_build) ходит сюда.
+const SOCIAL_PORT_TEST := 9890
 const CHANNELS := 2
 const RETRY := 8.0            # клиент: секунд между попытками подключения
 const MAX_EVENTS := 64        # событий ENet за кадр
@@ -66,6 +69,10 @@ func _ready() -> void:
 	if OS.has_feature("web"):
 		set_process(false)
 		return
+	# Тестовая сборка — к тестовому серверу друзей (см. Net.is_test_build);
+	# ключ командной строки (стенды, юнит тестового сервера) сильнее.
+	if Net.is_test_build():
+		_port = SOCIAL_PORT_TEST
 	for a: String in OS.get_cmdline_user_args():
 		if a.begins_with("--social-port="):
 			_port = maxi(1, int(a.trim_prefix("--social-port=")))

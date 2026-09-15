@@ -297,7 +297,7 @@ func _unhandled_input(event: InputEvent) -> void:
 ## смертны (поймано у живого игрока 28.08). Поля адреса на экране больше
 ## нет (просьба 03.09) — игроку это знать незачем.
 func _net_target() -> Array:
-	var port: int = Net.home_port if Net.home_port > 0 else Net.PORT
+	var port: int = Net.home_port if Net.home_port > 0 else Net.gate_port()
 	return [Net.host.strip_edges(), port]
 
 
@@ -1650,6 +1650,7 @@ func _setup_hud() -> void:
 	canvas.add_child(_column)
 	_build_top_shelf(canvas)
 	_build_test_badge(canvas)
+	_build_test_server_badge(canvas)
 	_build_offline_note(canvas)
 	_build_podium_ui(canvas, _column)
 	_build_mode_ui(_column)
@@ -1682,6 +1683,25 @@ func _build_test_badge(canvas: Node) -> void:
 	sub.size = Vector2(560, 16)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	DisplayServer.window_set_title("Пыль и Пламя — СТЕНД (тестовый профиль)")
+
+
+## Жёлтая плашка «ТЕСТОВЫЙ СЕРВЕР» (15.09): эта сборка ходит не на боевые
+## ворота, а на тестовый экземпляр сервера (Net.PORT_TEST), — чтобы сборку
+## для проверки нельзя было спутать с той, что лежит в RuStore. Стоит под
+## плашкой стенда, если есть и она. Мышь не ловит (подиум крутят протяжкой).
+func _build_test_server_badge(canvas: Node) -> void:
+	if not Net.is_test_build():
+		return
+	var y := TOP_Y + TOP_H + 8
+	if GameState.is_test_profile():
+		y += 52
+	var badge := UiKit.plate(canvas, "yellow", Vector2.ZERO, Vector2(400, 32))
+	_place(badge, 16, y, 400, 32)
+	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	UiKit.plate_label(badge, "ТЕСТОВЫЙ СЕРВЕР · порт %d" % Net.PORT_TEST, 15,
+			UiKit.text_on("yellow"))
+	if not GameState.is_test_profile():
+		DisplayServer.window_set_title("Пыль и Пламя — ТЕСТОВЫЙ СЕРВЕР")
 
 
 ## Плашка «СЕТИ НЕТ» под верхней полкой (просьба 10.09: «если сети нет,

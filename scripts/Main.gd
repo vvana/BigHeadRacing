@@ -389,6 +389,11 @@ func _ready() -> void:
 		cam.target = _car
 		add_child(cam)
 		cam.make_current()
+		if _track_kind == TrackBuilder.KIND_SNOW:
+			_snowfall = _make_snowfall()
+			add_child(_snowfall)
+			if _car != null:
+				_snowfall.global_position = _car.global_position + Vector3.UP * 16.0
 		_setup_hud()
 
 	if Net.is_server():
@@ -916,6 +921,10 @@ func _process(delta: float) -> void:
 	if Net.is_server():
 		# У сервера нет ни ввода, ни HUD; автовозврат машин — в _server_tick.
 		return
+
+	# Снегопад едет за своей машиной (зимняя трасса, см. _make_snowfall).
+	if _snowfall != null and _car != null and is_instance_valid(_car):
+		_snowfall.global_position = _car.visual_origin() + Vector3.UP * 16.0
 
 	if _touch:
 		_touch.show_tap(_touch_hint())
@@ -1479,6 +1488,7 @@ func _setup_environment() -> void:
 	# Космос — звёздная панорама вместо градиентного неба, тот же glow.
 	var neon := _track_kind == TrackBuilder.KIND_NEON
 	var space := _track_kind == TrackBuilder.KIND_SPACE
+	var snow := _track_kind == TrackBuilder.KIND_SNOW
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-55, -30, 0)
 	sun.shadow_enabled = true
@@ -1488,6 +1498,11 @@ func _setup_environment() -> void:
 	elif space:
 		sun.light_energy = 0.4
 		sun.light_color = Color(0.8, 0.85, 1.0)    # жёсткий свет далёкой звезды
+	elif snow:
+		# Зима: низкое белёсое солнце сквозь пасмурную дымку, тени мягче.
+		sun.rotation_degrees = Vector3(-38, -30, 0)
+		sun.light_energy = 0.95
+		sun.light_color = Color(0.93, 0.95, 1.0)
 	else:
 		sun.light_energy = 1.2
 	add_child(sun)
@@ -1507,6 +1522,13 @@ func _setup_environment() -> void:
 			sky_mat.sky_horizon_color = Color(0.17, 0.07, 0.22)
 			sky_mat.ground_horizon_color = Color(0.17, 0.07, 0.22)
 			sky_mat.ground_bottom_color = Color(0.02, 0.02, 0.04)
+		elif snow:
+			# Зима: пасмурное серо-голубое небо, белёсый горизонт, низ в
+			# тон снега.
+			sky_mat.sky_top_color = Color(0.50, 0.60, 0.76)
+			sky_mat.sky_horizon_color = Color(0.84, 0.87, 0.92)
+			sky_mat.ground_horizon_color = Color(0.84, 0.87, 0.92)
+			sky_mat.ground_bottom_color = Color(0.80, 0.83, 0.88)
 		else:
 			sky_mat.sky_top_color = Color(0.3, 0.55, 0.87)
 			sky_mat.sky_horizon_color = Color(0.74, 0.85, 0.95)
@@ -1531,11 +1553,56 @@ func _setup_environment() -> void:
 		e.glow_intensity = 0.7
 		e.glow_bloom = 0.05
 		e.glow_hdr_threshold = 1.0
+	elif snow:
+		# Зима: свет от снега — ambient ярче и голубее, тени не чёрные.
+		e.ambient_light_color = Color(0.72, 0.76, 0.86)
+		e.ambient_light_energy = 0.95
 	else:
 		e.ambient_light_color = Color(0.65, 0.67, 0.72)
 		e.ambient_light_energy = 0.8
 	env.environment = e
 	add_child(env)
+
+
+## Снегопад зимней трассы: хлопья сыплются в объёме над машиной игрока
+## (эмиттер едет за ней в _process — см. _snowfall), падают медленно и
+## чуть вбок. Картинка — та же снежинка, что у ледышки (FxKit.TEX_SNOW).
+var _snowfall: CPUParticles3D = null
+
+
+func _make_snowfall() -> CPUParticles3D:
+	var fx := CPUParticles3D.new()
+	fx.name = "Snowfall"
+	fx.top_level = true
+	fx.amount = 700
+	fx.lifetime = 7.0
+	fx.preprocess = 7.0          # к первому кадру снег уже идёт
+	fx.local_coords = false
+	fx.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+	fx.emission_box_extents = Vector3(42.0, 1.5, 42.0)
+	fx.direction = Vector3(0.25, -1.0, 0.1)
+	fx.spread = 18.0
+	fx.initial_velocity_min = 2.0
+	fx.initial_velocity_max = 3.4
+	fx.gravity = Vector3(0.0, -0.4, 0.0)
+	fx.scale_amount_min = 0.25
+	fx.scale_amount_max = 0.5
+	var quad := QuadMesh.new()
+	quad.size = Vector2.ONE
+	fx.mesh = quad
+	var mat := StandardMaterial3D.new()
+	mat.albedo_texture = load(FxKit.TEX_SNOW)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	# Без keep_scale биллборд отбрасывает масштаб частицы: scale_amount_*
+	# не работал, и каждая снежинка рисовалась метровым квадом (жалоба
+	# 15.09 «снежинки слишком большие» — правка scale ничего не меняла).
+	mat.billboard_keep_scale = true
+	mat.vertex_color_use_as_albedo = true
+	mat.albedo_color = Color(1.0, 1.0, 1.0, 0.85)
+	quad.material = mat
+	return fx
 
 
 ## Звёздная панорама космической трассы: тёмный сине-фиолетовый градиент,
@@ -1958,7 +2025,16 @@ func _on_peer_left(_id: int, slot: int) -> void:
 	_ready_done.erase(slot)
 	_join_time.erase(slot)
 	_late_slots.erase(slot)
+	var pid: String = str(_party_of_slot.get(slot, ""))
 	_party_of_slot.erase(slot)
+	# Ушёл последний член команды — забываем её целиком, вместе с секундой
+	# первого прибытия. Иначе (14.09) команда, съезжавшаяся третьим заходом
+	# за минуту (два раза разбежались из лобби, не стартовав), приносила с
+	# собой СТАРУЮ отметку, PARTY_GRACE оказывался «давно вышедшим», и заезд
+	# уезжал через LOBBY_WAIT без третьего — того унесло в отдельную комнату.
+	if pid != "" and _party_seen(pid) == 0:
+		_party_size.erase(pid)
+		_party_first.erase(pid)
 	# Старт мог ждать ушедшего товарища — пусть _maybe_start пересчитает.
 	_loading_told = false
 	# До старта слот снова ждёт человека — боту свежий ник (имя ушедшего не
@@ -2123,6 +2199,23 @@ func _maybe_start() -> void:
 		# Один раз, не каждый тик — _tick_lobby зовёт нас каждый кадр.
 		_loading_told = true
 		_rx_lobby.rpc(_lobby_players(), -1)
+
+
+## Сервер: hello от члена команды друзей — запоминаем, кого ждём (см.
+## _party_waiting). Отдельной функцией: её зовёт стенд TestPartyRegather
+## (у него нет настоящих пиров).
+func _note_party(slot: int, pid: String, party_size: int) -> void:
+	# Секунда ПЕРВОГО прибытия — от первого члена ТЕКУЩЕГО сбора: если в
+	# лобби никого из этой команды нет, сбор начинается заново (страховка к
+	# чистке в _on_peer_left — та же команда может вернуться после того, как
+	# разбежалась, не стартовав, и срок ей положен полный).
+	if _party_seen(pid) == 0 or not _party_size.has(pid):
+		_party_first[pid] = Time.get_ticks_msec() / 1000.0
+	_party_of_slot[slot] = pid
+	_party_size[pid] = clampi(party_size, 1, Net.race_size)
+	_loading_told = false
+	print("[net] hello: слот %d, команда %s (%d чел.), t=%.1f"
+			% [slot, pid, party_size, Time.get_ticks_msec() / 1000.0])
 
 
 ## Сервер: есть ли команда друзей, которая ещё не съехалась (hello с id
@@ -2607,14 +2700,7 @@ func _rx_hello(car_id: String, proto: int, want_size := 4,
 			return
 	# Команда друзей (Social): запоминаем, кого ждём (см. _party_waiting).
 	if slot >= 0 and not _net_started and party != "":
-		var pid := party.left(32)
-		_party_of_slot[slot] = pid
-		if not _party_size.has(pid):
-			_party_first[pid] = Time.get_ticks_msec() / 1000.0
-		_party_size[pid] = clampi(party_size, 1, Net.race_size)
-		_loading_told = false
-		print("[net] hello: слот %d, команда %s (%d чел.), t=%.1f"
-				% [slot, pid, party_size, Time.get_ticks_msec() / 1000.0])
+		_note_party(slot, party.left(32), party_size)
 	# Игроку ЗДЕСЬ ехать негде: слота нет (гость) или он опоздал к идущему
 	# заезду. Раньше гость получал отказ, а опоздавший ждал конца чужой
 	# гонки — теперь обоих отправляем в параллельный заезд-комнату

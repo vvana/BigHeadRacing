@@ -44,6 +44,19 @@ var _stuck_time: Array[float] = []
 var _escape_time: Array[float] = []
 var _want_move: Array[bool] = []
 
+## Сцепление машин на поле (Car.grip; на трассе 14). См. _spawn_cars.
+const FIELD_GRIP := 150.0
+## Реакция ботов на свисток (15.09: «противники жмут газ вперёд и сразу
+## закатывают мяч»): на кикоффе бот трогается не в тот же кадр, что и
+## «ИГРА!», а через человеческую паузу — у игрока есть шанс первым
+## дотянуться до мяча в центре.
+const REACT_MIN := 0.35
+const REACT_MAX := 0.9
+var _react_time: Array[float] = []
+# План команды на кадр: кто гонится за мячом, кто страхует (см. _team_plan).
+var _plan_frame := -1
+var _plan := {}
+
 var _ball_arrow: BallArrow  # стрелка к мячу у края экрана, когда он за кадром
 var _ball_marker: Node3D
 var _player_marker: Node3D
@@ -162,6 +175,13 @@ func _spawn_cars() -> void:
 		car.name = "Car%d" % i
 		car.race = self        # авиаудар (leader_car) и анонсы попаданий
 		car.weapon = -1        # стартуем без оружия — оно из бонусов
+		# Сцепление на ПОЛЕ выше трассового (15.09, «машины очень сильно
+		# скользят по полю, как на льду»). Физика та же, что в гонке, но на
+		# трассе снос прячут ограждения и кламп курса, а на открытом поле
+		# при полном руле на 16 м/с машина ехала боком со сносом 13-15 м/с
+		# (замер tools/DbgSoccerGrip). С FIELD_GRIP машина едет туда, куда
+		# смотрит нос; ручник (grip_handbrake) по-прежнему даёт дрифт.
+		car.grip = FIELD_GRIP
 		# Тюнинг косметический — характеристики игрока стоковые (03.09).
 		if i != 0:
 			car.soccer_brain = self
@@ -178,6 +198,7 @@ func _spawn_cars() -> void:
 		_stuck_time.append(0.0)
 		_escape_time.append(0.0)
 		_want_move.append(false)
+		_react_time.append(0.0)
 	# Имена: игрок (слот 0) — своё из профиля. Боты по сети — человеческие
 	# ники (в анонсах голов бот выглядит как живой игрок), а в оффлайне
 	# (футбол сетевым пока и не бывает) — честное «Бот N», просьба 10.09.
@@ -302,8 +323,11 @@ func _pop_count(txt: String, color: Color) -> void:
 
 
 func _set_controls(on: bool) -> void:
-	for c in _cars:
-		c.controls_enabled = on
+	for i in _cars.size():
+		_cars[i].controls_enabled = on
+		# Свисток: боты трогаются с человеческой задержкой (см. REACT_*).
+		if on and i != 0:
+			_react_time[i] = randf_range(REACT_MIN, REACT_MAX)
 
 
 func _physics_process(delta: float) -> void:
@@ -325,6 +349,8 @@ func _physics_process(delta: float) -> void:
 			_tick_stuck(delta)
 			_tick_drops(delta)
 			_tick_bot_weapons(delta)
+			for i in range(1, _cars.size()):
+				_react_time[i] = maxf(0.0, _react_time[i] - delta)
 		State.GOAL_PAUSE:
 			_pause_left -= delta
 			if _pause_left <= 0.0:
@@ -677,11 +703,21 @@ func _nearest_enemy_dist(car: Car, team: int) -> float:
 
 
 ## ---- ИИ ботов: вызывается из Car._ai_control (soccer_brain) ----
-## Возвращает Vector2(газ, руль). Роли в команде: 0 — нападающий (у СИНИХ
-## это игрок, бот-нападающий только у КРАСНЫХ), 1-2 — фланги, 3 — вратарь.
+## Возвращает Vector2(газ, руль). Роль 3 — вратарь, остальные — полевые.
+## Полевые делят работу по ПЛАНУ КОМАНДЫ (_team_plan, 15.09 — до того все
+## трое, кому «мяч на своей половине», гнались за ним толпой, а остальные
+## стояли столбами): за мячом гонится ОДИН — кому до него ближе (игрок
+## тоже считается, если сам едет к мячу), второй страхует между мячом и
+## своими воротами, третий идёт вперёд под подбор. Ведущего мяч
+## соперника перехватывают С УПРЕЖДЕНИЕМ (по его скорости), свободный
+## катящийся мяч ловят там, где он будет, а не где был.
 func ai_drive(car: Car) -> Vector2:
 	var i := _cars.find(car)
 	if i < 0 or _ball == null:
+		return Vector2.ZERO
+	# Реакция на свисток: бот ещё «не увидел» мяч (см. REACT_*).
+	if _react_time[i] > 0.0:
+		_want_move[i] = false
 		return Vector2.ZERO
 	var team := 0 if i < TEAM_SIZE else 1
 	var role := i % TEAM_SIZE
@@ -699,66 +735,92 @@ func ai_drive(car: Car) -> Vector2:
 		var ang_e := fwd_e.signed_angle_to(to_ball, Vector3.UP)
 		return Vector2(-1.0, -signf(ang_e))
 
+	var dir := enemy_goal - bpos     # направление атаки (к чужим воротам)
+	dir.y = 0.0
+	dir = dir.normalized()
+	var perp := Vector3(-dir.z, 0.0, dir.x)
+	var holder: Car = _ball.carrier
+	var hi := _cars.find(holder) if holder != null else -1
+	var holder_team := -1 if hi < 0 else (0 if hi < TEAM_SIZE else 1)
+	# Свободный мяч на ходу — ехать туда, где он БУДЕТ через полсекунды.
+	var bpred := bpos
+	if holder == null:
+		var bvel := _ball.linear_velocity
+		bvel.y = 0.0
+		bpred = bpos + bvel * 0.45
+	# Сторона «своего» фланга для страхующих: 1 — минус Z, 2 — плюс Z,
+	# нападающий (0) — по оси.
+	var flank := 0.0 if role == 0 else (-1.0 if role == 1 else 1.0)
+
 	var target := bpos
 	var attack := false
 	var ram_target: Car = null   # чужой ведущий мяча: его таранить МОЖНО
-	match role:
-		0:
+	if role == 3:
+		# Вратарь: держит створ; выезжает на мяч, когда тот подъехал к
+		# воротам или чужой ведёт его сюда (24/30 м — раньше 20, ведущего
+		# соперника вратарь не встречал вовсе).
+		if holder == car:
 			attack = true
-		1, 2:
-			# Фланг атакует, когда мяч на его стороне поля (или у оси),
-			# иначе держит позицию между своими воротами и мячом.
-			var side := -1.0 if role == 1 else 1.0
-			if signf(bpos.z) == side or absf(bpos.z) < 5.0:
-				attack = true
-			else:
-				target = Vector3(lerpf(own_goal.x, bpos.x, 0.55), 0.0,
-						side * 11.0)
-		3:
-			# Вратарь: держит створ, выбивает мяч, когда тот подъехал.
-			if bpos.distance_to(own_goal) < 20.0:
-				attack = true
-			else:
-				target = Vector3(own_goal.x - signf(own_goal.x) * 4.0, 0.0,
-						clampf(bpos.z, -SoccerArena.GOAL_HALF_W + 1.5,
-								SoccerArena.GOAL_HALF_W - 1.5))
+		elif bpos.distance_to(own_goal) < 24.0 \
+				or (holder_team == 1 - team
+					and holder.global_position.distance_to(own_goal) < 30.0):
+			attack = true
+		else:
+			target = Vector3(own_goal.x - signf(own_goal.x) * 4.0, 0.0,
+					clampf(bpos.z, -SoccerArena.GOAL_HALF_W + 1.5,
+							SoccerArena.GOAL_HALF_W - 1.5))
+	else:
+		var plan: Dictionary = _team_plan(team)
+		if holder == car or plan["chaser"] == car or holder_team == team:
+			# Гонюсь за мячом (или веду его, или эскортирую своего).
+			attack = true
+		elif plan["defender"] == car:
+			# Страховка: между мячом и своими воротами, на своём фланге —
+			# сорвавшийся мяч или прорыв встретим по дороге к воротам.
+			var back := own_goal - bpos
+			back.y = 0.0
+			back = back.normalized()
+			target = bpos + back * 14.0 + perp * flank * 7.0
+		else:
+			# Подбор: впереди по ходу атаки, сбоку от створа — отскок от
+			# вратаря или борта достанется нам.
+			target = bpos + dir * 15.0 + perp * flank * 10.0
 
 	if attack:
-		var dir := enemy_goal - bpos
-		dir.y = 0.0
-		dir = dir.normalized()
-		var holder: Car = _ball.carrier
-		var hi := _cars.find(holder) if holder != null else -1
 		if holder == car:
-			# Сам веду мяч — просто везём его в чужие ворота.
-			target = enemy_goal
-		elif hi >= 0 and (0 if hi < TEAM_SIZE else 1) == team:
+			# Сам веду мяч — в дальний от вратаря угол чужих ворот.
+			target = _aim_point(team)
+		elif holder_team == team:
 			# Мяч ведёт СВОЙ: в корму его не таранить (паровозик заталкивал
 			# впередистоящего вместе с мячом прямо в ворота — жалоба 01.09),
 			# едем эскортом сбоку-впереди по ходу атаки.
-			var eperp := Vector3(-dir.z, 0.0, dir.x)
 			var eside := signf(
-					(car.global_position - holder.global_position).dot(eperp))
+					(car.global_position - holder.global_position).dot(perp))
 			if eside == 0.0:
 				eside = 1.0 if role % 2 == 0 else -1.0
-			target = holder.global_position + dir * 9.0 + eperp * eside * 7.0
+			target = holder.global_position + dir * 9.0 + perp * eside * 7.0
 		elif hi >= 0:
 			# Мяч ведёт ЧУЖОЙ: цель — САМ ведущий (любой удар по нему
 			# отлипляет мяч), а не мяч у его носа: погоня за мячом сзади
-			# ведущего и была тараном в корму с мячом впереди.
+			# ведущего и была тараном в корму с мячом впереди. Целимся с
+			# УПРЕЖДЕНИЕМ — туда, где он будет, когда мы доедем.
 			ram_target = holder
-			target = holder.global_position
+			var hv := holder.linear_velocity
+			hv.y = 0.0
+			var lead: float = clampf(
+					car.global_position.distance_to(holder.global_position) / 20.0,
+					0.0, 0.7)
+			target = holder.global_position + hv * lead
 		# Мы «за мячом» (мяч между нами и чужими воротами)? Тогда толкаем
 		# сквозь него. Иначе объезжаем: точка позади мяча со смещением вбок,
 		# чтобы не запихнуть мяч в свои ворота.
-		elif (bpos - car.global_position).dot(dir) > 0.0:
-			target = bpos + dir * 1.5
+		elif (bpred - car.global_position).dot(dir) > 0.0:
+			target = bpred + dir * 1.5
 		else:
-			var perp := Vector3(-dir.z, 0.0, dir.x)
-			var side_of := signf((car.global_position - bpos).dot(perp))
+			var side_of := signf((car.global_position - bpred).dot(perp))
 			if side_of == 0.0:
 				side_of = 1.0
-			target = bpos - dir * 6.0 + perp * side_of * 5.5
+			target = bpred - dir * 6.0 + perp * side_of * 5.5
 
 	# Цель — только ВНУТРИ поля: точка «позади мяча» у борта или в створе
 	# ворот иначе оказывается ЗА стеной, и бот таранит её до бесконечности.
@@ -812,6 +874,70 @@ func ai_drive(car: Car) -> Vector2:
 		throttle = minf(throttle, 0.4)
 	_want_move[i] = absf(throttle) > 0.3
 	return Vector2(throttle, steer)
+
+
+## План команды на этот кадр физики (общий для всех её ботов, считается
+## один раз): «chaser» — кто гонится за мячом (полевой, кому до мяча
+## ближе; стоящий ЗА мячом со стороны своих ворот в выигрыше — он толкнёт
+## мяч вперёд, остальным штраф 8 м; игрок — кандидат, только если сам
+## едет к мячу, иначе боты не ждут его вечно), «defender» — из остальных
+## полевых ботов тот, кто ближе к своим воротам.
+func _team_plan(team: int) -> Dictionary:
+	var frame := Engine.get_physics_frames()
+	if _plan_frame != frame:
+		_plan.clear()
+		_plan_frame = frame
+	if _plan.has(team):
+		return _plan[team]
+	var from := 0 if team == 0 else TEAM_SIZE
+	var bpos := _ball.global_position
+	var own_goal := _arena.goal_center(team)
+	var dir := _arena.goal_center(1 - team) - bpos
+	dir.y = 0.0
+	dir = dir.normalized()
+	var chaser: Car = null
+	var best := 1e9
+	for k in TEAM_SIZE - 1:
+		var c := _cars[from + k]
+		if not c.alive or c.is_ghost():
+			continue
+		var to := bpos - c.global_position
+		to.y = 0.0
+		var d := to.length()
+		if to.dot(dir) < 0.0:
+			d += 8.0
+		if c.is_player and d > 1.0:
+			var v := c.linear_velocity
+			v.y = 0.0
+			if v.dot(to.normalized()) < 2.0:
+				continue
+		if d < best:
+			best = d
+			chaser = c
+	var defender: Car = null
+	var best_d := 1e9
+	for k in TEAM_SIZE - 1:
+		var c := _cars[from + k]
+		if c == chaser or c.is_player or not c.alive:
+			continue
+		var d := c.global_position.distance_to(own_goal)
+		if d < best_d:
+			best_d = d
+			defender = c
+	_plan[team] = {"chaser": chaser, "defender": defender}
+	return _plan[team]
+
+
+## Куда везти мяч команде team: в дальний от чужого вратаря угол створа
+## (раньше — строго в центр ворот, прямо на вратаря).
+func _aim_point(team: int) -> Vector3:
+	var goal := _arena.goal_center(1 - team)
+	var keeper: Car = _cars[(TEAM_SIZE if team == 0 else 0) + TEAM_SIZE - 1]
+	var z := 0.0
+	if keeper != null and keeper.alive:
+		var kz := keeper.global_position.z
+		z = -(1.0 if kz >= 0.0 else -1.0) * (SoccerArena.GOAL_HALF_W - 2.2)
+	return Vector3(goal.x, 0.0, z)
 
 
 ## Живой кузов (кроме ignore) в узком коридоре по курсу к цели: ближе неё,

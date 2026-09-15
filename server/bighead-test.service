@@ -1,0 +1,22 @@
+[Unit]
+Description=Пыль и Пламя (Dust and Flame) — ТЕСТОВЫЙ сервер (свежий код; порты 9877 ворота, 9878-9880 комнаты, 9890 друзья)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Свой пользователь и свой HOME: у тестового сервера ОТДЕЛЬНЫЕ user://-данные
+# (реестр имён, рейтинг, визитки комнат, метрики) — с боевым не пересекаются.
+User=bighead-test
+Group=bighead-test
+WorkingDirectory=/opt/bighead-test
+# Порты заданы явно: без --port сервер слушал бы боевые 9977/9990.
+ExecStart=/usr/local/bin/godot --headless --path /opt/bighead-test res://scenes/Main.tscn -- --server --port=9877 --social-port=9890
+Restart=always
+RestartSec=3
+Environment=HOME=/home/bighead-test
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

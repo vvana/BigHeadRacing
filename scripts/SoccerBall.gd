@@ -22,6 +22,10 @@ const NO_GRAB_TIME := 1.2     # экс-ведущему сразу липнут�
 const FOLLOW_GAIN := 10.0     # жёсткость «магнита», 1/с
 const FOLLOW_CAP := 24.0      # поправка магнита не быстрее, м/с
 const DETACH_POP := 5.0       # пинок мячу при перехвате, м/с
+## Ведущий мяч едет медленнее (Car.carry_slow, 15.09): иначе первого,
+## кто примагнитил мяч, догнать было нельзя — он закатывал его без
+## сопротивления. 0.8 — перехватчику на полном ходу хватает поля.
+const CARRY_SLOW := 0.8
 
 var last_touch: Car = null    # кто коснулся последним (автор гола)
 var carrier: Car = null       # кто ведёт мяч (примагничен к его носу)
@@ -59,44 +63,29 @@ func _ready() -> void:
 		_build_visual()
 
 
-## Бело-чёрный «футбольный» мяч: белая сфера + чёрные пятна-пятиугольники,
-## запечённые в текстуру кодом (внешних ассетов нет, как и всюду в проекте).
+## Классический футбольный мяч: усечённый икосаэдр — 12 чёрных
+## пятиугольников и 20 белых шестиугольников со швами. Текстура
+## (равнопромежуточная, под UV-сферу Godot) запечена заранее скриптом
+## tools/make_soccer_ball.py в assets/fx/soccer_ball.png (15.09: «мячу
+## нужен нормальный футбольный рисунок» — прежние 12 круглых клякс двумя
+## рядами читались как мяч для боулинга).
+const TEX_PATH := "res://assets/fx/soccer_ball.png"
+
+
 func _build_visual() -> void:
 	var mesh := MeshInstance3D.new()
 	mesh.name = "BallMesh"
 	var sphere := SphereMesh.new()
 	sphere.radius = RADIUS
 	sphere.height = RADIUS * 2.0
+	sphere.radial_segments = 48
+	sphere.rings = 24
 	mesh.mesh = sphere
 	var mat := StandardMaterial3D.new()
-	mat.albedo_texture = _make_texture()
-	mat.roughness = 0.5
+	mat.albedo_texture = load(TEX_PATH)
+	mat.roughness = 0.55
 	mesh.material_override = mat
 	add_child(mesh)
-
-
-func _make_texture() -> ImageTexture:
-	var w := 256
-	var h := 128
-	var img := Image.create(w, h, false, Image.FORMAT_RGB8)
-	img.fill(Color(0.94, 0.94, 0.92))
-	# Пятна в шахматном порядке двух рядов — на сфере читается как
-	# классический мяч; полюса не трогаем (там UV сжимается в точку).
-	for row in 2:
-		var v := 0.36 if row == 0 else 0.64
-		for k in 6:
-			var u := (float(k) + (0.5 if row == 1 else 0.0)) / 6.0
-			_blot(img, u * w, v * h, 13.0)
-	return ImageTexture.create_from_image(img)
-
-
-func _blot(img: Image, cx: float, cy: float, r: float) -> void:
-	for y in range(maxi(0, int(cy - r)), mini(img.get_height(), int(cy + r) + 1)):
-		for x in range(int(cx - r), int(cx + r) + 1):
-			if Vector2(x - cx, y - cy).length() <= r:
-				# По горизонтали текстура замкнута (сфера) — пятно у кромки
-				# продолжается с другой стороны.
-				img.set_pixel(posmod(x, img.get_width()), y, Color(0.1, 0.1, 0.12))
 
 
 func _physics_process(delta: float) -> void:
@@ -163,6 +152,7 @@ func _try_grab(car: Car) -> bool:
 	if fw.normalized().dot(to_ball.normalized()) < GRAB_COS:
 		return false
 	carrier = car
+	car.carry_slow = CARRY_SLOW
 	last_touch = car
 	FlashFx.spawn(get_parent(), global_position, 0.5, Color(0.55, 0.9, 1.0))
 	return true
@@ -236,6 +226,7 @@ func release() -> void:
 func _release() -> void:
 	if carrier != null and is_instance_valid(carrier):
 		_no_grab[carrier] = NO_GRAB_TIME
+		carrier.carry_slow = 1.0
 	carrier = null
 
 
@@ -253,5 +244,7 @@ func reset_to(pos: Vector3) -> void:
 	angular_velocity = Vector3.ZERO
 	_vis_on = false
 	last_touch = null
+	if carrier != null and is_instance_valid(carrier):
+		carrier.carry_slow = 1.0
 	carrier = null
 	_no_grab.clear()

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testsnowlap"]
+
+[ext_resource type="Script" path="res://tools/test_snow_lap.gd" id="1_testsnowlap"]
+
+[node name="TestSnowLap" type="Node3D"]
+script = ExtResource("1_testsnowlap")

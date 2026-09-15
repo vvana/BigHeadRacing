@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_dbgwheellift"]
+
+[ext_resource type="Script" path="res://tools/dbg_wheel_lift.gd" id="1_dbgwl"]
+
+[node name="DbgWheelLift" type="Node3D"]
+script = ExtResource("1_dbgwl")

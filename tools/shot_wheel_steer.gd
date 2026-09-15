@@ -3,7 +3,7 @@ extends Node3D
 ## «передние диски по-прежнему иногда пропадают»): машина стоит на
 ## трассе, ей задаются 8 курсов и 3 положения руля (−0.45 / 0 / +0.45),
 ## на каждый — кадр; PIL потом склеивает центры кадров в лист.
-## Запуск С ОКНОМ: godot --path . res://tools/ShotWheelSteer.tscn -- <папка> [id]
+## Запуск С ОКНОМ: godot --path . res://tools/ShotWheelSteer.tscn -- <папка> [id] [--track snow]
 
 var _main: Node3D
 var _frame := 0
@@ -19,7 +19,9 @@ func _ready() -> void:
 		_out = args[0]
 	DirAccess.make_dir_recursive_absolute(_out)
 	GameState.selected_car_id = args[1] if args.size() > 1 else "gz21_red-w8"
-	GameState.track_kind = "grass"
+	# Ключ `--track <вид>` (15.09): трасса стенда, по умолчанию классика.
+	var ti := args.find("--track")
+	GameState.track_kind = args[ti + 1] if ti >= 0 and ti + 1 < args.size() else "grass"
 	_main = (load("res://scenes/Main.tscn") as PackedScene).instantiate()
 	add_child(_main)
 	for y in 8:

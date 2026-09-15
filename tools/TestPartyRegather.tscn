@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_testpartyregather"]
+
+[ext_resource type="Script" path="res://tools/test_party_regather.gd" id="1_tprg"]
+
+[node name="TestPartyRegather" type="Node3D"]
+script = ExtResource("1_tprg")

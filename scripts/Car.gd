@@ -94,6 +94,11 @@ var race_over := false          # финиш: газа нет, машина пл
 var track: TrackBuilder = null  # ставит Main: маршрут ИИ и точки респавна
 var race: Node = null           # ставит Main: доступ к лидеру (авиаудар)
 var soccer_brain: Node = null   # футбол (Soccer.gd): ведёт ботов вместо трассы
+## Множитель тяги и потолка скорости, пока машина ВЕДЁТ мяч (футбол,
+## ставит SoccerBall при захвате/отпускании): ведущий чуть медленнее
+## остальных — иначе догнать его нельзя, и первый, кто примагнитил мяч
+## на кикоффе, закатывал его без сопротивления (жалоба 15.09).
+var carry_slow := 1.0
 var ai_rubber := 1.0            # «резинка»: множитель тяги/скорости ИИ
 # «Класс» ИИ: постоянный множитель темпа бота (< 1 — едет слабее игрока).
 # Вкладывается в ai_rubber менеджером гонки (Main), сам по себе не читается.
@@ -845,9 +850,10 @@ func _build_smoke() -> void:
 	# На песчаной трассе пыль песочная (track ставится Main ДО add_child,
 	# так что в _ready он уже известен; без track — обычный серый дым).
 	var sand := track != null and track.kind == TrackBuilder.KIND_SAND
+	var snow := track != null and track.kind == TrackBuilder.KIND_SNOW
 	for sx: float in [-0.55, 0.55]:
 		var p := make_smoke()
-		tint_smoke(p, _smoke_color, sand)
+		tint_smoke(p, _smoke_color, sand, snow)
 		p.position = Vector3(sx, 0.12, 1.5)
 		add_child(p)
 		_smoke.append(p)
@@ -917,7 +923,8 @@ static func make_smoke() -> CPUParticles3D:
 ## Цвет дыма: купленный в тюнинге цвет (имя из CarModelLibrary.ARCADE_COLORS
 ## — светлый клуб, гаснущий в чистый цвет), иначе песочная пыль (sand) или
 ## обычный серый дым.
-static func tint_smoke(p: CPUParticles3D, color: String, sand: bool) -> void:
+static func tint_smoke(p: CPUParticles3D, color: String, sand: bool,
+		snow := false) -> void:
 	var grad := Gradient.new()
 	if CarModelLibrary.FX_COLORS.has(color):
 		var c := CarModelLibrary.fx_color(color)
@@ -931,6 +938,10 @@ static func tint_smoke(p: CPUParticles3D, color: String, sand: bool) -> void:
 	elif sand:
 		grad.set_color(0, Color(0.87, 0.74, 0.5, 0.8))
 		grad.set_color(1, Color(0.84, 0.72, 0.5, 0.0))
+	elif snow:
+		# Зима: из-под колёс летит снежная пыль — белая, плотнее дыма.
+		grad.set_color(0, Color(0.97, 0.98, 1.0, 0.9))
+		grad.set_color(1, Color(0.9, 0.94, 1.0, 0.0))
 	else:
 		grad.set_color(0, Color(0.92, 0.92, 0.92, 0.75))
 		grad.set_color(1, Color(0.85, 0.85, 0.85, 0.0))
@@ -971,8 +982,9 @@ static func flame_ramp(color: String) -> Gradient:
 func apply_fx(id: String) -> void:
 	_smoke_color = str(CarModelLibrary.parse_cfg(id).get("smoke", ""))
 	var sand := track != null and track.kind == TrackBuilder.KIND_SAND
+	var snow := track != null and track.kind == TrackBuilder.KIND_SNOW
 	for p in _smoke:
-		tint_smoke(p, _smoke_color, sand)
+		tint_smoke(p, _smoke_color, sand, snow)
 	if _boost_flame:
 		_boost_flame.color_ramp = flame_ramp(_smoke_color)
 
@@ -2667,6 +2679,7 @@ func _drive(
 	# 0.55 -> 0.40 (31.08: «пески нужно сделать более замедляющими»).
 	if _on_sand:
 		fx_mult *= 0.40
+	fx_mult *= carry_slow   # ведение мяча в футболе (см. carry_slow)
 	var eff_max := max_speed * ai_rubber * fx_mult
 
 	if on_ground:
@@ -2724,6 +2737,9 @@ func _drive(
 		var side_speed := linear_velocity.dot(right)
 		_side_speed = side_speed  # для дыма из-под колёс на заносе
 		var current_grip := grip_handbrake if handbraking else grip
+		# Зимняя трасса: укатанный снег держит хуже (TrackBuilder.SNOW_GRIP).
+		if track != null:
+			current_grip *= track.road_grip()
 		# Масляное пятно: сцепления почти нет — машину несёт юзом.
 		if _slip_time > 0.0:
 			current_grip = slip_grip
@@ -4428,9 +4444,18 @@ func _animate_wheels(delta: float) -> void:
 	for pivot in _wheel_pivots:
 		var radius: float = pivot.get_meta("wheel_radius")
 		var sign_: float = pivot.get_meta("spin_sign")
-		pivot.rotation.x += sign_ * (speed / maxf(radius, 0.05)) * delta
-		if pivot.get_meta("is_front"):
-			pivot.rotation.y = _steer_visual
+		# Базис — из накопленного угла качения и руля НАПРЯМУЮ, а не через
+		# rotation.x += / rotation.y =. Эйлер (YXZ) при |x| > 90° раскладывает
+		# базис как x' = 180° − x, y + 180°, z + 180°: у задних Y и Z вместе
+		# дают то же самое, а у передних Y каждый кадр перезаписывался
+		# рулём, Z = 180° оставался — колесо переворачивалось диском внутрь
+		# (жалоба 15.09 «еду вправо — передний диск чёрный»; в статике не
+		# ловилось — без качения угол не уходит за 90°).
+		var spin: float = float(pivot.get_meta("spin", 0.0)) + sign_ * (speed / maxf(radius, 0.05)) * delta
+		spin = fposmod(spin, TAU)
+		pivot.set_meta("spin", spin)
+		var steer: float = _steer_visual if pivot.get_meta("is_front") else 0.0
+		pivot.basis = Basis(Vector3.UP, steer) * Basis(Vector3.RIGHT, spin)
 		pivot.position = pivot.get_meta("rest_pos")
 		var hub: Vector3 = pivot.global_position
 		var query := PhysicsRayQueryParameters3D.create(
@@ -4486,13 +4511,28 @@ func _animate_wheels(delta: float) -> void:
 	# картинка машины целиком поднимается на глубину самого мелкого из
 	# утоплений — кузов остаётся над дорогой, колёса встают на неё.
 	# Вверх — сразу, вниз — плавно, иначе кузов дрожал бы на стыках.
+	# 15.09 — ПО ОСЯМ, а не по всем четырём: при клевке носом (торможение,
+	# посадка) тонули только передние, кузов не поднимался, и передние
+	# колёса уезжали В АРКУ на 10-13 см — с изокамеры сверху крыло их
+	# закрывало целиком: «передние диски иногда пропадают» (третья причина
+	# после тёмной краски и тени крыла, стенд ShotWheelLift). Теперь
+	# кузов поднимается на глубину той ОСИ, что утонула глубже (по
+	# мелкому из двух её колёс: кочка под одним колесом кузов по-прежнему
+	# не дёргает), а задняя ось при клевке честно «вывешивается» — как
+	# подвеска настоящей машины.
 	var lift_target := 0.0
 	if all_on_road and not pens.is_empty() \
 			and global_transform.basis.y.y > 0.5:
-		var least: float = pens[0]
-		for v: float in pens:
-			least = minf(least, v)
-		lift_target = clampf(least, 0.0, BODY_LIFT_MAX)
+		var least_f := INF
+		var least_r := INF
+		for i in pens.size():
+			if _wheel_pivots[i].get_meta("is_front"):
+				least_f = minf(least_f, pens[i])
+			else:
+				least_r = minf(least_r, pens[i])
+		var axle := maxf(least_f if least_f < INF else 0.0,
+				least_r if least_r < INF else 0.0)
+		lift_target = clampf(axle, 0.0, BODY_LIFT_MAX)
 	_body_lift = lift_target if lift_target > _body_lift \
 			else lerpf(_body_lift, lift_target, 12.0 * delta)
 	if _model != null and is_instance_valid(_model) and _body_lift > 0.001:
@@ -4506,8 +4546,11 @@ func _animate_wheels(delta: float) -> void:
 		# упреждением доходил до десятков сантиметров, пивот взлетал и колесо
 		# вылезало НАД кузовом («колёса поверх машины»). К потолку добавлен
 		# подъём кузова: арка уехала вверх вместе с ним, и настолько же выше
-		# может встать колесо, не вылезая из неё.
-		var target := clampf(pens[i], 0.0, radius * 0.6 + _body_lift)
+		# может встать колесо, не вылезая из неё. Относительно кузова колесо
+		# уходит в арку не глубже 35 % радиуса (было 60 %: с камеры сверху
+		# такое колесо пропадало под крылом) — остаток утопания невидим,
+		# полотно непрозрачно.
+		var target := clampf(pens[i], 0.0, radius * 0.35 + _body_lift)
 		var lift: float = pivot.get_meta("lift")
 		lift = target if target > lift else lerpf(lift, target, 12.0 * delta)
 		pivot.set_meta("lift", lift)

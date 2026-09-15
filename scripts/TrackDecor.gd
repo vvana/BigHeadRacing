@@ -56,17 +56,20 @@ func build(track: TrackBuilder) -> void:
 		_build_space()
 		return
 	_build_start_area()
-	# Трибуны — гоночная атрибутика: на классике и в городе. В пустыне их
-	# нет — там вестерн (станция, лошади, бочки), зрителей не завезли.
+	# Трибуны — гоночная атрибутика: на классике, в городе и зимой. В
+	# пустыне их нет — там вестерн (станция, лошади, бочки), зрителей не
+	# завезли.
 	if track.kind != TrackBuilder.KIND_SAND:
 		_build_tribunes()
-	# Ночью воздушных шаров не бывает — в городе вместо них здания.
-	if track.kind != TrackBuilder.KIND_NEON:
+	# Ночью воздушных шаров не бывает — в городе вместо них здания; зимой
+	# шары тоже не летают.
+	if track.kind != TrackBuilder.KIND_NEON and track.kind != TrackBuilder.KIND_SNOW:
 		_build_balloons()
 	_build_roadside()
 	_build_turn_signs()
 	_build_road_marks()
-	# Деревья — только на классике: в пустыне не растут, в городе — здания.
+	# Деревья — только на классике: в пустыне не растут, в городе — здания,
+	# зимой — свой еловый лес (_build_winter).
 	if track.kind == TrackBuilder.KIND_GRASS:
 		_build_trees()
 		_build_race_extras()
@@ -75,6 +78,8 @@ func build(track: TrackBuilder) -> void:
 		_build_street_lamps()
 	if track.kind == TrackBuilder.KIND_SAND:
 		_build_desert()
+	if track.kind == TrackBuilder.KIND_SNOW:
+		_build_winter()
 
 
 ## ---------- размещение ----------
@@ -212,6 +217,18 @@ func _build_roadside() -> void:
 			[PDIR + "box_b.fbx", 1.0, false],
 			[PDIR + "stone_a.fbx", 1.2, false],
 		]
+	# Зима: ёлочки, снеговики, заснеженные камни и колодец.
+	elif _track.kind == TrackBuilder.KIND_SNOW:
+		kinds = [
+			[PDIR + "fir_winter_small.fbx", 1.1, false],
+			[PDIR + "snowman.fbx", 1.0, false],
+			[PDIR + "stone_winter_a.fbx", 1.6, false],
+			[PDIR + "fir_winter_medium.fbx", 0.8, false],
+			[PDIR + "stones_group_winter.fbx", 0.6, false],
+			[PDIR + "snowman.fbx", 0.9, false],
+			[PDIR + "fir_winter_small.fbx", 1.3, false],
+			[PDIR + "winter_well.fbx", 0.9, false],
+		]
 	# В городе обочина городская: светофоры (эмиссивные — светятся в ночи),
 	# урны, автобусные остановки и билборды вместо флагов и конусов.
 	elif _track.kind == TrackBuilder.KIND_NEON:
@@ -309,7 +326,8 @@ func _build_turn_signs() -> void:
 	var n := _track._pts.size()
 	var length: float = _track._curve.get_baked_length()
 	var racing := _track.kind == TrackBuilder.KIND_GRASS \
-			or _track.kind == TrackBuilder.KIND_NEON
+			or _track.kind == TrackBuilder.KIND_NEON \
+			or _track.kind == TrackBuilder.KIND_SNOW
 	for pair: Array in _turn_peaks(5, 0.30):
 		var i: int = pair[0]
 		var t := float(i) / n - 12.0 / length  # за 12 м до вершины
@@ -389,26 +407,138 @@ func _build_trees() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 20260819
 	var half := TrackBuilder.GROUND_SIZE * 0.47
-	var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
 	var placed := 0
 	var attempts := 0
 	while placed < 90 and attempts < 600:
 		attempts += 1
-		var x := rng.randf_range(-half, half)
-		var z := rng.randf_range(-half, half)
-		var p := Vector3(x, 0, z)
-		var d: float = _track.distance_from_axis(p)
-		if d < edge + 7.0:
+		var p: Vector3 = _near_axis(rng, 7.0, SCATTER_FAR)[0]
+		if absf(p.x) > half or absf(p.z) > half:
+			continue
+		if not _clear_of_track(p, 7.0):
 			continue
 		if _is_occupied(p, 4.0):
 			continue
-		p.y = _track._ground_height(x, z)
+		p.y = _track._ground_height(p.x, p.z)
 		var yaw_dir := Vector3(rng.randf_range(-1, 1), 0, rng.randf_range(-1, 1))
 		if yaw_dir.length_squared() < 0.01:
 			yaw_dir = Vector3.FORWARD
 		var scale := rng.randf_range(0.8, 1.35)
 		_spawn(CDIR + TREES[rng.randi() % TREES.size()], p, yaw_dir, scale, false)
 		placed += 1
+
+
+## ---------- зима ----------
+
+const FIRS: Array[String] = [
+	"fir_winter_large.fbx", "fir_winter_medium.fbx", "fir_winter_small.fbx",
+	"fir_winter_bent.fbx", "fir_winter_tilted.fbx",
+]
+const WINTER_STONES: Array[String] = [
+	"stone_winter_a.fbx", "stone_winter_b.fbx", "stone_winter_c.fbx",
+	"stones_group_winter.fbx",
+]
+const WINTER_HOUSES: Array[String] = [
+	"winter_house.fbx", "winter_house_2.fbx", "winter_house_3.fbx",
+]
+const XMAS_BALLS: Array[String] = [
+	"xmas_ball_red.fbx", "xmas_ball_blue.fbx", "xmas_ball_yellow.fbx",
+]
+
+
+## Зимняя трасса (15.09): еловый лес вокруг, заснеженные камни, деревня из
+## трёх бревенчатых домов с колодцем и снеговиками, наряженная ёлка со
+## звездой и шарами у старта. Всё из пака Palmov (Winter environment).
+func _build_winter() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20260915
+	_build_xmas_tree(_axis_at_dist(46.0) + _outward(0.0) * (_half(0.0) + 12.0),
+			1.35, rng)
+	_build_winter_village(rng)
+	# Россыпь: [набор файлов, штук, отступ от кромки, масштаб от, масштаб до]
+	for item: Array in [
+		[FIRS, 120, 6.0, 0.85, 1.5],
+		[WINTER_STONES, 34, 4.0, 0.9, 1.7],
+		["snowman.fbx", 10, 5.0, 0.9, 1.1],
+	]:
+		var files: Array = item[0] if item[0] is Array else [item[0]]
+		var count: int = item[1]
+		var margin: float = item[2]
+		var half := TrackBuilder.GROUND_SIZE * 0.47
+		var placed := 0
+		var attempts := 0
+		while placed < count and attempts < count * 8:
+			attempts += 1
+			var p: Vector3 = _near_axis(rng, margin, SCATTER_FAR)[0]
+			if absf(p.x) > half or absf(p.z) > half:
+				continue
+			if not _clear_of_track(p, margin):
+				continue
+			if _is_occupied(p, 3.0):
+				continue
+			p.y = _ground_y(p)
+			_spawn(PDIR + String(files[rng.randi() % files.size()]), p,
+					_rand_yaw(rng), rng.randf_range(float(item[3]), float(item[4])),
+					false)
+			placed += 1
+
+
+## Наряженная ёлка: большая ель, звезда на макушке, шары по конусу.
+## У шаров якорь СВЕРХУ (висят на нитке) — ставим прямо на «ветку».
+func _build_xmas_tree(p: Vector3, scale: float, rng: RandomNumberGenerator) -> void:
+	p.y = _ground_y(p)
+	_spawn(PDIR + "fir_winter_large.fbx", p, _rand_yaw(rng), scale, false)
+	_occupy(p, 4.0 * scale)
+	var h := 7.98 * scale        # высота модели ели
+	var r0 := 2.5 * scale        # радиус кроны у земли
+	_spawn(PDIR + "star_bethlehem.fbx", p + Vector3(0, h - 0.15 * scale, 0),
+			_forward(0.0), scale * 1.2, false)
+	for i in 14:
+		var k := 0.25 + 0.5 * (float(i) / 14.0)     # доля высоты
+		var ang := float(i) * 2.399 + 0.4            # золотой угол — равномерно
+		var rr := r0 * (1.0 - k) * 0.85
+		var bp := p + Vector3(cos(ang) * rr, h * k, sin(ang) * rr)
+		_spawn(PDIR + XMAS_BALLS[i % XMAS_BALLS.size()], bp, _rand_yaw(rng),
+				scale * 1.6, false)
+
+
+## Деревня: три дома полукругом лицом к площади, на площади — колодец и
+## ёлка поменьше, рядом снеговики. Одна сцена в свободном секторе.
+func _build_winter_village(rng: RandomNumberGenerator) -> void:
+	var half := TrackBuilder.GROUND_SIZE * 0.47
+	for attempt in 120:
+		# Площадь деревни — в 18 м от кромки, снаружи кольца: дома по дуге
+		# ещё на 12 м дальше, всё в пределах SCATTER_FAR.
+		var na := _near_axis(rng, 18.0, 18.0, true)
+		var c: Vector3 = na[0]
+		if absf(c.x) > half - 18.0 or absf(c.z) > half - 18.0:
+			continue
+		if not _clear_of_track(c, 18.0):
+			continue
+		if _is_occupied(c, 22.0):
+			continue
+		# Дома — по дуге со стороны, дальней от трассы; фасадом к площади.
+		var away: Vector3 = _outward(float(na[1]))
+		for i in WINTER_HOUSES.size():
+			var a := (float(i) - 1.0) * 0.95
+			var dir := away.rotated(Vector3.UP, a)
+			var hp := c + dir * 12.0
+			if not _clear_of_track(hp, 6.0):
+				continue
+			hp.y = _ground_y(hp)
+			_spawn(PDIR + WINTER_HOUSES[i], hp, -dir, 1.0, false)
+			_occupy(hp, 6.0)
+		var wp := c + away.rotated(Vector3.UP, 1.9) * 4.0
+		wp.y = _ground_y(wp)
+		_spawn(PDIR + "winter_well.fbx", wp, -away, 1.0, false)
+		_occupy(wp, 2.5)
+		_build_xmas_tree(c + away.rotated(Vector3.UP, -2.2) * 4.0, 0.9, rng)
+		for i in 2:
+			var sp := c + away.rotated(Vector3.UP, 3.0 + 0.6 * i) * (7.0 + 3.0 * i)
+			sp.y = _ground_y(sp)
+			_spawn(PDIR + "snowman.fbx", sp, away, 1.0, false)
+			_occupy(sp, 1.5)
+		_occupy(c, 20.0)
+		return
 
 
 ## ---------- гоночные экстры классики ----------
@@ -528,14 +658,14 @@ func _build_desert() -> void:
 		var count: int = item[1]
 		var margin: float = item[2]
 		var half := TrackBuilder.GROUND_SIZE * 0.47
-		var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
 		var placed := 0
 		var attempts := 0
 		while placed < count and attempts < count * 8:
 			attempts += 1
-			var p := Vector3(rng.randf_range(-half, half), 0,
-					rng.randf_range(-half, half))
-			if _track.distance_from_axis(p) < edge + margin:
+			var p: Vector3 = _near_axis(rng, margin, SCATTER_FAR)[0]
+			if absf(p.x) > half or absf(p.z) > half:
+				continue
+			if not _clear_of_track(p, margin):
 				continue
 			if _is_occupied(p, 2.5):
 				continue
@@ -552,22 +682,21 @@ func _build_desert() -> void:
 ## водонапорная башня, коновязь с лошадью и ящики на «перроне». Одна
 ## сборная сцена в свободном секторе пустыни, подальше от полотна.
 func _build_desert_station(rng: RandomNumberGenerator) -> void:
-	var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
 	var half := TrackBuilder.GROUND_SIZE * 0.47
 	for attempt in 90:
-		var ang := rng.randf_range(0.0, TAU)
-		var dist := rng.randf_range(half * 0.45, half * 0.85)
-		var p0 := Vector3(cos(ang) * dist, 0, sin(ang) * dist)
+		# Рельсы — в 20 м от кромки снаружи кольца, параллельно полотну;
+		# станция и башня — ещё на 6…10 м дальше (задником от трассы).
+		var na := _near_axis(rng, 20.0, 20.0, true)
+		var p0: Vector3 = na[0]
+		var t := float(na[1])
 		if absf(p0.x) > half - 20.0 or absf(p0.z) > half - 20.0:
 			continue
-		if _track.distance_from_axis(p0) < edge + 38.0:
+		if not _clear_of_track(p0, 20.0):
 			continue
 		if _is_occupied(p0, 30.0):
 			continue
-		# Рельсы — вдоль «горизонта» (перпендикулярно лучу от центра мира),
-		# станция — со стороны, дальней от центра (задником к краю мира).
-		var along := Vector3(-p0.z, 0, p0.x).normalized()
-		var side := Vector3(p0.x, 0, p0.z).normalized()
+		var along := _forward(t)
+		var side := _outward(t)
 		# [файл, смещение вдоль рельсов, смещение вбок, лицом куда, масштаб]
 		for item: Array in [
 			["railway.fbx", 0.0, 0.0, along, 1.0],
@@ -591,15 +720,15 @@ func _build_desert_station(rng: RandomNumberGenerator) -> void:
 
 ## Оазисы: 3 группы пальм с травой у подножия — зелёные пятна среди дюн.
 func _build_oases(rng: RandomNumberGenerator) -> void:
-	var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
 	var half := TrackBuilder.GROUND_SIZE * 0.47
 	var placed := 0
 	var attempts := 0
 	while placed < 3 and attempts < 120:
 		attempts += 1
-		var c := Vector3(rng.randf_range(-half, half), 0,
-				rng.randf_range(-half, half))
-		if _track.distance_from_axis(c) < edge + 10.0:
+		var c: Vector3 = _near_axis(rng, 10.0, SCATTER_FAR - 6.0)[0]
+		if absf(c.x) > half or absf(c.z) > half:
+			continue
+		if not _clear_of_track(c, 10.0):
 			continue
 		if _is_occupied(c, 9.0):
 			continue
@@ -653,7 +782,6 @@ func _rand_yaw(rng: RandomNumberGenerator) -> Vector3:
 ## Монументы пустыни: ищем каждому место в своём секторе круга — подальше
 ## от полотна, слегка утопив в песок (низ на дюнах неровный).
 func _build_desert_monuments(rng: RandomNumberGenerator) -> void:
-	var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
 	var half := TrackBuilder.GROUND_SIZE * 0.47
 	# [файл ("rocks" — гроздь валунов), масштаб, радиус места (м)]
 	var items: Array = [
@@ -666,12 +794,15 @@ func _build_desert_monuments(rng: RandomNumberGenerator) -> void:
 		var item: Array = items[k]
 		var clear: float = item[2]
 		for attempt in 60:
-			var ang := TAU * k / items.size() + rng.randf_range(-0.55, 0.55)
-			var dist := rng.randf_range(half * 0.55, half * 0.95)
-			var p := Vector3(cos(ang) * dist, 0, sin(ang) * dist)
+			# Своя четверть круга у каждого монумента, отступ от кромки —
+			# радиус места + 6 м: скала видна с полотна, но не нависает.
+			var t := fposmod(float(k) / items.size() + rng.randf_range(-0.1, 0.1), 1.0)
+			var out := _outward(t)
+			var p := _axis(t) + out * (_half(t) + TrackBuilder.SHOULDER + clear + 6.0)
+			p.y = 0.0
 			if absf(p.x) > half or absf(p.z) > half:
 				continue
-			if _track.distance_from_axis(p) < edge + 8.0 + clear:
+			if not _clear_of_track(p, clear + 4.0):
 				continue
 			if _is_occupied(p, clear):
 				continue
@@ -705,8 +836,9 @@ func _build_city_landmarks(rng: RandomNumberGenerator) -> void:
 	var attempts := 0
 	while placed < 9 and attempts < 300:
 		attempts += 1
-		var p := Vector3(rng.randf_range(-half, half), 0,
-				rng.randf_range(-half, half))
+		var p: Vector3 = _near_axis(rng, 14.0, SCATTER_FAR + 6.0)[0]
+		if absf(p.x) > half or absf(p.z) > half:
+			continue
 		var d: float = _track.distance_from_axis(p)
 		if d < edge + 14.0:
 			continue
@@ -1194,6 +1326,37 @@ func _outward(t: float) -> Vector3:
 	if o.length_squared() < 1.0:
 		return right
 	return right if right.dot(o.normalized()) >= 0.0 else -right
+
+
+## Дальше этого от КРОМКИ полотна декор не виден: камера (IsoCamera, 60 м,
+## −32°) показывает ~35 м земли по бокам от машины. Раньше россыпи
+## сыпались по всему квадрату земли 400×400 м, и две трети деревьев,
+## камней, кактусов стояли там, куда машина не попадает (жалоба 15.09).
+const SCATTER_FAR := 34.0
+
+
+## Случайная точка ВОЗЛЕ полотна: доля круга t, случайная сторона,
+## отступ от кромки (полуширина в этом месте + обочина) в [near, far] м.
+## Возвращает [точка, t]; высота по земле не выставлена (y = 0).
+func _near_axis(rng: RandomNumberGenerator, near: float, far: float,
+		outward_only := false) -> Array:
+	var t := rng.randf()
+	var side: Vector3
+	if outward_only:
+		side = _outward(t)
+	else:
+		side = _right(t) * (1.0 if rng.randf() < 0.5 else -1.0)
+	var off := _half(t) + TrackBuilder.SHOULDER + rng.randf_range(near, far)
+	var p := _axis(t) + side * off
+	p.y = 0.0
+	return [p, t]
+
+
+## Точка p, поставленная от своего витка на отступ margin, не должна
+## оказаться ближе margin к ДРУГОМУ витку (шпилька, соседние прямые).
+func _clear_of_track(p: Vector3, margin: float) -> bool:
+	var edge: float = _track.half_width_at_pos(p) + TrackBuilder.SHOULDER
+	return _track.distance_from_axis(p) >= edge + margin - 0.5
 
 
 ## Полуширина полотна на доле круга t (полотно переменной ширины).
