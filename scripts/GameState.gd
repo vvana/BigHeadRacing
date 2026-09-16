@@ -190,10 +190,6 @@ const AD_COOLDOWN := 600.0      # секунд отдыха после пары 
 var _ads_in_pair := 0           # роликов текущей пары уже досмотрено
 var _ad_pair_done_at := 0.0     # unix-время завершения последней пары
 
-# ---- Разовый подарок 1 000 000 монет (2026-09-02, себе и второму игроку) ----
-const GIFT_1M_AMOUNT := 1_000_000
-var _gift_1m_claimed := false
-
 # ---- Идентификатор игрока (09.09) ----
 # Случайная строка, один раз на профиль. По ней сервер друзей (Social)
 # узнаёт владельца имени: имена единые на всех, и сменить своё или зайти
@@ -427,7 +423,6 @@ func _ready() -> void:
 				weapon_upgrades[int(k)] = clampi(int(wups[k]), 0, Weapons.STEPS)
 		_migrate_items()
 		sel = str(cf.get_value("profile", "selected_car", ""))
-		_gift_1m_claimed = bool(cf.get_value("profile", "gift_1m_claimed", false))
 		uid = SocialServer.clean_uid(str(cf.get_value("profile", "uid", "")))
 		var st: Variant = cf.get_value("profile", "stats", {})
 		if st is Dictionary and not (st as Dictionary).is_empty():
@@ -454,10 +449,6 @@ func _ready() -> void:
 	if not CarModelLibrary.CAR_IDS.has(sel) or not car_owned(sel):
 		sel = FREE_CARS[0]
 	selected_car_id = full_id(sel)
-	if not _gift_1m_claimed:
-		_gift_1m_claimed = true
-		money += GIFT_1M_AMOUNT
-		_save_profile()
 	# Строка в лог с ПЕРВОЙ секунды запуска: какой файл прочитан и что в
 	# нём было. 04.09 игрок трижды сообщал «прогресс исчез» — без этой
 	# строки каждый раз приходилось гадать по времени записи файлов.
@@ -1057,7 +1048,6 @@ func _save_profile() -> void:
 	cf.set_value("profile", "weapon_upgrades", weapon_upgrades)
 	cf.set_value("profile", "selected_car",
 			CarModelLibrary.base_id(selected_car_id))
-	cf.set_value("profile", "gift_1m_claimed", _gift_1m_claimed)
 	cf.set_value("profile", "uid", uid)
 	cf.set_value("profile", "stats", stats)
 	cf.set_value("profile", "friends", friends)

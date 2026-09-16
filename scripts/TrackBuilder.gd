@@ -10,6 +10,11 @@ extends Node3D
 # просто отходили дальше от кромки, а не резали полотно.
 const TRACK_HALF_WIDTH := 11.0  # максимальная полуширина полотна, м
 const WALL_HEIGHT := 2.6   # заметно выше высоты прыжка (~1.9 м) — не улететь
+# ВИДИМЫЙ борт ниже коллизии (16.09: «за ограждением машину не видно» —
+# камера смотрит под 32°, борт 2.6 м прятал полосу ~4 м полотна у ближней
+# стены вместе с машиной). Рисуем 1 м, невидимая часть до WALL_HEIGHT
+# по-прежнему ловит прыжки (Car сверяется с WALL_HEIGHT, не с этим).
+const WALL_VISUAL_HEIGHT := 1.0
 const WALL_THICKNESS := 0.5
 # Детализация контура. Стены и полотно — тримеши из плоских фасеток; на
 # стыках фасеток кузов ловит рёбра (машину «пинает» у ограждений и на
@@ -859,7 +864,8 @@ func _build_walls() -> void:
 	# в космосе обочины нет — юбка глубокая, борт «парящей платформы».
 	var skirt := Vector3(0,
 			SPACE_SKIRT if kind == KIND_SPACE else GROUND_DROP + 0.4, 0)
-	var top := Vector3(0, WALL_HEIGHT + skirt.y, 0)
+	var top := Vector3(0, WALL_HEIGHT + skirt.y, 0)          # коллизия
+	var vtop := Vector3(0, WALL_VISUAL_HEIGHT + skirt.y, 0)  # видимый борт
 	var half_t := WALL_THICKNESS * 0.5
 
 	for side: float in [-1.0, 1.0]:
@@ -874,13 +880,20 @@ func _build_walls() -> void:
 			var aj := cj - nj * half_t
 			var bj := cj + nj * half_t
 
+			# Меш — низкий видимый борт; коллизия — те же грани, но до
+			# полной WALL_HEIGHT (невидимая часть не даёт улететь в прыжке).
 			var quads: Array = [
-				[ai, ai + top, aj + top, aj, -ni],        # к трассе
-				[bi, bi + top, bj + top, bj, ni],         # наружу
-				[ai + top, bi + top, bj + top, aj + top, Vector3.UP],  # верх
+				[ai, ai + vtop, aj + vtop, aj, -ni],        # к трассе
+				[bi, bi + vtop, bj + vtop, bj, ni],         # наружу
+				[ai + vtop, bi + vtop, bj + vtop, aj + vtop, Vector3.UP],  # верх
 			]
 			for q: Array in quads:
 				_add_quad(st, q[0], q[1], q[2], q[3], q[4])
+			for q: Array in [
+				[ai, ai + top, aj + top, aj],
+				[bi, bi + top, bj + top, bj],
+				[ai + top, bi + top, bj + top, aj + top],
+			]:
 				faces.append_array([q[0], q[1], q[2], q[0], q[2], q[3]])
 
 	var body := StaticBody3D.new()
@@ -948,7 +961,7 @@ func _build_neon_strips() -> void:
 		var st := SurfaceTool.new()
 		st.begin(Mesh.PRIMITIVE_TRIANGLES)
 		# Низ ленты чуть утоплен в стену — нет щели и z-fighting с верхом.
-		var base := Vector3(0, WALL_HEIGHT - 0.02, 0)
+		var base := Vector3(0, WALL_VISUAL_HEIGHT - 0.02, 0)
 		var up := Vector3(0, STRIP_H, 0)
 		for i in SAMPLES:
 			var j := (i + 1) % SAMPLES

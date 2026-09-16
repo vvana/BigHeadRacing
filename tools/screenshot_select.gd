@@ -39,6 +39,10 @@ func _physics_process(_d: float) -> void:
 	var shop := OS.get_cmdline_user_args().has("--shop")
 	if _frame == 40 and shop:
 		_select.call("_set_shop_menu", true)
+	# `--name` (16.09) — окно «КАК ТЕБЯ ЗОВУТ?» в режиме смены имени
+	# (с кнопкой «ОТМЕНА»): carselect_name.png.
+	if _frame == 40 and OS.get_cmdline_user_args().has("--name"):
+		_select.call("_open_name_dialog", false)
 	if _frame == 40 and board:
 		_select.call("_open_board")
 	if _frame == 40 and weapons:
@@ -97,6 +101,8 @@ func _physics_process(_d: float) -> void:
 			name = "carselect_stats.png"
 		if shop:
 			name = "carselect_shop.png"
+		if OS.get_cmdline_user_args().has("--name"):
+			name = "carselect_name.png"
 		if OS.get_cmdline_user_args().has("--offline"):
 			name = "carselect_offline.png"
 		if OS.get_cmdline_user_args().has("--outdated"):

@@ -519,9 +519,11 @@ func _build_part_color(part: String) -> void:
 	row.add_theme_constant_override("separation", 8)
 	_box.add_child(row)
 	var what := "полосы" if part == "line" else "детали"
+	# Заголовок НЕ растягивается: кнопка «КАК КУЗОВ» стоит вплотную к
+	# нему, над палитрой (замечание 16.09: прижатая к правому краю панели
+	# кнопка читалась как чужая, непонятно, к чему относится).
 	var lbl := _label("ЦВЕТ %s   36 красок — бесплатно" % what.to_upper(),
-			14, Color.WHITE)
-	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			14, Color.WHITE, false)
 	row.add_child(lbl)
 	# У выхлопа без выбора цвета трубы остаются родными (палитра пака),
 	# а не в цвет кузова — у его меша нет окрашиваемой поверхности.

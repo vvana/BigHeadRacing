@@ -173,7 +173,10 @@ func _build_tribunes() -> void:
 		if node:
 			_push_outside(node, out,
 					_half(t) + TrackBuilder.WALL_THICKNESS + 1.5)
-			_occupy(node.position, 10.0)
+			# Занятость — по РЕАЛЬНОМУ габариту (16.09: «ель растёт сквозь
+			# трибуну» на зиме — круг 10 м от точки постановки не покрывал
+			# длинную трибуну, а у prop_seats_big якорь вообще не в центре).
+			_occupy_node(node, 1.5)
 
 
 ## Воздушные шары — крупный фон, парят снаружи трассы.
@@ -451,8 +454,18 @@ const XMAS_BALLS: Array[String] = [
 func _build_winter() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 20260915
-	_build_xmas_tree(_axis_at_dist(46.0) + _outward(0.0) * (_half(0.0) + 12.0),
-			1.35, rng)
+	# Наряженная ёлка у старта — в первом свободном месте вдоль стартовой
+	# прямой (16.09: точка «46 м, снаружи» попадала ровно в трибуну с
+	# t = 0.06 — ёлка росла сквозь неё; ищем по кругу с шагом 12 м).
+	var length: float = _track._curve.get_baked_length()
+	for k in 30:
+		var d := fposmod(46.0 + 12.0 * k, length)
+		var t := d / length
+		var tp := _axis_at_dist(d) + _outward(t) * (_half(t) + 12.0)
+		if _is_occupied(tp, 6.0) or not _clear_of_track(tp, 8.0):
+			continue
+		_build_xmas_tree(tp, 1.35, rng)
+		break
 	_build_winter_village(rng)
 	# Россыпь: [набор файлов, штук, отступ от кромки, масштаб от, масштаб до]
 	for item: Array in [
@@ -1385,6 +1398,26 @@ func _push_outside(node: Node3D, out: Vector3, min_dist: float) -> void:
 
 func _occupy(p: Vector3, radius: float) -> void:
 	_occupied.append(Vector3(p.x, p.z, radius))
+
+
+## Занять круг по мировому габариту уже поставленного пропса: центр —
+## середина AABB, радиус — половина большей стороны по XZ плюс pad.
+## Для длинных моделей (трибуны) и моделей с якорем не в центре точка
+## постановки + радиус «на глаз» не годятся.
+func _occupy_node(node: Node3D, pad: float) -> void:
+	var merged := AABB()
+	var first := true
+	for mi: MeshInstance3D in node.find_children("*", "MeshInstance3D", true, false):
+		if mi.mesh == null:
+			continue
+		var ab := mi.global_transform * mi.mesh.get_aabb()
+		merged = ab if first else merged.merge(ab)
+		first = false
+	if first:
+		_occupy(node.position, 10.0)
+		return
+	var c := merged.get_center()
+	_occupy(Vector3(c.x, 0, c.z), maxf(merged.size.x, merged.size.z) * 0.5 + pad)
 
 
 func _is_occupied(p: Vector3, extra: float) -> bool:

@@ -3,16 +3,16 @@ extends WeaponBox
 ## Бонус в футболе: тот же золотой куб, но ПАДАЕТ С НЕБА в случайную точку
 ## поля и ОДНОРАЗОВЫЙ — подобравший забирает его целиком (в гонке бокс
 ## общий и вечный, тут он добыча: за ним идёт борьба). Пока падает, на
-## газоне пульсирует метка-кольцо. Невостребованный бонус тает через LIFE.
+## газоне пульсирует метка-кольцо. Упавший бонус лежит, пока его не
+## подберут (16.09: раньше таял через 25 с — игрок просил не исчезать;
+## переполнения нет — Soccer держит на поле не больше DROP_MAX).
 
 const FALL_SPEED := 14.0     # м/с
 const GROUND_Y := 0.85       # высота покоя куба над газоном
-const LIFE := 25.0           # сколько лежит, если никто не взял, с
 
 var fall_from := 24.0        # с какой высоты падает (стендам можно меньше)
 
 var _landed := false
-var _life := LIFE
 var _ring: MeshInstance3D
 
 
@@ -43,22 +43,11 @@ func _physics_process(delta: float) -> void:
 			if not Net.is_server():
 				FxKit.ring(get_parent(), global_position, 2.0,
 						Color(1.0, 0.85, 0.2))
-	else:
-		_life -= delta
-		if _life <= 0.0:
-			queue_free()
-			return
 	if _ring != null:
 		var pulse := 1.0 + 0.12 * sin(Time.get_ticks_msec() / 160.0)
 		_ring.global_position = Vector3(global_position.x, 0.08,
 				global_position.z)
 		_ring.scale = Vector3(pulse, 0.25, pulse)
-		# Последние секунды кольцо и куб мигают — бонус вот-вот растает.
-		if _landed and _life < 4.0:
-			var blink := fmod(_life, 0.4) > 0.2
-			_ring.visible = blink
-			if _mesh != null:
-				_mesh.visible = blink
 
 
 ## Бонус одноразовый: выдали оружие — куб исчезает. Родительский _give сам

@@ -129,7 +129,9 @@ var _invite_box: Control          # плашка «X зовёт в команд�
 var _name_hint: Label             # подсказка в окне имени («занято…»)
 var _name_wait := false           # ждём ответ сервера друзей на имя
 var _accept_block := 0            # кадров не слушать Enter после окна имени
-var _social_label: Label          # «друзья: на связи / нет связи» под именем
+var _social_label: Label          # «друзей в сети: N / нет связи» под именем
+var _friends_online := -1         # сколько друзей в сети по последнему lookup (-1 — не знаем)
+var _friends_tick := 0.0          # таймер опроса статусов друзей для строки под именем
 var _party_join := false          # «СТАРТ» нажат не нами, а командой (go)
 var _connect_wait := 0.0          # сколько висим на «ПОДКЛЮЧЕНИЕ…», с
 var _offline_note: Control        # плашка «СЕТИ НЕТ» (видна без сети)
@@ -166,7 +168,10 @@ func _ready() -> void:
 	# приглашения, команда. Соединение живёт в автозагрузке Social.
 	Social.welcome.connect(_on_social_welcome)
 	Social.connected_changed.connect(func(_on: bool) -> void:
+		_friends_online = -1
+		_friends_tick = 0.0
 		_refresh_name_btn())
+	Social.friends_result.connect(_on_friends_status)
 	Social.name_result.connect(_on_name_result)
 	Social.invite_received.connect(_show_invite)
 	Social.party_changed.connect(_refresh_start_btn)
@@ -197,6 +202,14 @@ func _process(delta: float) -> void:
 		_net_tick = 2.0
 		_refresh_offline_note()
 		_refresh_name_btn()
+	# Статусы друзей для строки под именем — раз в 10 с, пока есть связь и
+	# список друзей не пуст (панель «КОМАНДА» опрашивает сама, чаще).
+	_friends_tick -= delta
+	if _friends_tick <= 0.0:
+		_friends_tick = 10.0
+		if Social.connected and Social.name_ok \
+				and not GameState.friends.is_empty():
+			Social.lookup(GameState.friends.duplicate())
 	# Подиум сам не крутится — только рукой (см. _unhandled_input).
 	# Открыто окно ввода имени — клавиши достаются ему, а не выбору машины
 	# (иначе Enter в поле имени тут же запускал бы гонку).
@@ -695,6 +708,21 @@ func _mini_button(txt: String) -> Button:
 	return b
 
 
+## Ответ сервера на lookup (наш или панели «КОМАНДА»): считаем, сколько
+## друзей из СПИСКА сейчас в сети, — для строки под именем.
+func _on_friends_status(items: Array) -> void:
+	var wanted := {}
+	for n in GameState.friends:
+		wanted[str(n).to_lower()] = true
+	var online := 0
+	for it: Dictionary in items:
+		if wanted.has(str(it.get("name", "")).to_lower()) \
+				and bool(it.get("online", false)):
+			online += 1
+	_friends_online = online
+	_refresh_name_btn()
+
+
 func _refresh_name_btn() -> void:
 	if _name_btn:
 		_name_btn.text = "ИМЯ: %s" % GameState.display_name()
@@ -703,9 +731,22 @@ func _refresh_name_btn() -> void:
 			_social_label.text = "версия игры устарела"   # 214 px — коротко
 			_social_label.add_theme_color_override("font_color", UiKit.RED)
 		elif Social.connected:
-			_social_label.text = "друзья: на связи" if Social.name_ok \
-					else ("друзья: имя занято" if Social.name_reason == "taken"
-					else "друзья: на связи, имя не принято")
+			# «на связи» — это МЫ дошли до сервера друзей, а не друзья в
+			# сети (игрок 16.09 прочитал наоборот). Поэтому при связи
+			# показываем, сколько друзей из списка сейчас в сети
+			# (_friends_online, ответ lookup), а не голое «на связи».
+			var txt := "друзья: на связи, имя не принято"
+			if Social.name_ok:
+				if GameState.friends.is_empty():
+					txt = "на связи, друзей пока нет"
+				elif _friends_online < 0:
+					txt = "на связи, друзья: …"
+				else:
+					txt = "друзей в сети: %d из %d" % [_friends_online,
+							GameState.friends.size()]
+			elif Social.name_reason == "taken":
+				txt = "друзья: имя занято"
+			_social_label.text = txt
 			_social_label.add_theme_color_override("font_color",
 					UiKit.TEAL if Social.name_ok else UiKit.YELLOW)
 		else:
@@ -790,10 +831,13 @@ func _open_name_dialog(first: bool, taken := false) -> void:
 	ok.pressed.connect(_name_accept)
 	plate.add_child(ok)
 	if not first:
-		var cancel := _mini_button("ОТМЕНА")
-		cancel.add_theme_font_size_override("font_size", 18)
-		cancel.position = Vector2(250, 152)
-		cancel.size = Vector2(170, 42)
+		# «ОТМЕНА» — та же табличка и размер, что у «ГОТОВО», отличается
+		# только цветом (замечание 16.09: кнопки были разного вида).
+		var cancel := Button.new()
+		cancel.text = "ОТМЕНА"
+		UiKit.style_button(cancel, "teal", 22)
+		cancel.position = Vector2(240, 146)
+		cancel.size = Vector2(180, 54)
 		cancel.pressed.connect(_close_name_dialog)
 		plate.add_child(cancel)
 
@@ -1836,6 +1880,14 @@ func _build_top_shelf(canvas: Node) -> void:
 	_social_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_social_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_refresh_name_btn()
+	# Версия игры (просьба 16.09: «понятно, какую версию тестирую») — мелко
+	# и неброско в правом нижнем углу; у тестовой сборки — пометка «тест».
+	var ver := str(ProjectSettings.get_setting("application/config/version", "?"))
+	var ver_lbl := UiKit.label(canvas, "v%s%s" % [ver,
+			" тест" if Net.is_test_build() else ""], 11, Color(1, 1, 1, 0.45), 0)
+	_place(ver_lbl, 1280 - 8 - 160, 720 - 20, 160, 16)
+	ver_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	ver_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
 ## Низ левой колонки (координаты — внутри колонки, см. COL_*): имя
@@ -1919,7 +1971,9 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 ## (косметика, только у купленной машины). Закрывается той же кнопкой,
 ## Esc, выбором пункта, кликом мимо и открытием любой панели.
 func _build_shop_menu(col: Control) -> void:
-	_board_btn = _shop_item(col, "АВТОПАРК", "yellow", _open_board)
+	# «АВТОПАРК» — белая эмаль: жёлтая сливалась с самой кнопкой
+	# «МАГАЗИН» (замечание 16.09).
+	_board_btn = _shop_item(col, "АВТОПАРК", "white", _open_board)
 	_weapons_btn = _shop_item(col, "ОРУЖИЕ", "orange", _open_weapons)
 	_tuning_btn = _shop_item(col, "ТЮНИНГ", "teal", _open_tuning)
 
