@@ -11133,3 +11133,12 @@ TestSelectPrefill, TestShield. Серверный код не менялся.
 dist/web/*, dist/DustAndFlame-yandex.zip 64,9 МБ пересобраны.
 **Файлы:** scripts/GameState.gd, scripts/Main.gd, scripts/Car.gd, tools/web_cdp.js,
 dist/*, PROGRESS.md. Не закоммичено.
+
+## 2026-09-21 (7) — ветка yandex-games
+По просьбе игрока создана ветка `yandex-games` (от `apk`, 5392cce) и в неё
+закоммичено всё накопленное с 17.09: веб-сборка, локализация, правки
+производительности и сети, dist/web/*, dist/DustAndFlame-yandex.zip, dist/yandex/*.
+Вне коммита оставлены: картинки из чата в корне (image-*.png, image.jpeg,
+photo_*.jpg), export_presets.cfg.bak_2026-09-17_web, tools/_loc_missing.txt.
+На GitHub НЕ отправлено (push — по команде игрока; index.pck 57 МБ и zip 62 МБ
+GitHub примет с предупреждением, лимит 100 МБ на файл).
