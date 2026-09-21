@@ -19,6 +19,18 @@ const PORT := 9977
 ## Комнаты тестового — PORT_TEST+1…+ROOMS_MAX (9878…9880), друзья —
 ## Social.SOCIAL_PORT_TEST (9890). С боевыми диапазонами не пересекается.
 const PORT_TEST := 9877
+## WebSocket-ворота для ВЕБ-сборки (Яндекс Игры, 17.09): в браузере UDP
+## нет, поэтому web-клиент ходит по WebSocket к ОТДЕЛЬНОМУ экземпляру
+## сервера (`--server --ws --port=N`), комнаты — N+1…+ROOMS_MAX (тот же
+## Rooms.gd, ключ --ws наследуется). Снаружи — wss://WS_HOST/ws/<порт>:
+## Caddy на VDS снимает TLS и проксирует на 127.0.0.1:<порт> (см.
+## server/README.md); при локальной проверке сборки — ws://127.0.0.1:<порт>.
+## С UDP-игроками веб не пересекается: у них свои ворота (PORT/PORT_TEST),
+## а RPC-протокол один на всех (PROTOCOL).
+const WS_PORT := 9970
+const WS_PORT_TEST := 9870
+const WS_HOST := "daf.autovsauto.ru"
+const WS_PATH := "/ws/%d"
 ## Версия сетевого протокола. ПОДНИМАТЬ при любом несовместимом изменении
 ## RPC (сигнатуры, формат снимка, каналы): сервер не пускает клиента с
 ## другой версией с внятным сообщением — иначе рассинхрон версий выглядит
@@ -261,6 +273,11 @@ func is_online() -> bool:
 func device_online() -> bool:
 	if debug_offline:
 		return false
+	if OS.has_feature("web"):
+		# В браузере локальных адресов не видно вовсе (список пуст, и
+		# старая проверка честно отвечала «сети нет») — спрашиваем сам браузер.
+		var v: Variant = JavaScriptBridge.eval("navigator.onLine", true)
+		return true if v == null else bool(v)
 	for a: String in IP.get_local_addresses():
 		if a.begins_with("127.") or a == "::1" or a.begins_with("169.254.") \
 				or a.to_lower().begins_with("fe80"):
@@ -317,10 +334,52 @@ static func is_test_build() -> bool:
 
 ## Порт ворот для этой сборки.
 static func gate_port() -> int:
+	if uses_ws():
+		return WS_PORT_TEST if is_test_build() else WS_PORT
 	return PORT_TEST if is_test_build() else PORT
 
 
+## Транспорт этого процесса — WebSocket, а не ENet: web-сборка (в браузере
+## UDP нет) либо ключ `--ws` после `--` (сервер веб-ворот на VDS, стенды:
+## `TestNet.tscn -- --ws --port=9870` бьёт в локальные веб-ворота).
+static func uses_ws() -> bool:
+	return OS.has_feature("web") or OS.get_cmdline_user_args().has("--ws")
+
+
+## Адрес WebSocket-сервера для порта p. Ключ `--ws-url=<шаблон с %d>`
+## (стенды) сильнее всего; в браузере со страницы localhost — голый ws:// к
+## 127.0.0.1 (локальная проверка сборки), с площадки — wss:// через Caddy
+## на VDS; настольный клиент с `--ws` — ws://<адрес>:<порт> напрямую.
+static func ws_url(address: String, p: int) -> String:
+	for a: String in OS.get_cmdline_user_args():
+		if a.begins_with("--ws-url="):
+			return a.trim_prefix("--ws-url=") % p
+	if OS.has_feature("web"):
+		var page_host: Variant = JavaScriptBridge.eval("location.hostname", true)
+		var h := str(page_host) if page_host != null else ""
+		# `?ws=remote` в адресе страницы — с localhost идти на VDS (проверка
+		# сборки против настоящих ворот, не поднимая сервер у себя).
+		var q: Variant = JavaScriptBridge.eval(
+				"location.search.indexOf('ws=remote') >= 0", true)
+		var remote := bool(q) if q != null else false
+		if (h == "localhost" or h == "127.0.0.1" or h == "") and not remote:
+			return "ws://127.0.0.1:%d" % p
+		return "wss://" + WS_HOST + (WS_PATH % p)
+	return "ws://%s:%d" % [address, p]
+
+
+## Сервер WebSocket: адрес привязки (`--ws-bind=`). На VDS — 127.0.0.1:
+## снаружи приходят только через Caddy (TLS), голый порт наружу не торчит.
+static func ws_bind() -> String:
+	for a: String in OS.get_cmdline_user_args():
+		if a.begins_with("--ws-bind="):
+			return a.trim_prefix("--ws-bind=")
+	return "*"
+
+
 func start_server() -> bool:
+	if uses_ws():
+		return _start_ws_server()
 	var peer := ENetMultiplayerPeer.new()
 	# Слотов PLAYER_SLOTS, но пускаем заметно больше: пир сверх слотов —
 	# «гость», его перенаправят в свободный заезд-комнату (Rooms.gd), и
@@ -341,6 +400,35 @@ func start_server() -> bool:
 	return true
 
 
+## Сервер веб-ворот или веб-комнаты (`--server --ws`): WebSocket поверх
+## TCP. Каналов и unreliable здесь нет — все RPC едут надёжно и по порядку
+## (transfer_channel и режим у @rpc молча игнорируются), поэтому поток
+## состояния (_rx_state) при потере пакета TCP «икает», а не пропускает.
+## Слоты, гости, комнаты, рукопожатие — те же, что у ENet-ворот.
+func _start_ws_server() -> bool:
+	var peer := WebSocketMultiplayerPeer.new()
+	# Буферы: по умолчанию 64 КиБ на пира — при 60 снимках/с на 8 машин
+	# медленный браузер (кадр стоит на загрузке сцены, шейдерах) не успевает
+	# вычитывать, и WebSocket МОЛЧА ВЫБРАСЫВАЕТ пакеты («Buffer payload
+	# full! Dropping data», поймано 17.09) — вместе с надёжными RPC. Серверу
+	# важен исходящий (к клиенту), клиенту — входящий (см. join_server).
+	peer.max_queued_packets = 16384
+	peer.inbound_buffer_size = 256 * 1024
+	peer.outbound_buffer_size = 1024 * 1024
+	var err := peer.create_server(port, ws_bind())
+	if err != OK:
+		push_error("Не удалось поднять WebSocket-сервер на %s:%d: %s"
+				% [ws_bind(), port, error_string(err)])
+		return false
+	multiplayer.multiplayer_peer = peer
+	mode = Mode.SERVER
+	multiplayer.peer_connected.connect(_on_peer_connected)
+	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
+	print("[net] сервер слушает WebSocket (TCP) %s:%d, слотов игроков: %d"
+			% [ws_bind(), port, race_size])
+	return true
+
+
 ## remember=false — для тестовых стендов: они бьют в 127.0.0.1, и запись
 ## этого адреса в user://net.cfg затирала игроку адрес VDS — после
 ## прогона тестов игра «переставала подключаться» («сервер не ответил»),
@@ -356,11 +444,27 @@ func join_server(address: String, p: int, remember := true) -> bool:
 		redirect_hops = 0
 		home_port = p
 		save_config()
-	var peer := ENetMultiplayerPeer.new()
-	# Каналов столько же, сколько у сервера (ENet берёт минимум из двух).
-	var err := peer.create_client(address, p, 8)
+	var peer: MultiplayerPeer
+	var err: Error
+	if uses_ws():
+		# Веб-сборка / стенд с --ws: WebSocket к веб-воротам (см. ws_url).
+		var ws := WebSocketMultiplayerPeer.new()
+		# Входящий буфер побольше: см. _start_ws_server — иначе на тяжёлом
+		# кадре браузер теряет пакеты сервера.
+		ws.max_queued_packets = 16384
+		ws.inbound_buffer_size = 4 * 1024 * 1024
+		ws.outbound_buffer_size = 256 * 1024
+		var url := ws_url(address, p)
+		print("[net] подключаемся по WebSocket: %s" % url)
+		err = ws.create_client(url)
+		peer = ws
+	else:
+		var enet := ENetMultiplayerPeer.new()
+		# Каналов столько же, сколько у сервера (ENet берёт минимум из двух).
+		err = enet.create_client(address, p, 8)
+		peer = enet
 	if err != OK:
-		join_failed.emit("Не удалось начать подключение: %s" % error_string(err))
+		join_failed.emit(Loc.t("Не удалось начать подключение: %s") % error_string(err))
 		return false
 	multiplayer.multiplayer_peer = peer
 	mode = Mode.CLIENT
@@ -445,7 +549,7 @@ func _on_connected() -> void:
 func _on_connect_failed() -> void:
 	mode = Mode.OFFLINE
 	multiplayer.multiplayer_peer = null
-	join_failed.emit("Сервер не ответил")
+	join_failed.emit(Loc.t("Сервер не ответил"))
 
 
 func _on_server_gone() -> void:

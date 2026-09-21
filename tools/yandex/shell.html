@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="ru">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0">
+		<title>$GODOT_PROJECT_NAME</title>
+		<style>
+html, body, #canvas { margin: 0; padding: 0; border: 0; }
+body { color: white; background-color: #1b1b1b; overflow: hidden; touch-action: none;
+	-webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+#canvas { display: block; }
+#canvas:focus { outline: none; }
+#status, #status-splash, #status-progress { position: absolute; left: 0; right: 0; }
+#status, #status-splash { top: 0; bottom: 0; }
+#status { background-color: $GODOT_SPLASH_COLOR; display: flex; flex-direction: column; justify-content: center; align-items: center; visibility: hidden; overflow: hidden; }
+#status-splash { max-height: 100%; max-width: 100%; margin: auto; }
+#status-progress { bottom: 10%; width: 50%; margin: 0 auto; }
+#status-notice { background-color: #5b3943; border-radius: 0.5rem; border: 1px solid #9b3943; color: #e0e0e0; font-family: 'Noto Sans', Arial, sans-serif; line-height: 1.3; margin: 0 2rem; overflow: hidden; padding: 1rem; text-align: center; z-index: 1; }
+		</style>
+		$GODOT_HEAD_INCLUDE
+		<!-- Yandex Games SDK: на площадке лежит по /sdk.js; вне площадки его нет — игра стартует без SDK. -->
+		<script src="/sdk.js"></script>
+	</head>
+	<body>
+		<canvas id="canvas">Your browser does not support the canvas tag.</canvas>
+		<noscript>Your browser does not support JavaScript.</noscript>
+		<div id="status">
+			<img id="status-splash" src="$GODOT_SPLASH" alt="">
+			<progress id="status-progress"></progress>
+			<div id="status-notice"></div>
+		</div>
+
+		<script src="$GODOT_URL"></script>
+		<script>
+const GODOT_CONFIG = $GODOT_CONFIG;
+const GODOT_THREADS_ENABLED = $GODOT_THREADS_ENABLED;
+const engine = new Engine(GODOT_CONFIG);
+
+// Мост с игрой (см. scripts/GameState.gd platform_name, scripts/CarSelect.gd AD_JS_SHOW):
+//   window.ysdk           — объект SDK Яндекс Игр (реклама: ysdk.adv.showRewardedVideo)
+//   window.bhrPlayerName  — имя авторизованного игрока, если он разрешил личные данные
+//   window.bhrLang        — язык интерфейса от площадки (ysdk.environment.i18n.lang,
+//                           требование 2.14); '' — SDK нет, игра берёт язык по умолчанию
+window.ysdk = null;
+window.bhrPlayerName = '';
+window.bhrLang = '';
+
+// Облачные сохранения (требование 1.9): копия профиля игры в данных игрока
+// SDK. bhrCloudProfile/bhrCloudRev заполняются ДО запуска движка (initYandex),
+// игра пишет через bhrCloudSave(text, rev) — см. GameState._cloud_push.
+// Лимит SDK — 100 запросов за 5 минут: пишем не чаще раза в 4 с, последнее
+// состояние; при уходе со вкладки — сразу (flush).
+window.bhrPlayer = null;
+window.bhrCloudProfile = '';
+window.bhrCloudRev = 0;
+window.bhrCloudPending = null;
+window.bhrCloudTimer = 0;
+function bhrCloudFlush(now) {
+	const p = window.bhrCloudPending;
+	if (!p || !window.bhrPlayer) {
+		return;
+	}
+	window.bhrCloudPending = null;
+	try {
+		window.bhrPlayer.setData({ profile: p.text, rev: p.rev }, !!now)
+			.then(() => console.log('[yandex] профиль сохранён в облако, rev ' + p.rev))
+			.catch((e) => console.error('[yandex] setData:', e));
+	} catch (e) { console.error('[yandex] setData:', e); }
+}
+window.bhrCloudSave = function (text, rev) {
+	window.bhrCloudPending = { text: text, rev: rev };
+	if (!window.bhrCloudTimer) {
+		window.bhrCloudTimer = setTimeout(() => {
+			window.bhrCloudTimer = 0;
+			bhrCloudFlush(false);
+		}, 4000);
+	}
+};
+document.addEventListener('visibilitychange', () => {
+	if (document.hidden) {
+		bhrCloudFlush(true);
+	}
+});
+// Требование 1.6: в игровой области нет контекстного меню браузера (правый
+// клик, долгий тап) и выделения.
+document.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// Разметка геймплея (ysdk.features.GameplayAPI): игра зовёт
+// window.bhrGameplay(true) после «GO!» и bhrGameplay(false) на финише /
+// при уходе со сцены. Уход со вкладки — stop, возврат — снова start;
+// start/stop не дублируются (площадка этого требует).
+window.bhrGameplayWanted = false;
+window.bhrGameplayActive = false;
+function bhrSyncGameplay() {
+	const api = window.ysdk && window.ysdk.features && window.ysdk.features.GameplayAPI;
+	if (!api) {
+		return;
+	}
+	const want = window.bhrGameplayWanted && !document.hidden;
+	if (want === window.bhrGameplayActive) {
+		return;
+	}
+	try {
+		if (want) {
+			api.start();
+		} else {
+			api.stop();
+		}
+		window.bhrGameplayActive = want;
+		console.log('[yandex] gameplay ' + (want ? 'start' : 'stop'));
+	} catch (e) {
+		console.error('[yandex] gameplay:', e);
+	}
+}
+window.bhrGameplay = function (on) {
+	window.bhrGameplayWanted = !!on;
+	bhrSyncGameplay();
+};
+document.addEventListener('visibilitychange', bhrSyncGameplay);
+
+(function () {
+	const statusOverlay = document.getElementById('status');
+	const statusProgress = document.getElementById('status-progress');
+	const statusNotice = document.getElementById('status-notice');
+
+	let initializing = true;
+	let statusMode = '';
+
+	function setStatusMode(mode) {
+		if (statusMode === mode || !initializing) {
+			return;
+		}
+		if (mode === 'hidden') {
+			statusOverlay.remove();
+			initializing = false;
+			return;
+		}
+		statusOverlay.style.visibility = 'visible';
+		statusProgress.style.display = mode === 'progress' ? 'block' : 'none';
+		statusNotice.style.display = mode === 'notice' ? 'block' : 'none';
+		statusMode = mode;
+	}
+
+	function setStatusNotice(text) {
+		while (statusNotice.lastChild) {
+			statusNotice.removeChild(statusNotice.lastChild);
+		}
+		text.split('\n').forEach((line) => {
+			statusNotice.appendChild(document.createTextNode(line));
+			statusNotice.appendChild(document.createElement('br'));
+		});
+	}
+
+	function displayFailureNotice(err) {
+		console.error(err);
+		if (err instanceof Error) {
+			setStatusNotice(err.message);
+		} else if (typeof err === 'string') {
+			setStatusNotice(err);
+		} else {
+			setStatusNotice('An unknown error occured');
+		}
+		setStatusMode('notice');
+		initializing = false;
+	}
+
+	// Инициализация SDK Яндекс Игр. Ждём не дольше 4 с: нет площадки или
+	// SDK молчит — игра стартует и так (реклама тогда тихо «закроется»).
+	function initYandex() {
+		if (typeof YaGames === 'undefined') {
+			console.log('[yandex] SDK не найден — запуск без площадки');
+			// Проверка перевода вне площадки: index.html?lang=en
+			window.bhrLang = new URLSearchParams(location.search).get('lang') || '';
+			return Promise.resolve();
+		}
+		const init = YaGames.init().then((ysdk) => {
+			window.ysdk = ysdk;
+			console.log('[yandex] SDK готов');
+			// Требование 2.14: язык определяется через SDK на старте, до запуска
+			// движка (обязательно даже для игры с одним языком). Игра забирает
+			// его в GameState.platform_lang().
+			try {
+				window.bhrLang = String(ysdk.environment.i18n.lang || '');
+				console.log('[yandex] язык: ' + window.bhrLang);
+			} catch (e) { console.error('[yandex] lang:', e); }
+			// Имя игрока — только если он уже разрешил личные данные
+			// (scopes: false — без диалога согласия; иначе гараж спросит имя сам).
+			return ysdk.getPlayer({ scopes: false }).then((player) => {
+				window.bhrPlayer = player;
+				try {
+					window.bhrPlayerName = player.getName() || '';
+				} catch (e) { /* имя не дали — не беда */ }
+				return player.getData(['profile', 'rev']).then((d) => {
+					window.bhrCloudProfile = (d && typeof d.profile === 'string') ? d.profile : '';
+					window.bhrCloudRev = (d && d.rev) | 0;
+					console.log('[yandex] облачный профиль: ' + (window.bhrCloudProfile ? 'rev ' + window.bhrCloudRev : 'нет'));
+				});
+			}).catch((e) => console.log('[yandex] getPlayer:', e));
+		}).catch((e) => console.error('[yandex] init:', e));
+		const timeout = new Promise((resolve) => setTimeout(resolve, 4000));
+		return Promise.race([init, timeout]);
+	}
+
+	// Площадке сообщаем, что игра загрузилась (LoadingAPI.ready) — иначе
+	// модерация не пропустит.
+	function notifyReady() {
+		try {
+			if (window.ysdk && window.ysdk.features && window.ysdk.features.LoadingAPI) {
+				window.ysdk.features.LoadingAPI.ready();
+				console.log('[yandex] LoadingAPI.ready');
+			}
+		} catch (e) { console.error('[yandex] ready:', e); }
+	}
+
+	const missing = Engine.getMissingFeatures({ threads: GODOT_THREADS_ENABLED });
+	if (missing.length !== 0) {
+		displayFailureNotice('Error\nThe following features required to run Godot projects on the Web are missing:\n' + missing.join('\n'));
+		return;
+	}
+
+	setStatusMode('progress');
+	initYandex().then(() => engine.startGame({
+		'onProgress': function (current, total) {
+			if (current > 0 && total > 0) {
+				statusProgress.value = current;
+				statusProgress.max = total;
+			} else {
+				statusProgress.removeAttribute('value');
+				statusProgress.removeAttribute('max');
+			}
+		},
+	})).then(() => {
+		// Движок запущен, но первый кадр гаража браузер рисует ещё 5–12 с
+		// (синхронная компиляция шейдеров) — всё это время был чёрный экран.
+		// Заставку держим до сигнала игры bhrFirstFrame (страховка — 30 с).
+		statusProgress.removeAttribute('value');
+		statusProgress.removeAttribute('max');
+		let shown = false;
+		window.bhrFirstFrame = function () {
+			if (shown) {
+				return;
+			}
+			shown = true;
+			setStatusMode('hidden');
+			notifyReady();
+		};
+		setTimeout(window.bhrFirstFrame, 30000);
+	}, displayFailureNotice);
+}());
+		</script>
+	</body>
+</html>

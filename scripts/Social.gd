@@ -76,7 +76,10 @@ func _ready() -> void:
 	for a: String in OS.get_cmdline_user_args():
 		if a.begins_with("--social-port="):
 			_port = maxi(1, int(a.trim_prefix("--social-port=")))
-	if Net.wants_server() and not Net.is_room:
+	# Веб-ворота (`--server --ws`, 17.09) сервер друзей не держат: их
+	# клиенты — браузеры, UDP до них не доходит, а порт друзей на том же
+	# VDS уже занят ENet-воротами.
+	if Net.wants_server() and not Net.is_room and not Net.uses_ws():
 		start_server(_port)
 
 
@@ -387,7 +390,7 @@ func _on_message(msg: Dictionary) -> void:
 			# Наша сборка старее серверной: играть нельзя ни в команде, ни
 			# в одиночку — сервер заезда всё равно откажет (14.09).
 			outdated = true
-			outdated_text = str(msg.get("text", "Обновите игру"))
+			outdated_text = str(msg.get("text", Loc.t("Обновите игру")))
 			print("[social] версия устарела: у сервера %s, у нас %s" % [
 					str(msg.get("server", "?")), str(msg.get("client", "?"))])
 			outdated_changed.emit()

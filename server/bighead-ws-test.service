@@ -1,0 +1,27 @@
+[Unit]
+Description=Пыль и Пламя — ТЕСТОВЫЕ ВЕБ-ВОРОТА (WebSocket для Яндекс Игр; 9870 ворота, 9871-9873 комнаты; снаружи wss://daf.autovsauto.ru/ws/<порт> через Caddy)
+After=network-online.target
+Wants=network-online.target
+# Стоп/перезапуск тестового сервера гасит и веб-ворота (общая папка кода).
+PartOf=bighead-test.service
+
+[Service]
+Type=simple
+# Тот же код и тот же пользователь, что у тестового ENet-сервера
+# (/opt/bighead-test, user:// общий — визитки комнат в user://rooms
+# различаются портами, поэтому не мешают друг другу).
+User=bighead-test
+Group=bighead-test
+WorkingDirectory=/opt/bighead-test
+# --ws: транспорт WebSocket вместо ENet; --ws-bind=127.0.0.1: голый порт
+# наружу не торчит, снаружи только через Caddy (TLS). Сервер друзей веб-ворота
+# не поднимают (Social.gd), поэтому --social-port не нужен.
+ExecStart=/usr/local/bin/godot --headless --path /opt/bighead-test res://scenes/Main.tscn -- --server --ws --ws-bind=127.0.0.1 --port=9870
+Restart=always
+RestartSec=3
+Environment=HOME=/home/bighead-test
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

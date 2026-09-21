@@ -22,9 +22,12 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 # Прописными, хотя на арте название строчными: табличка в гараже узкая
 # (268×46), и у строчных высота буквы вдвое меньше — с телефона не
 # прочесть. Захотите «пыль и пламя» как на арте — поменяйте эту строку.
-TEXT = "ПЫЛЬ И ПЛАМЯ"
+import sys
+# `py tools/gen_logo.py en` — английская надпись для Loc (logo_title_en.png).
+EN = len(sys.argv) > 1 and sys.argv[1] == "en"
+TEXT = "DUST AND FLAME" if EN else "ПЫЛЬ И ПЛАМЯ"
 FONT = "C:/Windows/Fonts/impact.ttf"
-OUT = "assets/ui/logo_title.png"
+OUT = "assets/ui/logo_title_en.png" if EN else "assets/ui/logo_title.png"
 SIZE = 160          # кегль до уменьшения
 SS = 4              # во столько раз рисуем крупнее ради сглаживания
 SKEW = 0.24         # наклон курсива (сдвиг верха вправо, доля высоты)

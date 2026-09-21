@@ -153,7 +153,7 @@ static func step_price(kind: int, step: int) -> int:
 static func step_desc(kind: int, step: int) -> String:
 	var d: Array = STEP_DESC.get(kind, [])
 	var i := clampi(step, 1, STEPS) - 1
-	return str(d[i]) if i < d.size() else ""
+	return Loc.t(str(d[i])) if i < d.size() else ""
 
 
 ## Ступень вида из набора машины (PackedByteArray на COUNT видов; пустой
@@ -214,7 +214,7 @@ static func random_weapon(is_last := false, behind_gap := 0.0,
 
 
 static func display_name(kind: int) -> String:
-	return NAMES.get(kind, "—")
+	return Loc.t(NAMES.get(kind, "—"))
 
 
 static func icon(kind: int) -> Texture2D:

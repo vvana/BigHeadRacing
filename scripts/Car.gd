@@ -89,6 +89,9 @@ var weapon_uses := {}
 ## своей машине на клиенте), на сервере — из hello; у ботов пусто (нули).
 var weapon_steps := PackedByteArray()
 var alive := true
+## Отладка замеров (21.09): свою машину ведёт ИИ — веб-сборка с «?autodrive=1»
+## в адресе или ключ --autodrive. Нужен, чтобы тестовый клиент сам проехал круг.
+static var debug_autodrive := false
 var controls_enabled := false   # включает менеджер гонки после отсчёта
 var race_over := false          # финиш: газа нет, машина плавно тормозит
 var track: TrackBuilder = null  # ставит Main: маршрут ИИ и точки респавна
@@ -428,7 +431,12 @@ func _build_headlights() -> void:
 		beam.spot_angle = 30.0
 		beam.light_energy = 6.0
 		beam.light_color = Color(1.0, 0.93, 0.75)
-		beam.shadow_enabled = true
+		# 16 прожекторов с тенями на ночной трассе — в браузере неподъёмно.
+		beam.shadow_enabled = not GameState.lite_gfx()
+		# Луч в браузере не светит вовсе: объекты, попадая в конус, требуют
+		# нового варианта шейдера — секундные рывки посреди заезда. Лампы фар
+		# (эмиссия + glow) горят как раньше.
+		beam.visible = not GameState.lite_gfx()
 		_headlights.add_child(beam)
 		_beams.append(beam)
 
@@ -1393,7 +1401,7 @@ func _physics_process(delta: float) -> void:
 			and track.distance_from_axis_at(global_position, track_offset) \
 			> track.half_width_at_offset(track_offset)
 	if alive and controls_enabled:
-		if is_player:
+		if is_player and not debug_autodrive:
 			_player_control(delta, on_ground)
 		else:
 			_ai_control(delta, on_ground)
@@ -2180,6 +2188,12 @@ const BUF_START := 0.12   # с чего начинаем, пока канал н
 #   x0.8  + 0.03,  спад 0.20, пол 40 мс — 0 / 2 / 1
 # Требование «не допускать дрожания» выполняет только первый набор.
 const BUF_DECAY := 0.06
+## Плеер позади записи больше чем на буфер + столько секунд — перепривязка
+## (см. _follow_buffered). Дыры канала сюда не попадают: они короче 0.4 с.
+const RESYNC_AHEAD := 0.5
+## Потолок «худшего разрыва»: секундные фризы СВОЕГО кадра (браузер) иначе
+## держали бы отставание на потолке целую минуту (спад 0.06 с/с с 4 с).
+const GAP_CAP := 0.6
 ## УПРЕЖДЕНИЕ КАРТИНКИ (08.09). Соперник на экране идёт в прошлом: буфер
 ## воспроизведения (net_buf_delay) плюс дорога владелец → сервер → я. На
 ## полном ходу это 3-10 м, и оба игрока честно видели СЕБЯ первыми — при
@@ -2224,6 +2238,7 @@ static func buf_avg() -> float:
 ## Запас 1.25 и полтора кадра сверху: интерполяции нужна пара снимков ПО
 ## ОБЕ стороны от плеера, впритык к худшему разрыву буфер пустеет.
 static func net_note_gap(gap: float) -> void:
+	gap = minf(gap, GAP_CAP)
 	_buf_worst = maxf(gap, _buf_worst - gap * BUF_DECAY)
 	net_buf_delay = clampf(_buf_worst * 1.25 + 0.025, BUF_MIN, BUF_MAX)
 	_buf_sum += net_buf_delay
@@ -2301,6 +2316,17 @@ func _follow_buffered(delta: float) -> void:
 		_play_t = _buf_t - net_buf_delay
 	# Сколько НАСТОЯЩЕЙ записи ещё впереди плеера.
 	var ahead := _buf_t - _play_t
+	# ПЛЕЕР ОТСТАЛ НА СЕКУНДЫ (21.09, браузер): наш собственный кадр стоял
+	# (компиляция шейдеров, прогрев — 1–9 с), снимки ждали в сокете и приехали
+	# пачкой. Нагонять такое темпом +15% — это десятки секунд, и всё это время
+	# соперник на экране жил в прошлом: на старте «стоял», пока предсказание
+	# разгона таяло («отъезжают назад»), а потом разом прыгал, когда его
+	# снаряды уже летели. Из записи к тому же остаются последние 1,5 с (90
+	# снимков) — плееру и показывать-то нечего. Перепривязываем часы сразу:
+	# один скачок картинки после НАШЕГО же фриза честнее секунд вранья.
+	if ahead > net_buf_delay + RESYNC_AHEAD:
+		_play_t = _buf_t - net_buf_delay
+		ahead = net_buf_delay
 	var err := ahead - net_buf_delay
 	var rate := 1.0 + clampf(err * 0.5, -0.15, 0.15)
 	# ЗАПАС КОНЧАЕТСЯ — РАСТЯГИВАЕМ ВРЕМЯ, а не замираем (28.08). Приём из

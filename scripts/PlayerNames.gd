@@ -57,7 +57,7 @@ static func pick(count: int, exclude := PackedStringArray()) -> PackedStringArra
 		if not exclude.has(n):
 			res.append(n)
 	while res.size() < count:
-		res.append("Игрок %d" % (res.size() + 1))
+		res.append(Loc.t("Игрок %d") % (res.size() + 1))
 	return res
 
 
@@ -74,4 +74,4 @@ static func pick_one(exclude := PackedStringArray()) -> String:
 ## их между собой («Бот 3 уничтожил Бота 5»), иначе восемь одинаковых
 ## «Бот» не прочитать.
 static func bot_label(n: int) -> String:
-	return "Бот %d" % n
+	return Loc.t("Бот %d") % n

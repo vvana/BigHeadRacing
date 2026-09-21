@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_teststallresync"]
+
+[ext_resource type="Script" path="res://tools/test_stall_resync.gd" id="1_tsr"]
+
+[node name="TestStallResync" type="Node3D"]
+script = ExtResource("1_tsr")

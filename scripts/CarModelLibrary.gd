@@ -1411,6 +1411,10 @@ static func _attach_underglow(m: Node3D, color: String, base_y: float) -> void:
 	# днища и колёс остаётся.
 	light.light_specular = 0.0
 	light.shadow_enabled = false
+	# Браузер (21.09): каждый точечный свет — новые варианты шейдеров у всех
+	# объектов рядом (0,1–0,2 с компиляции на вариант, рывки прямо в заезде).
+	# Светящаяся плоскость неона остаётся, гасим только сам источник.
+	light.visible = not OS.has_feature("web")
 	light.position = Vector3(0.0, base_y + 0.25, 0.0)
 	holder.add_child(light)
 	m.add_child(holder)

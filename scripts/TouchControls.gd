@@ -57,6 +57,7 @@ var _tap_text := ""
 ## Нужны ли экранные кнопки: телефон/планшет или явная просьба `--touch`.
 static func wanted() -> bool:
 	return OS.has_feature("android") or OS.has_feature("ios") \
+			or (OS.has_feature("web") and DisplayServer.is_touchscreen_available()) \
 			or "--touch" in OS.get_cmdline_user_args()
 
 
@@ -69,11 +70,11 @@ func _init(exit_shift := 0.0) -> void:
 
 func _ready() -> void:
 	_font = UiKit.font()
-	_add("gas", "accelerate", "ГАЗ", Color8(72, 190, 90))
-	_add("brake", "brake", "ТОРМОЗ", Color8(207, 51, 39))
+	_add("gas", "accelerate", Loc.t("ГАЗ"), Color8(72, 190, 90))
+	_add("brake", "brake", Loc.t("ТОРМОЗ"), Color8(207, 51, 39))
 	_add("left", "steer_left", "", Color8(90, 98, 107))
 	_add("right", "steer_right", "", Color8(90, 98, 107))
-	_add("bonus", "fire", "БОНУС", Color8(242, 194, 28))
+	_add("bonus", "fire", Loc.t("БОНУС"), Color8(242, 194, 28))
 	_add("exit", "ui_cancel", "", Color8(207, 51, 39), false)
 	_add("tap", "ui_accept", "", Color8(242, 194, 28), false)
 	_by_kind["tap"].visible = false

@@ -76,12 +76,12 @@ func rebuild() -> void:
 
 	# Шапка: заголовок, кошелёк, «ЗАКРЫТЬ» — всегда на виду (вне прокрутки).
 	var head := _head
-	var title := _label("ОРУЖИЕ · ПРОКАЧКА", 20, UiKit.YELLOW, false)
+	var title := _label(Loc.t("ОРУЖИЕ · ПРОКАЧКА"), 20, UiKit.YELLOW, false)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(title)
-	head.add_child(_label("МОНЕТЫ %s" % _fmt(GameState.money), 15, Color.WHITE, false))
+	head.add_child(_label(Loc.t("МОНЕТЫ %s") % _fmt(GameState.money), 15, Color.WHITE, false))
 	var close_btn := Button.new()
-	close_btn.text = "ЗАКРЫТЬ"
+	close_btn.text = Loc.t("ЗАКРЫТЬ")
 	UiKit.style_button(close_btn, "steel", 14)
 	close_btn.custom_minimum_size = Vector2(110, 34)
 	close_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -89,10 +89,7 @@ func rebuild() -> void:
 	head.add_child(close_btn)
 
 	_box.add_child(_label(
-			"У каждого оружия три ступени — I, II, III. Покупаются по порядку"
-			+ " за монеты, каждая открывается с определённого уровня. Само"
-			+ " оружие по-прежнему выпадает из боксов на трассе; III ступень"
-			+ " роняет его в полтора раза чаще. Уровень %d." % GameState.level_info().x,
+			Loc.t("У каждого оружия три ступени — I, II, III. Покупаются по порядку за монеты, каждая открывается с определённого уровня. Само оружие по-прежнему выпадает из боксов на трассе; III ступень роняет его в полтора раза чаще. Уровень %d.") % GameState.level_info().x,
 			12, Color(1, 1, 1, 0.55)))
 	_box.add_child(HSeparator.new())
 
@@ -127,14 +124,14 @@ func _build_row(kind: int) -> void:
 	col.add_child(head)
 	head.add_child(_label(Weapons.display_name(kind), 15, UiKit.YELLOW, false))
 	head.add_child(_pips(step, next))
-	head.add_child(_label(Weapons.GROUP_NAMES[Weapons.group_of(kind)], 11,
+	head.add_child(_label(Loc.t(Weapons.GROUP_NAMES[Weapons.group_of(kind)]), 11,
 			Color(1, 1, 1, 0.4), false))
 
 	var desc := ""
 	if next > 0:
 		desc = "%s: %s" % [Weapons.ROMAN[next], Weapons.step_desc(kind, next)]
 	else:
-		desc = "Все ступени куплены."
+		desc = Loc.t("Все ступени куплены.")
 	col.add_child(_label(desc, 12, Color(1, 1, 1, 0.8)))
 
 	var btn := Button.new()
@@ -142,15 +139,15 @@ func _build_row(kind: int) -> void:
 	btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	btn.focus_mode = Control.FOCUS_NONE
 	if next <= 0:
-		btn.text = "МАКС"
+		btn.text = Loc.t("МАКС")
 		UiKit.style_button(btn, "steel", 13)
 		btn.disabled = true
 	elif GameState.level_info().x < Weapons.step_level(kind, next):
-		btn.text = "с %d ур." % Weapons.step_level(kind, next)
+		btn.text = Loc.t("с %d ур.") % Weapons.step_level(kind, next)
 		UiKit.style_button(btn, "steel", 13)
 		btn.disabled = true
 	else:
-		btn.text = "КУПИТЬ · %s" % _fmt(Weapons.step_price(kind, next))
+		btn.text = Loc.t("КУПИТЬ · %s") % _fmt(Weapons.step_price(kind, next))
 		UiKit.style_button(btn, "orange", 13)
 		btn.pressed.connect(_buy.bind(kind, btn))
 	row.add_child(btn)
@@ -195,7 +192,7 @@ func _buy(kind: int, btn: Button) -> void:
 		rebuild()
 		changed.emit()
 	else:
-		_flash(btn, "НЕ ХВАТАЕТ МОНЕТ")
+		_flash(btn, Loc.t("НЕ ХВАТАЕТ МОНЕТ"))
 
 
 func _label(txt: String, size: int, color: Color, wrap := true) -> Label:

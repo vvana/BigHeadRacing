@@ -19,6 +19,10 @@ class_name Rooms
 ## просто игнорируется и прибирается.
 
 const DIR := "user://rooms"
+## Веб-ворота (`--ws`, 17.09) ведут СВОЙ реестр: на VDS они делят user://
+## с ENet-воротами, и общая папка отправляла веб-игрока в заезд на UDP-порту
+## (пойман 17.09: «отправлен в заезд на порту 9877»). Комнаты наследуют --ws.
+const DIR_WS := "user://rooms_ws"
 ## Сколько комнат СВЕРХ ворот можно поднять. VDS: 1 CPU / 960 МБ, каждый
 ## процесс ~113 МБ и ~22% ядра — больше трёх соседних заездов это железо
 ## не потянет (итого 4 одновременные гонки = 16 игроков). Порты комнат:
@@ -49,6 +53,10 @@ static func reap_children() -> void:
 			_spawn_pid.erase(p)
 
 
+static func _dir() -> String:
+	return DIR_WS if OS.get_cmdline_user_args().has("--ws") else DIR
+
+
 static func _now() -> float:
 	return Time.get_unix_time_from_system()
 
@@ -58,8 +66,8 @@ static func _now() -> float:
 ## (SocialServer) сажает команду в заезд, где хватит места на всех.
 static func write_card(port: int, players: int, joinable: bool,
 		free := 0) -> void:
-	DirAccess.make_dir_recursive_absolute(DIR)
-	var f := FileAccess.open("%s/%d.json" % [DIR, port], FileAccess.WRITE)
+	DirAccess.make_dir_recursive_absolute(_dir())
+	var f := FileAccess.open("%s/%d.json" % [_dir(), port], FileAccess.WRITE)
 	if f == null:
 		return
 	f.store_string(JSON.stringify({
@@ -70,20 +78,20 @@ static func write_card(port: int, players: int, joinable: bool,
 
 ## Комната гасится штатно — прибирает визитку, порт сразу свободен.
 static func remove_card(port: int) -> void:
-	DirAccess.remove_absolute("%s/%d.json" % [DIR, port])
+	DirAccess.remove_absolute("%s/%d.json" % [_dir(), port])
 
 
 ## Живые визитки (устаревшие молча прибираются — их процесс умер).
 static func cards() -> Array:
 	var out: Array = []
-	var dir := DirAccess.open(DIR)
+	var dir := DirAccess.open(_dir())
 	if dir == null:
 		return out
 	for f: String in dir.get_files():
 		if not f.ends_with(".json"):
 			continue
 		var data: Variant = JSON.parse_string(
-				FileAccess.get_file_as_string(DIR + "/" + f))
+				FileAccess.get_file_as_string(_dir() + "/" + f))
 		if typeof(data) != TYPE_DICTIONARY \
 				or not data.has_all(["port", "players", "joinable", "ts"]):
 			continue
@@ -148,6 +156,11 @@ static func spawn(port: int) -> void:
 	args.append("res://scenes/Main.tscn")
 	args.append_array(PackedStringArray(
 			["--", "--server", "--room", "--port=%d" % port]))
+	# Комнаты веб-ворот (17.09) — тоже WebSocket и с той же привязкой
+	# адреса: ключи --ws / --ws-bind= наследуются от ворот.
+	for a: String in OS.get_cmdline_user_args():
+		if a == "--ws" or a.begins_with("--ws-bind="):
+			args.append(a)
 	var pid := OS.create_process(OS.get_executable_path(), args)
 	_spawn_pid[port] = pid
 	print("[rooms] поднимаем комнату на порту %d (pid %d)" % [port, pid])

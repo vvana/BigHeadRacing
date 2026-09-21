@@ -11,6 +11,11 @@ extends Node3D
 ##
 ## Запуск С ОКНОМ (headless не рендерит), для витрины — 1920×1080:
 ## godot --path . --resolution 1920x1080 res://tools/ShotStoreRace.tscn -- <папка> --track=sand
+##
+## Видео для карточки Яндекс Игр (17.09): `--movie=<кадров>` — снимков не
+## делать, просто доехать N физкадров и выйти; запись ведёт сам движок:
+## godot --path . --resolution 1920x1080 --write-movie <файл>.avi
+##       res://tools/ShotStoreRace.tscn -- <папка> --track=sand --movie=1650
 
 const SHOT_FRAMES: Array[int] = [240, 300, 360, 420, 480, 560, 640, 720, 800]
 
@@ -18,6 +23,7 @@ var _main: Node3D
 var _frame := 0
 var _out := "user://shots"
 var _kind := TrackBuilder.KIND_GRASS
+var _movie := 0   # >0 — режим видео: столько физкадров без снимков
 
 
 func _ready() -> void:
@@ -27,6 +33,8 @@ func _ready() -> void:
 	for a in args:
 		if a.begins_with("--track="):
 			_kind = a.trim_prefix("--track=")
+		if a.begins_with("--movie="):
+			_movie = int(a.trim_prefix("--movie="))
 	DirAccess.make_dir_recursive_absolute(_out)
 	GameState.player_name = "Гонщик"
 	Social.go_offline()
@@ -57,6 +65,10 @@ func _hide_help(node: Node) -> void:
 
 func _physics_process(_d: float) -> void:
 	_frame += 1
+	if _movie > 0:
+		if _frame >= _movie:
+			get_tree().quit(0)
+		return
 	if _frame in SHOT_FRAMES:
 		await RenderingServer.frame_post_draw
 		var file := "%s_%03d.png" % [_kind, _frame]

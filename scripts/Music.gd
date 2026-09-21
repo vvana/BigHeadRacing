@@ -28,6 +28,13 @@ var _silent := false
 var _current := ""                 # путь того, что играет сейчас
 var _queue: Array[String] = []     # перемешанная очередь гоночных треков
 var _tween: Tween
+## Web-сборка (Яндекс Игры, требование 1.3 «при потере фокуса звук
+## останавливается»): шина Master глушится, пока вкладка скрыта или окно
+## без фокуса. ad_muted ставит CarSelect на время ролика — он глушит ту же
+## шину, и возврат фокуса посреди ролика звук включать не должен.
+var ad_muted := false
+var _focus_muted := false
+var _vis_t := 0.0
 
 
 func _ready() -> void:
@@ -118,3 +125,45 @@ func _swap(stream: AudioStream) -> void:
 func _on_finished() -> void:
 	if _current != MENU:
 		next_race()
+
+
+# ---- Яндекс Игры: звук при потере фокуса (17.09) ----
+
+func is_focus_muted() -> bool:
+	return _focus_muted
+
+
+## FOCUS_OUT/IN приходят по blur/focus окна; смену вкладки Chrome иногда
+## отдаёт только через document.hidden — его добирает опрос в _process.
+func _notification(what: int) -> void:
+	if not OS.has_feature("web"):
+		return
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		_set_focus_muted(true)
+	elif what == NOTIFICATION_APPLICATION_FOCUS_IN:
+		_set_focus_muted(false)
+
+
+func _process(delta: float) -> void:
+	if not OS.has_feature("web"):
+		set_process(false)
+		return
+	_vis_t += delta
+	if _vis_t < 0.5:
+		return
+	_vis_t = 0.0
+	var away: Variant = JavaScriptBridge.eval(
+			"document.hidden || !document.hasFocus()", true)
+	if away != null:
+		_set_focus_muted(bool(away))
+
+
+func _set_focus_muted(muted: bool) -> void:
+	if muted == _focus_muted:
+		return
+	_focus_muted = muted
+	var bus := AudioServer.get_bus_index("Master")
+	if muted:
+		AudioServer.set_bus_mute(bus, true)
+	elif not ad_muted:
+		AudioServer.set_bus_mute(bus, false)

@@ -106,11 +106,11 @@ func _build() -> void:
 	var head := HBoxContainer.new()
 	head.add_theme_constant_override("separation", 10)
 	_box.add_child(head)
-	var title := _label("КОМАНДА ДРУЗЕЙ", 20, UiKit.YELLOW)
+	var title := _label(Loc.t("КОМАНДА ДРУЗЕЙ"), 20, UiKit.YELLOW)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(title)
 	var close_btn := Button.new()
-	close_btn.text = "ЗАКРЫТЬ"
+	close_btn.text = Loc.t("ЗАКРЫТЬ")
 	UiKit.style_button(close_btn, "steel", 14)
 	close_btn.custom_minimum_size = Vector2(110, 34)
 	close_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -153,7 +153,7 @@ func _build() -> void:
 
 	# Друзья (09.09, вечер): кого звал в команду или с кем в ней был —
 	# списком, с кнопкой «ПРИГЛАСИТЬ»: заново искать по имени не надо.
-	_friends_title = _label("ДРУЗЬЯ", 15, Color.WHITE)
+	_friends_title = _label(Loc.t("ДРУЗЬЯ"), 15, Color.WHITE)
 	_sec_find.add_child(_friends_title)
 	# Строки компактные (плоские кнопки, ~FRIEND_ROW_H px). Своей прокрутки
 	# у списка больше нет — она была вложенной, и палец на телефоне попадал
@@ -170,7 +170,7 @@ func _build() -> void:
 	row.add_theme_constant_override("separation", 8)
 	_sec_find.add_child(row)
 	_search = LineEdit.new()
-	_search.placeholder_text = "имя друга"
+	_search.placeholder_text = Loc.t("имя друга")
 	_search.max_length = GameState.NAME_MAX
 	_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_search.add_theme_font_override("font", _font)
@@ -184,7 +184,7 @@ func _build() -> void:
 	_search.text_submitted.connect(func(_t: String) -> void: _do_search())
 	row.add_child(_search)
 	var find := Button.new()
-	find.text = "НАЙТИ"
+	find.text = Loc.t("НАЙТИ")
 	UiKit.style_button(find, "yellow", 14)
 	find.custom_minimum_size = Vector2(110, 36)
 	find.pressed.connect(_do_search)
@@ -212,14 +212,14 @@ func _build() -> void:
 	bottom.add_theme_constant_override("separation", 10)
 	_box.add_child(bottom)
 	_ready_btn = Button.new()
-	_ready_btn.text = "ГОТОВ"
+	_ready_btn.text = Loc.t("ГОТОВ")
 	UiKit.style_button(_ready_btn, "teal", 18)
 	_ready_btn.custom_minimum_size = Vector2(300, 48)
 	_ready_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_ready_btn.pressed.connect(_toggle_ready)
 	bottom.add_child(_ready_btn)
 	_leave_btn = Button.new()
-	_leave_btn.text = "ВЫЙТИ"
+	_leave_btn.text = Loc.t("ВЫЙТИ")
 	UiKit.style_button(_leave_btn, "red", 16)
 	_leave_btn.custom_minimum_size = Vector2(150, 48)
 	_leave_btn.pressed.connect(func() -> void: Social.leave_party())
@@ -228,7 +228,7 @@ func _build() -> void:
 
 func _do_search() -> void:
 	if not Social.connected:
-		_on_notice("Нет связи с сервером друзей")
+		_on_notice(Loc.t("Нет связи с сервером друзей"))
 		return
 	Social.search(_search.text)
 
@@ -239,8 +239,8 @@ func _on_results(items: Array) -> void:
 		_results.remove_child(c)
 		c.queue_free()
 	if items.is_empty():
-		_results.add_child(_label("Никого не нашлось" if _search.text != ""
-				else "Сейчас никого нет в игре", 12, Color(1, 1, 1, 0.5)))
+		_results.add_child(_label(Loc.t("Никого не нашлось") if _search.text != ""
+				else Loc.t("Сейчас никого нет в игре"), 12, Color(1, 1, 1, 0.5)))
 		return
 	var shown := 0
 	for it: Dictionary in items:
@@ -255,14 +255,14 @@ func _on_results(items: Array) -> void:
 				Color.WHITE if online else Color(1, 1, 1, 0.45))
 		nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.add_child(nm)
-		var st := "не в сети"
+		var st := Loc.t("не в сети")
 		if online:
-			st = "в заезде" if str(it.get("status", "")) == "race" else "в гараже"
+			st = Loc.t("в заезде") if str(it.get("status", "")) == "race" else Loc.t("в гараже")
 			if bool(it.get("party", false)):
-				st += ", в команде"
+				st += Loc.t(", в команде")
 		row.add_child(_label(st, 12, Color(1, 1, 1, 0.55)))
 		var inv := Button.new()
-		inv.text = "ПРИГЛАСИТЬ"
+		inv.text = Loc.t("ПРИГЛАСИТЬ")
 		UiKit.style_button(inv, "orange", 12)
 		inv.custom_minimum_size = Vector2(120, 30)
 		inv.disabled = not online or bool(it.get("party", false)) \
@@ -293,11 +293,11 @@ func _refresh_friends() -> void:
 		_friends_box.remove_child(c)
 		c.queue_free()
 	var names: Array = GameState.friends
-	_friends_title.text = "ДРУЗЬЯ (%d)" % names.size() if not names.is_empty() \
-			else "ДРУЗЬЯ"
+	_friends_title.text = Loc.t("ДРУЗЬЯ (%d)") % names.size() if not names.is_empty() \
+			else Loc.t("ДРУЗЬЯ")
 	if names.is_empty():
 		_friends_box.add_child(_label(
-				"Пока никого: найди друга ниже и пригласи — он останется здесь",
+				Loc.t("Пока никого: найди друга ниже и пригласи — он останется здесь"),
 				12, Color(1, 1, 1, 0.5)))
 		return
 	var can_invite := Social.connected and Social.name_ok \
@@ -318,20 +318,20 @@ func _refresh_friends() -> void:
 		nm.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		nm.clip_text = true
 		row.add_child(nm)
-		var st := "…" if not known else "не в сети"
+		var st := "…" if not known else Loc.t("не в сети")
 		if online:
-			st = "в заезде" if str(it.get("status", "")) == "race" else "в гараже"
+			st = Loc.t("в заезде") if str(it.get("status", "")) == "race" else Loc.t("в гараже")
 			if in_party:
-				st += ", в команде"
+				st += Loc.t(", в команде")
 		var st_l := _label(st, 11, Color(1, 1, 1, 0.55))
 		st_l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		row.add_child(st_l)
-		var inv := _flat_button("ПРИГЛАСИТЬ", UiKit.ORANGE, 100)
+		var inv := _flat_button(Loc.t("ПРИГЛАСИТЬ"), UiKit.ORANGE, 100)
 		inv.disabled = not (can_invite and online) or in_party
 		inv.pressed.connect(func() -> void: Social.invite(who))
 		row.add_child(inv)
 		var del := _flat_button("✕", UiKit.STEEL, 28)
-		del.tooltip_text = "Убрать из списка"
+		del.tooltip_text = Loc.t("Убрать из списка")
 		del.pressed.connect(func() -> void:
 			GameState.forget_friend(who)
 			_refresh_friends())
@@ -371,7 +371,7 @@ func _flat_button(text: String, bg: Color, width: float) -> Button:
 
 
 func _on_notice(text: String) -> void:
-	_notice.text = text
+	_notice.text = Loc.server(text)
 	_notice_time = 6.0
 
 
@@ -384,24 +384,22 @@ func _refresh() -> void:
 	if not is_inside_tree():
 		return
 	if Social.outdated:
-		_status.text = Social.outdated_text
+		_status.text = Loc.server(Social.outdated_text)
 	elif not Social.connected:
-		_status.text = "Нет связи с сервером друзей — проверь интернет " \
-				+ "или подожди: подключаемся…"
+		_status.text = Loc.t("Нет связи с сервером друзей — проверь интернет или подожди: подключаемся…")
 	elif not Social.name_ok:
-		_status.text = ("Имя «%s» занято другим игроком — нажми «ИМЯ» вверху "
-				+ "и выбери другое") % GameState.display_name() \
+		_status.text = Loc.t("Имя «%s» занято другим игроком — нажми «ИМЯ» вверху и выбери другое") \
+				% GameState.display_name() \
 				if Social.name_reason == "taken" \
-				else "Сначала введи имя (кнопка «ИМЯ» вверху)"
+				else Loc.t("Сначала введи имя (кнопка «ИМЯ» вверху)")
 	else:
-		_status.text = ("На связи как «%s». Зови друзей (до %d чел.); "
-				+ "все нажали «ГОТОВ» — едете в один заезд.") % [
+		_status.text = Loc.t("На связи как «%s». Зови друзей (до %d чел.); все нажали «ГОТОВ» — едете в один заезд.") % [
 				GameState.display_name(), SocialServer.PARTY_MAX]
 	_refresh_friends()
 	var ms: Array = Social.members()
 	var in_party := Social.in_party()
-	_members_title.text = ("В КОМАНДЕ: %d/%d" % [ms.size(), SocialServer.PARTY_MAX]) \
-			if in_party else "Команды пока нет — пригласи друга"
+	_members_title.text = (Loc.t("В КОМАНДЕ: %d/%d") % [ms.size(), SocialServer.PARTY_MAX]) \
+			if in_party else Loc.t("Команды пока нет — пригласи друга")
 	_ready_btn.visible = in_party
 	_leave_btn.visible = in_party
 	# В команде состав — первым (см. _build).
@@ -412,9 +410,9 @@ func _refresh() -> void:
 		bottom_sec.get_parent().move_child(bottom_sec, 1)
 	if in_party:
 		var mine := Social.my_ready()
-		_ready_btn.text = "ГОТОВ ✓ — ждём остальных" if mine else "ГОТОВ"
+		_ready_btn.text = Loc.t("ГОТОВ ✓ — ждём остальных") if mine else Loc.t("ГОТОВ")
 		if bool(Social.party.get("launching", false)):
-			_ready_btn.text = "Ищем заезд…"
+			_ready_btn.text = Loc.t("Ищем заезд…")
 	# Карточки членов: по uid, лишние снимаем, новые строим, машины меняем.
 	var seen := {}
 	for m: Dictionary in ms:
@@ -426,21 +424,21 @@ func _refresh() -> void:
 		var name_l: Label = card.name_l
 		var is_me := uid == str(Social.party.get("me", ""))
 		name_l.text = ("★ " if bool(m.get("leader", false)) else "") \
-				+ str(m.get("name", "")) + (" (ты)" if is_me else "")
+				+ str(m.get("name", "")) + (Loc.t(" (ты)") if is_me else "")
 		name_l.add_theme_color_override("font_color",
 				UiKit.GREEN_ME if is_me else UiKit.BLUE_MATE)
 		var state_l: Label = card.state_l
 		if not bool(m.get("online", true)):
-			state_l.text = "не в сети"
+			state_l.text = Loc.t("не в сети")
 			state_l.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
 		elif bool(m.get("ready", false)):
-			state_l.text = "ГОТОВ ✓"
+			state_l.text = Loc.t("ГОТОВ ✓")
 			state_l.add_theme_color_override("font_color", UiKit.GREEN_ME)
 		elif str(m.get("status", "")) == "race":
-			state_l.text = "в заезде"
+			state_l.text = Loc.t("в заезде")
 			state_l.add_theme_color_override("font_color", UiKit.ORANGE_RIVAL)
 		else:
-			state_l.text = "ждёт"
+			state_l.text = Loc.t("ждёт")
 			state_l.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
 		var cid := str(m.get("car", ""))
 		if cid != "" and cid != str(card.car):

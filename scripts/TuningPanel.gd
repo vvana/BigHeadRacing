@@ -260,10 +260,10 @@ func _buy_preview(btn: Button) -> void:
 	for key in keys:
 		var need := GameState.item_unlock_level(_base, key)
 		if lvl < need:
-			_flash(btn, "НУЖЕН %d УРОВЕНЬ" % need)
+			_flash(btn, Loc.t("НУЖЕН %d УРОВЕНЬ") % need)
 			return
 	if GameState.money < _preview_total():
-		_flash(btn, "НЕ ХВАТАЕТ МОНЕТ")
+		_flash(btn, Loc.t("НЕ ХВАТАЕТ МОНЕТ"))
 		return
 	for key in keys:
 		GameState.try_buy_item(_base, key)
@@ -293,25 +293,25 @@ func _build_preview_row() -> void:
 	for k in _preview:
 		match k:
 			"wheel", "engine", "spoiler", "exhaust":
-				names.append("%s №%d" % [String(SLOT_NAMES[k]).to_lower(), int(_preview[k])])
-			"sticker": names.append("наклейка №%d" % int(_preview[k]))
-			"line": names.append("полоса")
-			"glitter": names.append("металлик %s" % str(preview_cfg()["color"]))
-			"smoke": names.append("дым %s" % _fx_color_name(str(_preview[k])))
-			"neon": names.append("неон %s" % _fx_color_name(str(_preview[k])))
-			"glass": names.append("стёкла %s" % _fx_color_name(str(_preview[k])))
-	var lbl := _label("ПРИМЕРКА: %s" % ", ".join(names), 14, PREVIEW_COLOR)
+				names.append("%s №%d" % [Loc.t(SLOT_NAMES[k]).to_lower(), int(_preview[k])])
+			"sticker": names.append(Loc.t("наклейка №%d") % int(_preview[k]))
+			"line": names.append(Loc.t("полоса"))
+			"glitter": names.append(Loc.t("металлик %s") % str(preview_cfg()["color"]))
+			"smoke": names.append(Loc.t("дым %s") % _fx_color_name(str(_preview[k])))
+			"neon": names.append(Loc.t("неон %s") % _fx_color_name(str(_preview[k])))
+			"glass": names.append(Loc.t("стёкла %s") % _fx_color_name(str(_preview[k])))
+	var lbl := _label(Loc.t("ПРИМЕРКА: %s") % ", ".join(names), 14, PREVIEW_COLOR)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(lbl)
 	var buy := Button.new()
-	buy.text = "КУПИТЬ · %s" % _fmt(_preview_total())
+	buy.text = Loc.t("КУПИТЬ · %s") % _fmt(_preview_total())
 	UiKit.style_button(buy, "orange", 14)
 	buy.custom_minimum_size = Vector2(170, 34)
 	buy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	buy.pressed.connect(_buy_preview.bind(buy))
 	row.add_child(buy)
 	var drop := Button.new()
-	drop.text = "СБРОС"
+	drop.text = Loc.t("СБРОС")
 	UiKit.style_button(drop, "steel", 13)
 	drop.custom_minimum_size = Vector2(90, 34)
 	drop.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -337,12 +337,12 @@ func rebuild() -> void:
 		_head.remove_child(c)
 		c.queue_free()
 	var head := _head
-	var title := _label("ТЮНИНГ · %s" % _car_name(), 20, UiKit.YELLOW, false)
+	var title := _label(Loc.t("ТЮНИНГ · %s") % _car_name(), 20, UiKit.YELLOW, false)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(title)
-	head.add_child(_label("МОНЕТЫ %s" % _fmt(GameState.money), 15, Color.WHITE, false))
+	head.add_child(_label(Loc.t("МОНЕТЫ %s") % _fmt(GameState.money), 15, Color.WHITE, false))
 	var close_btn := Button.new()
-	close_btn.text = "ЗАКРЫТЬ"
+	close_btn.text = Loc.t("ЗАКРЫТЬ")
 	UiKit.style_button(close_btn, "steel", 14)
 	close_btn.custom_minimum_size = Vector2(110, 34)
 	close_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -350,10 +350,7 @@ func rebuild() -> void:
 	head.add_child(close_btn)
 
 	_box.add_child(_label(
-			"Тюнинг — только внешний вид: на скорость, разгон и управляемость"
-			+ " он не влияет. Клик по некупленному — примерить, покупка —"
-			+ " кнопкой «КУПИТЬ» внизу; уйдёте на другую вкладку — примерка"
-			+ " снимется.", 12, Color(1, 1, 1, 0.55)))
+			Loc.t("Тюнинг — только внешний вид: на скорость, разгон и управляемость он не влияет. Клик по некупленному — примерить, покупка — кнопкой «КУПИТЬ» внизу; уйдёте на другую вкладку — примерка снимется."), 12, Color(1, 1, 1, 0.55)))
 
 	# Вкладки по частям машины.
 	if tabs.size() > 1:
@@ -365,7 +362,7 @@ func rebuild() -> void:
 		var crowded := tabs.size() > 7
 		for tab in tabs:
 			var b := Button.new()
-			b.text = TAB_NAMES[tab]
+			b.text = Loc.t(TAB_NAMES[tab])
 			UiKit.style_button(b, "teal" if tab == _tab else "steel", 10 if crowded else 11)
 			# Семь вкладок в 560 px: боковые поля пластины ужаты (у
 			# UiKit.style_button они 20 px — семь кнопок не влезали и
@@ -423,8 +420,8 @@ func _build_slot(slot: String) -> void:
 		prices.append(_fmt(_tier_price(slot, tier)))
 	# Подпись без «ярусов» и голых цифр (жалоба 07.09 «что за слово ярус,
 	# что за цифры»): три ступени деталей и что стоит каждая.
-	_box.add_child(_label("%s  куплено %d из %d   %s · три ступени: простые %s, средние %s, лучшие %s монет"
-			% [SLOT_NAMES[slot], owned, total, SLOT_EFFECT[slot],
+	_box.add_child(_label(Loc.t("%s  куплено %d из %d   %s · три ступени: простые %s, средние %s, лучшие %s монет")
+			% [Loc.t(SLOT_NAMES[slot]), owned, total, Loc.t(SLOT_EFFECT[slot]),
 					prices[0], prices[1], prices[2]], 14, Color.WHITE))
 
 	var icons := HFlowContainer.new()
@@ -446,13 +443,13 @@ func _build_slot(slot: String) -> void:
 		_frame(b, mounted and not _preview.has(slot), open_, previewed)
 		if open_:
 			if idx == 0:
-				b.tooltip_text = "Родные колёса" if slot == "wheel" else "Пусто"
+				b.tooltip_text = Loc.t("Родные колёса") if slot == "wheel" else Loc.t("Пусто")
 			else:
-				b.tooltip_text = "Сток" if tier == 0 else "Куплено · %s деталь" % TIER_NAMES[tier]
+				b.tooltip_text = Loc.t("Сток") if tier == 0 else Loc.t("Куплено · %s деталь") % Loc.t(TIER_NAMES[tier])
 			b.pressed.connect(_mount.bind(slot, idx))
 		else:
 			_price_tag(b, key)
-			b.tooltip_text = "%s деталь — %s" % [TIER_NAMES[tier].capitalize(), _item_hint(key)]
+			b.tooltip_text = Loc.t("%s деталь — %s") % [Loc.t(TIER_NAMES[tier]).capitalize(), _item_hint(key)]
 			b.pressed.connect(_try_on.bind(slot, idx))
 		icons.add_child(b)
 
@@ -468,8 +465,8 @@ func _item_hint(key: String) -> String:
 	var need := GameState.item_unlock_level(_base, key)
 	var price := _fmt(GameState.item_price(_base, key))
 	if GameState.level_info().x < need:
-		return "с %d уровня, %s монет — нажмите, чтобы примерить" % [need, price]
-	return "%s монет — нажмите, чтобы примерить" % price
+		return Loc.t("с %d уровня, %s монет — нажмите, чтобы примерить") % [need, price]
+	return Loc.t("%s монет — нажмите, чтобы примерить") % price
 
 
 ## Ценник на закрытой иконке: жёлтый ярлык с числом внизу (уровень мал —
@@ -478,7 +475,7 @@ func _price_tag(b: Button, key: String) -> void:
 	var need := GameState.item_unlock_level(_base, key)
 	var locked := GameState.level_info().x < need
 	var tag := Label.new()
-	tag.text = "%d ур." % need if locked else _fmt(GameState.item_price(_base, key))
+	tag.text = Loc.t("%d ур.") % need if locked else _fmt(GameState.item_price(_base, key))
 	if _font:
 		tag.add_theme_font_override("font", _font)
 	tag.add_theme_font_size_override("font_size", 9)
@@ -518,21 +515,21 @@ func _build_part_color(part: String) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 	_box.add_child(row)
-	var what := "полосы" if part == "line" else "детали"
+	var what := Loc.t("полосы") if part == "line" else Loc.t("детали")
 	# Заголовок НЕ растягивается: кнопка «КАК КУЗОВ» стоит вплотную к
 	# нему, над палитрой (замечание 16.09: прижатая к правому краю панели
 	# кнопка читалась как чужая, непонятно, к чему относится).
-	var lbl := _label("ЦВЕТ %s   36 красок — бесплатно" % what.to_upper(),
+	var lbl := _label(Loc.t("ЦВЕТ %s   36 красок — бесплатно") % what.to_upper(),
 			14, Color.WHITE, false)
 	row.add_child(lbl)
 	# У выхлопа без выбора цвета трубы остаются родными (палитра пака),
 	# а не в цвет кузова — у его меша нет окрашиваемой поверхности.
-	var none := "АВТО" if part == "line" \
-			else ("РОДНОЙ" if part == "exhaust" else "КАК КУЗОВ")
+	var none := Loc.t("АВТО") if part == "line" \
+			else (Loc.t("РОДНОЙ") if part == "exhaust" else Loc.t("КАК КУЗОВ"))
 	var none_btn := _mode_button(none, cur.is_empty(),
 			func() -> void: _set_free(key, ""))
 	if part == "line":
-		none_btn.tooltip_text = "Цвет по кузову: тёмная полоса на светлом, светлая на тёмном"
+		none_btn.tooltip_text = Loc.t("Цвет по кузову: тёмная полоса на светлом, светлая на тёмном")
 	row.add_child(none_btn)
 	for shade in [1, 2, 3]:
 		var line := HFlowContainer.new()
@@ -579,7 +576,7 @@ func _build_paint() -> void:
 	var cfg := GameState.tuning_of(_base)
 	var shown := preview_cfg()
 	var glitter: bool = int(cfg["glitter"]) == 1 and not _preview.has("glitter")
-	_box.add_child(_label("КРАСКА   12 цветов × 3 оттенка — бесплатно", 14, Color.WHITE))
+	_box.add_child(_label(Loc.t("КРАСКА   12 цветов × 3 оттенка — бесплатно"), 14, Color.WHITE))
 	for shade in [1, 2, 3]:
 		var line := HFlowContainer.new()
 		line.add_theme_constant_override("h_separation", 4)
@@ -598,7 +595,7 @@ func _build_paint() -> void:
 	# его оттенка: оттенок берётся из выбранного выше. Некупленный —
 	# примеряется.
 	var owned := GameState.items_owned_count(_base, "metal:")
-	_box.add_child(_label("МЕТАЛЛИК  %d из %d   по %s за цвет · зеркальный блик и лак"
+	_box.add_child(_label(Loc.t("МЕТАЛЛИК  %d из %d   по %s за цвет · зеркальный блик и лак")
 			% [owned, CarModelLibrary.ARCADE_COLORS.size(),
 					_fmt(GameState.item_price(_base, "metal:red"))], 14, Color.WHITE))
 	var mline := HFlowContainer.new()
@@ -618,12 +615,12 @@ func _build_paint() -> void:
 					Color(1, 1, 1, 0.8)
 			(b.get_theme_stylebox("normal") as StyleBoxFlat).set_border_width_all(2)
 		if GameState.item_owned(_base, key):
-			b.tooltip_text = "Металлик · %s" % color
+			b.tooltip_text = Loc.t("Металлик · %s") % color
 			b.pressed.connect(_paint.bind(color, shade_now, true))
 		else:
 			b.modulate = Color(0.7, 0.7, 0.72)
 			_price_tag(b, key)
-			b.tooltip_text = "Металлик · %s — %s" % [color, _item_hint(key)]
+			b.tooltip_text = Loc.t("Металлик · %s — %s") % [color, _item_hint(key)]
 			b.pressed.connect(func() -> void:
 				if previewed:
 					_try_on("glitter", 1)   # повторный клик — снять
@@ -652,10 +649,10 @@ func _paint(color: String, shade: int, metal: bool) -> void:
 func _build_simple_paint() -> void:
 	var colors := CarModelLibrary.colors_for(_base)
 	if colors.is_empty():
-		_box.add_child(_label("У этой машины один цвет — перекрасить нельзя.",
+		_box.add_child(_label(Loc.t("У этой машины один цвет — перекрасить нельзя."),
 				14, Color(1, 1, 1, 0.7)))
 		return
-	_box.add_child(_label("КРАСКА   %d цветов — бесплатно" % colors.size(),
+	_box.add_child(_label(Loc.t("КРАСКА   %d цветов — бесплатно") % colors.size(),
 			14, Color.WHITE))
 	var line := HFlowContainer.new()
 	line.add_theme_constant_override("h_separation", 6)
@@ -665,7 +662,7 @@ func _build_simple_paint() -> void:
 	for color in colors:
 		var b := _swatch(SWATCH_COLORS.get(color, Color.MAGENTA),
 				color == current, SWATCH_BIG)
-		b.tooltip_text = String(COLOR_NAMES.get(color, color)).capitalize()
+		b.tooltip_text = Loc.t(String(COLOR_NAMES.get(color, color))).capitalize()
 		b.pressed.connect(func() -> void:
 			GameState.set_car_color(_base, color)
 			changed.emit()
@@ -696,7 +693,7 @@ func _build_line() -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 	_box.add_child(row)
-	var lbl := _label("ПОЛОСА   двойная полоса по кузову — %s" % _fmt(
+	var lbl := _label(Loc.t("ПОЛОСА   двойная полоса по кузову — %s") % _fmt(
 			GameState.item_price(_base, "line")), 14, Color.WHITE)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(lbl)
@@ -708,7 +705,7 @@ func _build_line() -> void:
 	if GameState.item_owned(_base, "line"):
 		var on := int(cfg["line"]) == 1
 		UiKit.style_button(pb, "teal" if on else "steel", 13)
-		pb.text = "ПОЛОСА: %s" % ("ВКЛ" if on else "ВЫКЛ")
+		pb.text = Loc.t("ПОЛОСА: %s") % (Loc.t("ВКЛ") if on else Loc.t("ВЫКЛ"))
 		pb.pressed.connect(func() -> void:
 			if GameState.set_tuning(_base, "line", 0 if on else 1):
 				changed.emit()
@@ -716,9 +713,9 @@ func _build_line() -> void:
 	else:
 		var previewed := _preview.has("line")
 		UiKit.style_button(pb, "orange" if previewed else "steel", 13)
-		pb.text = ("ПРИМЕРЕНА · %s" if previewed else "ПРИМЕРИТЬ · %s") \
+		pb.text = (Loc.t("ПРИМЕРЕНА · %s") if previewed else Loc.t("ПРИМЕРИТЬ · %s")) \
 				% _fmt(GameState.item_price(_base, "line"))
-		pb.tooltip_text = "Нажмите, чтобы примерить; купить — кнопкой «КУПИТЬ»"
+		pb.tooltip_text = Loc.t("Нажмите, чтобы примерить; купить — кнопкой «КУПИТЬ»")
 		pb.pressed.connect(func() -> void: _try_on("line", 1))
 	row.add_child(pb)
 	_build_part_color("line")
@@ -729,7 +726,7 @@ func _build_line() -> void:
 func _build_stickers() -> void:
 	var cfg := GameState.tuning_of(_base)
 	var owned := GameState.items_owned_count(_base, "sticker:")
-	_box.add_child(_label("НАКЛЕЙКИ  %d из %d   по %s за штуку" % [owned,
+	_box.add_child(_label(Loc.t("НАКЛЕЙКИ  %d из %d   по %s за штуку") % [owned,
 			CarModelLibrary.PART_COUNT, _fmt(GameState.item_price(_base, "sticker:1"))],
 			14, Color.WHITE))
 	var icons := HFlowContainer.new()
@@ -744,7 +741,7 @@ func _build_stickers() -> void:
 		var open_ := idx == 0 or GameState.item_owned(_base, key)
 		_frame(b, mounted, open_, previewed)
 		if open_:
-			b.tooltip_text = "Без наклейки" if idx == 0 else "Куплено"
+			b.tooltip_text = Loc.t("Без наклейки") if idx == 0 else Loc.t("Куплено")
 			b.pressed.connect(func() -> void:
 				_preview.erase("sticker")
 				if GameState.set_tuning(_base, "sticker", idx):
@@ -774,14 +771,14 @@ func _build_fx_row(key: String) -> void:
 	var head := HBoxContainer.new()
 	head.add_theme_constant_override("separation", 8)
 	_box.add_child(head)
-	var lbl := _label("%s  %d из %d   по %s за цвет · %s" % [row_info[0],
+	var lbl := _label(Loc.t("%s  %d из %d   по %s за цвет · %s") % [Loc.t(row_info[0]),
 			owned, CarModelLibrary.FX_COLORS.size(),
-			_fmt(GameState.item_price(_base, "%s:red" % key)), row_info[2]],
+			_fmt(GameState.item_price(_base, "%s:red" % key)), Loc.t(row_info[2])],
 			14, Color.WHITE)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(lbl)
 	var none_on := cur.is_empty() and not _preview.has(key)
-	head.add_child(_mode_button(String(row_info[1]), none_on, func() -> void:
+	head.add_child(_mode_button(Loc.t(String(row_info[1])), none_on, func() -> void:
 		_preview.erase(key)
 		_set_free(key, "")))
 	var line := HFlowContainer.new()
@@ -795,7 +792,7 @@ func _build_fx_row(key: String) -> void:
 		var b := _swatch(CarModelLibrary.fx_color(color), mounted, CELL, previewed)
 		var cname := _fx_color_name(color)
 		if GameState.item_owned(_base, item):
-			b.tooltip_text = "Куплено · %s" % cname
+			b.tooltip_text = Loc.t("Куплено · %s") % cname
 			b.pressed.connect(func() -> void:
 				_preview.erase(key)
 				_set_free(key, color))
@@ -808,7 +805,7 @@ func _build_fx_row(key: String) -> void:
 
 
 func _fx_color_name(color: String) -> String:
-	return String(FX_COLOR_NAMES.get(color, color))
+	return Loc.t(String(FX_COLOR_NAMES.get(color, color)))
 
 
 # ---- Мелочи ----
@@ -850,7 +847,7 @@ func _label(txt: String, size: int, color: Color, wrap := true) -> Label:
 
 func _car_name() -> String:
 	var names: Dictionary = preload("res://scripts/CarSelect.gd").DISPLAY_NAMES
-	return names.get(_base, _base)
+	return Loc.t(names.get(_base, _base))
 
 
 ## Цена с тонкой шпацией между тысячами: 24000 → «24 000».

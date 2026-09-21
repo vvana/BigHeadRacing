@@ -60,6 +60,7 @@ const SLIDE_TIME := 0.35
 const UI_DIR := "res://assets/ui/garage/"
 ## Название игры на верхней табличке — готовая надпись (tools/gen_logo.py).
 const LOGO_PATH := "res://assets/ui/logo_title.png"
+const LOGO_PATH_EN := "res://assets/ui/logo_title_en.png"   # tools/gen_logo.py en
 
 ## Показ ролика на Яндекс Играх. Результат складываем в window.bhrAd и
 ## опрашиваем из _process (JavaScriptBridge не умеет ждать промис).
@@ -100,6 +101,7 @@ var _coin_flash: Label            # «+500» взлетает над кошел�
 var _ad_btn: Button               # «+500 ЗА РЕКЛАМУ» / «ЧЕРЕЗ 9:59»
 var _ad_showing := false          # ролик идёт (ждём результата платформы)
 var _ad_tick := 0.0               # таймер обновления кнопки рекламы
+var _loading_veil: Control        # браузер: плашка «ЗАГРУЗКА…» перед заездом
 var _connecting := false          # «СТАРТ» уже нажат, ждём сервер
 var _start_btn: Button            # «СТАРТ» (у купленной машины)
 var _buy_btn: Button              # «КУПИТЬ · цена» (у закрытой машины)
@@ -164,6 +166,11 @@ func _ready() -> void:
 			_refresh_name_btn()
 		else:
 			_open_name_dialog(true)
+	# Браузер: первый клик сессии (окно имени — тоже клик, там экран не нужен).
+	if _name_dialog != null:
+		GameState.web_tapped = true
+	_web_tap_gate()
+	GameState.platform_first_frame()
 	# Друзья (09.09): выходим на связь с сервером друзей — поиск по имени,
 	# приглашения, команда. Соединение живёт в автозагрузке Social.
 	Social.welcome.connect(_on_social_welcome)
@@ -304,6 +311,59 @@ func _unhandled_input(event: InputEvent) -> void:
 				* DRAG_SPEED
 
 
+## Уход в заезд. В браузере сцена заезда строится и компилирует шейдеры
+## ОДНИМ долгим кадром (без потоков) — гараж на это время замирал и выглядел
+## зависшим (жалоба 21.09). Поэтому сперва плашка «ЗАГРУЗКА…» во весь экран,
+## два кадра, чтобы она успела нарисоваться, — и только потом смена сцены.
+func _go_scene(path: String) -> void:
+	print("[load] гараж -> %s, t=%d мс" % [path.get_file(), Time.get_ticks_msec()])
+	if GameState.lite_gfx() and _canvas != null and _loading_veil == null:
+		_loading_veil = _make_veil(Loc.t("ЗАГРУЗКА…"), "")
+		await get_tree().process_frame
+		await get_tree().process_frame
+		if not is_inside_tree():
+			return
+	get_tree().change_scene_to_file(path)
+
+
+## Тёмная плашка во весь экран поверх гаража: крупная надпись и подпись.
+func _make_veil(title: String, sub: String) -> Control:
+	var veil := ColorRect.new()
+	veil.color = Color(0.04, 0.05, 0.07, 0.86)
+	veil.mouse_filter = Control.MOUSE_FILTER_STOP
+	_canvas.add_child(veil)
+	veil.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var box := VBoxContainer.new()
+	box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	box.alignment = BoxContainer.ALIGNMENT_CENTER
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	veil.add_child(box)
+	var big := UiKit.label(box, title, 44, UiKit.YELLOW, 8)
+	big.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	if sub != "":
+		var small := UiKit.label(box, sub, 20, Color.WHITE, 5)
+		small.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	return veil
+
+
+## Браузер не даёт звука до первого клика по странице — музыка гаража молчала,
+## пока игрок не жал «СТАРТ» (жалоба 21.09). Первый экран сессии — «нажмите,
+## чтобы начать»: клик разрешает звук, и музыка играет уже в гараже.
+func _web_tap_gate() -> void:
+	if not OS.has_feature("web") or GameState.web_tapped or _canvas == null:
+		return
+	var veil := _make_veil(Loc.t("НАЖМИТЕ, ЧТОБЫ НАЧАТЬ"), "")
+	veil.gui_input.connect(func(ev: InputEvent) -> void:
+		var tap := (ev is InputEventMouseButton and (ev as InputEventMouseButton).pressed) 				or (ev is InputEventScreenTouch and (ev as InputEventScreenTouch).pressed)
+		if tap:
+			GameState.web_tapped = true
+			veil.queue_free())
+
+
+func _exit_tree() -> void:
+	GameState.keep_materials(self)   # браузер: шейдеры переживают сцену
+
+
 ## Куда стучится «СТАРТ»: [адрес, порт]. Адрес — из Net (сохранённый в
 ## net.cfg, по умолчанию VDS), порт — ДОМАШНИЙ, а не текущий: после
 ## перенаправления в комнату Net.port равен порту КОМНАТЫ, а комнаты
@@ -340,7 +400,7 @@ func _start_race() -> void:
 	GameState.select_car(base)
 	if GameState.game_mode == GameState.MODE_SOCCER:
 		# Футбол: своя арена, трасса не нужна.
-		get_tree().change_scene_to_file("res://scenes/Soccer.tscn")
+		_go_scene("res://scenes/Soccer.tscn")
 		return
 	var target := _net_target()
 	if String(target[0]).is_empty():
@@ -362,7 +422,7 @@ func _start_race() -> void:
 	_connecting = true
 	if _start_btn:
 		_start_btn.disabled = true
-		_start_btn.text = "ПОДКЛЮЧЕНИЕ…"
+		_start_btn.text = Loc.t("ПОДКЛЮЧЕНИЕ…")
 	if Net.join_server(target[0], target[1]):
 		_watch_connect_timeout()
 	else:
@@ -396,7 +456,7 @@ func _on_party_go(port: int, size: int, party_id: String, count: int) -> void:
 		_party.close()
 	if _start_btn:
 		_start_btn.disabled = true
-		_start_btn.text = "К КОМАНДЕ…"
+		_start_btn.text = Loc.t("К КОМАНДЕ…")
 	print("[social] команда %s: едем в заезд на порту %d (%d машин, нас %d)"
 			% [party_id, port, Net.race_size, count])
 	if Net.join_server(Net.host.strip_edges(), port, false):
@@ -416,22 +476,22 @@ func _refresh_start_btn() -> void:
 		return
 	_start_btn.disabled = false
 	if Social.outdated:
-		_start_btn.text = "ОБНОВИТЕ ИГРУ"
+		_start_btn.text = Loc.t("ОБНОВИТЕ ИГРУ")
 		_start_btn.disabled = true
 		UiKit.style_button(_start_btn, "red", 17)
 	elif Social.in_party():
 		if bool(Social.party.get("launching", false)):
-			_start_btn.text = "ИЩЕМ ЗАЕЗД…"
+			_start_btn.text = Loc.t("ИЩЕМ ЗАЕЗД…")
 			_start_btn.disabled = true
 			UiKit.style_button(_start_btn, "teal", 17)
 		elif Social.my_ready():
-			_start_btn.text = "ГОТОВ ✓ · ЖДЁМ КОМАНДУ"
+			_start_btn.text = Loc.t("ГОТОВ ✓ · ЖДЁМ КОМАНДУ")
 			UiKit.style_button(_start_btn, "teal", 15)
 		else:
-			_start_btn.text = "ГОТОВ"
+			_start_btn.text = Loc.t("ГОТОВ")
 			UiKit.style_button(_start_btn, "teal", 24)
 	else:
-		_start_btn.text = "СТАРТ"
+		_start_btn.text = Loc.t("СТАРТ")
 		UiKit.style_button(_start_btn, "red", 24)
 	if _party_badge:
 		_party_badge.visible = Social.in_party()
@@ -450,7 +510,7 @@ func _start_offline() -> void:
 	# вовсе — или сеть есть, а сервер не ответил. Флаг заберёт Main._ready.
 	Net.offline_reason = "no_net" if not Net.device_online() else "no_server"
 	GameState.track_kind = TrackBuilder.pick_random_kind()
-	get_tree().change_scene_to_file("res://scenes/Main.tscn")
+	_go_scene("res://scenes/Main.tscn")
 
 
 ## ENet сам по себе может молчать очень долго, поэтому ограничиваем
@@ -477,7 +537,7 @@ func _on_joined() -> void:
 	# По сети вид трассы диктует сервер (_rx_track): строим классику, а
 	# если сервер выбрал другую — Main перезагрузит сцену с нужной.
 	GameState.track_kind = ""
-	get_tree().change_scene_to_file("res://scenes/Main.tscn")
+	_go_scene("res://scenes/Main.tscn")
 
 
 func _on_join_failed(reason: String) -> void:
@@ -491,7 +551,7 @@ func _on_join_failed(reason: String) -> void:
 		_refresh_start_btn()
 		if _party:
 			_party.open()
-			_party._on_notice("Заезд не ответил — нажмите «ГОТОВ» ещё раз")
+			_party._on_notice(Loc.t("Заезд не ответил — нажмите «ГОТОВ» ещё раз"))
 			_set_panel_open(true)
 		return
 	# Сервер отказал или оборвался на этапе подключения — не мучаем игрока
@@ -521,8 +581,8 @@ func _on_name_result(ok: bool, n: String, reason: String) -> void:
 		_close_name_dialog()
 		return
 	if _name_hint:
-		_name_hint.text = ("Имя «%s» уже занято — попробуй другое" % n) \
-				if reason == "taken" else "Сервер не принял имя, попробуй другое"
+		_name_hint.text = (Loc.t("Имя «%s» уже занято — попробуй другое") % n) \
+				if reason == "taken" else Loc.t("Сервер не принял имя, попробуй другое")
 		_name_hint.add_theme_color_override("font_color", UiKit.YELLOW)
 
 
@@ -544,7 +604,7 @@ func _show_invite(from: String, count: int) -> void:
 	# Слева над машиной: панель команды справа остаётся видна.
 	_place(plate, 62, TOP_Y + TOP_H + 60, 520, 160)
 	_invite_box = plate
-	var txt := UiKit.label(plate, "%s зовёт тебя в команду (%d чел.)"
+	var txt := UiKit.label(plate, Loc.t("%s зовёт тебя в команду (%d чел.)")
 			% [from, count + 1], 17, Color.WHITE, 5)
 	txt.position = Vector2(24, 26)
 	txt.size = Vector2(472, 26)
@@ -554,7 +614,7 @@ func _show_invite(from: String, count: int) -> void:
 	# Две кнопки одного размера на одной линии, 20 px между ними, ряд по
 	# центру плиты: главная — жёлтая эмаль, отказ — стальная.
 	var ok := Button.new()
-	ok.text = "ПРИНЯТЬ"
+	ok.text = Loc.t("ПРИНЯТЬ")
 	UiKit.style_button(ok, "yellow", 15, 8)
 	ok.position = Vector2(100, 70)
 	ok.size = Vector2(150, 70)
@@ -564,7 +624,7 @@ func _show_invite(from: String, count: int) -> void:
 		_open_party(false))
 	plate.add_child(ok)
 	var no := Button.new()
-	no.text = "ОТКЛОНИТЬ"
+	no.text = Loc.t("ОТКЛОНИТЬ")
 	UiKit.style_button(no, "steel", 15, 8)
 	no.position = Vector2(270, 70)
 	no.size = Vector2(150, 70)
@@ -644,14 +704,14 @@ func _build_mode_ui(col: Control) -> void:
 	var panel := UiKit.plate(col, "steel", Vector2.ZERO, Vector2(140, ROW_H))
 	_place(panel, 0, ROW_Y, 140, ROW_H, true)
 
-	var title := UiKit.label(panel, "РЕЖИМ", 12, Color(1, 1, 1, 0.7))
+	var title := UiKit.label(panel, Loc.t("РЕЖИМ"), 12, Color(1, 1, 1, 0.7))
 	title.position = Vector2(0, 8)
 	title.size = Vector2(140, 16)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
 	# Кнопка плоского стиля (UiKit.style_button мелкой кнопке навязывает
 	# рост и заклёпки — см. _mini_button).
-	_mode_button = _mini_button("ГОНКА")
+	_mode_button = _mini_button(Loc.t("ГОНКА"))
 	_mode_button.add_theme_font_size_override("font_size", 17)
 	_mode_button.position = Vector2(12, 28)
 	_mode_button.size = Vector2(116, 34)
@@ -670,8 +730,8 @@ func _toggle_mode() -> void:
 ## Обновить подпись кнопки под текущий режим.
 func _apply_mode_ui() -> void:
 	if _mode_button:
-		_mode_button.text = "ФУТБОЛ" \
-				if GameState.game_mode == GameState.MODE_SOCCER else "ГОНКА"
+		_mode_button.text = Loc.t("ФУТБОЛ") \
+				if GameState.game_mode == GameState.MODE_SOCCER else Loc.t("ГОНКА")
 
 
 ## Маленькая плоская кнопка. НЕ UiKit.style_button, и это выстрадано:
@@ -725,27 +785,27 @@ func _on_friends_status(items: Array) -> void:
 
 func _refresh_name_btn() -> void:
 	if _name_btn:
-		_name_btn.text = "ИМЯ: %s" % GameState.display_name()
+		_name_btn.text = Loc.t("ИМЯ: %s") % GameState.display_name()
 	if _social_label:
 		if Social.outdated:
-			_social_label.text = "версия игры устарела"   # 214 px — коротко
+			_social_label.text = Loc.t("версия игры устарела")   # 214 px — коротко
 			_social_label.add_theme_color_override("font_color", UiKit.RED)
 		elif Social.connected:
 			# «на связи» — это МЫ дошли до сервера друзей, а не друзья в
 			# сети (игрок 16.09 прочитал наоборот). Поэтому при связи
 			# показываем, сколько друзей из списка сейчас в сети
 			# (_friends_online, ответ lookup), а не голое «на связи».
-			var txt := "друзья: на связи, имя не принято"
+			var txt := Loc.t("друзья: на связи, имя не принято")
 			if Social.name_ok:
 				if GameState.friends.is_empty():
-					txt = "на связи, друзей пока нет"
+					txt = Loc.t("на связи, друзей пока нет")
 				elif _friends_online < 0:
-					txt = "на связи, друзья: …"
+					txt = Loc.t("на связи, друзья: …")
 				else:
-					txt = "друзей в сети: %d из %d" % [_friends_online,
+					txt = Loc.t("друзей в сети: %d из %d") % [_friends_online,
 							GameState.friends.size()]
 			elif Social.name_reason == "taken":
-				txt = "друзья: имя занято"
+				txt = Loc.t("друзья: имя занято")
 			_social_label.text = txt
 			_social_label.add_theme_color_override("font_color",
 					UiKit.TEAL if Social.name_ok else UiKit.YELLOW)
@@ -754,9 +814,9 @@ func _refresh_name_btn() -> void:
 			# незачем, а стенд TestSelectPrefill на него ловит — строка
 			# «нет связи (IP)» от 09.09 это правило нарушала). Кому надо —
 			# адрес печатается в лог.
-			_social_label.text = "друзья: нет сети на устройстве" \
+			_social_label.text = Loc.t("друзья: нет сети на устройстве") \
 					if not Net.device_online() \
-					else "друзья: нет связи с сервером"
+					else Loc.t("друзья: нет связи с сервером")
 			_social_label.add_theme_color_override("font_color", UiKit.YELLOW)
 
 
@@ -786,15 +846,15 @@ func _open_name_dialog(first: bool, taken := false) -> void:
 	plate.offset_top = -110
 	plate.offset_bottom = 110
 
-	var title := UiKit.label(plate, "КАК ТЕБЯ ЗОВУТ?", 26, Color.WHITE, 6)
+	var title := UiKit.label(plate, Loc.t("КАК ТЕБЯ ЗОВУТ?"), 26, Color.WHITE, 6)
 	title.position = Vector2(0, 16)
 	title.size = Vector2(460, 34)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
 	var hint := UiKit.label(plate,
-			("Имя «%s» уже занято другим игроком — выбери другое"
+			(Loc.t("Имя «%s» уже занято другим игроком — выбери другое")
 					% GameState.display_name()) if taken
-			else "Под этим именем тебя увидят другие игроки. Имена уникальны",
+			else Loc.t("Под этим именем тебя увидят другие игроки. Имена уникальны"),
 			14 if not taken else 13,
 			UiKit.YELLOW if taken else Color(1, 1, 1, 0.7))
 	hint.position = Vector2(0, 54)
@@ -804,7 +864,7 @@ func _open_name_dialog(first: bool, taken := false) -> void:
 
 	_name_edit = LineEdit.new()
 	_name_edit.text = GameState.player_name
-	_name_edit.placeholder_text = "твоё имя"
+	_name_edit.placeholder_text = Loc.t("твоё имя")
 	_name_edit.max_length = GameState.NAME_MAX
 	_name_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	if _ui_font:
@@ -824,7 +884,7 @@ func _open_name_dialog(first: bool, taken := false) -> void:
 	_name_edit.call_deferred("grab_focus")
 
 	var ok := Button.new()
-	ok.text = "ГОТОВО"
+	ok.text = Loc.t("ГОТОВО")
 	UiKit.style_button(ok, "orange", 22)
 	ok.position = Vector2(90 if first else 40, 146)
 	ok.size = Vector2(280 if first else 180, 54)
@@ -834,7 +894,7 @@ func _open_name_dialog(first: bool, taken := false) -> void:
 		# «ОТМЕНА» — та же табличка и размер, что у «ГОТОВО», отличается
 		# только цветом (замечание 16.09: кнопки были разного вида).
 		var cancel := Button.new()
-		cancel.text = "ОТМЕНА"
+		cancel.text = Loc.t("ОТМЕНА")
 		UiKit.style_button(cancel, "teal", 22)
 		cancel.position = Vector2(240, 146)
 		cancel.size = Vector2(180, 54)
@@ -845,7 +905,7 @@ func _open_name_dialog(first: bool, taken := false) -> void:
 func _name_accept() -> void:
 	var n: String = GameState.sanitize_name(_name_edit.text)
 	if n == "":
-		_name_edit.placeholder_text = "введи хоть что-нибудь"
+		_name_edit.placeholder_text = Loc.t("введи хоть что-нибудь")
 		return
 	if _name_wait:
 		return
@@ -855,7 +915,7 @@ func _name_accept() -> void:
 	if Social.connected:
 		_name_wait = true
 		if _name_hint:
-			_name_hint.text = "Проверяем имя…"
+			_name_hint.text = Loc.t("Проверяем имя…")
 		Social.claim_name(n)
 		get_tree().create_timer(4.0).timeout.connect(func() -> void:
 			if _name_wait and _name_dialog != null:
@@ -889,8 +949,8 @@ func _build_ad_ui(canvas: Node, x: float, w: float) -> void:
 	_ad_btn.icon_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_ad_btn.add_theme_constant_override("icon_max_width", 26)
 	_ad_btn.add_theme_constant_override("h_separation", 8)
-	_ad_btn.tooltip_text = "Досмотри два ролика подряд — +%d монет.\n" \
-			% GameState.AD_PAIR_REWARD + "Потом 10 минут отдыха."
+	_ad_btn.tooltip_text = Loc.t("Досмотри два ролика подряд — +%d монет.\nПотом 10 минут отдыха.") \
+			% GameState.AD_PAIR_REWARD
 	_ad_btn.pressed.connect(_ad_pressed)
 	_place(_ad_btn, x, TOP_Y, w, TOP_H)
 	canvas.add_child(_ad_btn)
@@ -903,18 +963,18 @@ func _refresh_ad_btn() -> void:
 		return
 	if _ad_showing:
 		_ad_btn.disabled = true
-		_ad_btn.text = "ИДЁТ РОЛИК…"
+		_ad_btn.text = Loc.t("ИДЁТ РОЛИК…")
 		return
 	if GameState.ad_available():
 		_ad_btn.disabled = false
 		if GameState.ad_pair_progress() == 0:
-			_ad_btn.text = "+%d ЗА РЕКЛАМУ" % GameState.AD_PAIR_REWARD
+			_ad_btn.text = Loc.t("+%d ЗА РЕКЛАМУ") % GameState.AD_PAIR_REWARD
 		else:
-			_ad_btn.text = "ЕЩЁ РОЛИК · +%d" % GameState.AD_PAIR_REWARD
+			_ad_btn.text = Loc.t("ЕЩЁ РОЛИК · +%d") % GameState.AD_PAIR_REWARD
 		return
 	var left := int(ceil(GameState.ad_cooldown_left()))
 	_ad_btn.disabled = true
-	_ad_btn.text = "ЧЕРЕЗ %d:%02d" % [left / 60, left % 60]
+	_ad_btn.text = Loc.t("ЧЕРЕЗ %d:%02d") % [left / 60, left % 60]
 
 
 func _ad_pressed() -> void:
@@ -959,11 +1019,11 @@ func _simulate_ad() -> void:
 	plate.offset_right = 230
 	plate.offset_top = -100
 	plate.offset_bottom = 100
-	var title := UiKit.label(plate, "РЕКЛАМА", 26, Color.WHITE, 6)
+	var title := UiKit.label(plate, Loc.t("РЕКЛАМА"), 26, Color.WHITE, 6)
 	title.position = Vector2(0, 16)
 	title.size = Vector2(460, 34)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	var sub := UiKit.label(plate, "Ролик %d из %d · на Яндекс Играх здесь идёт видео"
+	var sub := UiKit.label(plate, Loc.t("Ролик %d из %d · на Яндекс Играх здесь идёт видео")
 			% [GameState.ad_pair_progress() + 1, GameState.AD_PAIR_SIZE],
 			14, Color(1, 1, 1, 0.7))
 	sub.position = Vector2(0, 54)
@@ -996,7 +1056,9 @@ func _ad_finished(rewarded: bool) -> void:
 
 
 func _set_sound_muted(muted: bool) -> void:
-	AudioServer.set_bus_mute(AudioServer.get_bus_index("Master"), muted)
+	Music.ad_muted = muted   # чтобы возврат фокуса не включил звук в ролике
+	AudioServer.set_bus_mute(AudioServer.get_bus_index("Master"),
+			muted or Music.is_focus_muted())
 
 
 ## «+500» взлетает над кошельком и тает.
@@ -1035,6 +1097,7 @@ func _set_index(i: int) -> void:
 	var prev := _index
 	_index = i
 	if _model:
+		GameState.keep_materials(_model)
 		_model.queue_free()
 	var base: String = CarModelLibrary.CAR_IDS[_index]
 	var id := _podium_id()
@@ -1042,7 +1105,7 @@ func _set_index(i: int) -> void:
 	if _model:
 		_turntable.add_child(_model)
 	var owned: bool = GameState.car_owned(base)
-	_name_label.text = DISPLAY_NAMES.get(base, base)
+	_name_label.text = Loc.t(DISPLAY_NAMES.get(base, base))
 	_name_label.add_theme_color_override("font_color",
 			Color.WHITE if owned else Color(1, 1, 1, 0.5))
 	# Команде друзей видно, на чём поедешь (09.09).
@@ -1158,10 +1221,10 @@ func _refresh_lock_ui() -> void:
 	var price: int = GameState.car_price(base)
 	if GameState.level_info().x < lvl:
 		_buy_btn.disabled = true
-		_buy_btn.text = "С %d УРОВНЯ · %s" % [lvl, _fmt_money(price)]
+		_buy_btn.text = Loc.t("С %d УРОВНЯ · %s") % [lvl, _fmt_money(price)]
 	else:
 		_buy_btn.disabled = false
-		_buy_btn.text = "КУПИТЬ · %s" % _fmt_money(price)
+		_buy_btn.text = Loc.t("КУПИТЬ · %s") % _fmt_money(price)
 
 
 ## Цена с тонкой шпацией между тысячами: 24000 → «24 000».
@@ -1185,7 +1248,7 @@ func _buy_pressed() -> void:
 	_buy_flash += 1
 	var gen := _buy_flash
 	var old := _buy_btn.text
-	_buy_btn.text = "НЕ ХВАТАЕТ МОНЕТ"
+	_buy_btn.text = Loc.t("НЕ ХВАТАЕТ МОНЕТ")
 	await get_tree().create_timer(1.2).timeout
 	if is_inside_tree() and _buy_flash == gen and _buy_btn.visible:
 		_buy_btn.text = old
@@ -1195,7 +1258,7 @@ func _buy_pressed() -> void:
 func _refresh_money_label() -> void:
 	var info: Vector3i = GameState.level_info()
 	if _level_label:
-		_level_label.text = "УРОВЕНЬ %d" % info.x
+		_level_label.text = Loc.t("УРОВЕНЬ %d") % info.x
 	if _xp_sub:
 		_xp_sub.text = "%d / %d" % [info.y, info.z]
 	if _xp_bar:
@@ -1217,9 +1280,9 @@ func _refresh_grid_locks() -> void:
 			_buttons[i].add_theme_color_override(st, icon_col)
 		if i < _grid_locks.size():
 			_grid_locks[i].visible = not owned
-		_buttons[i].tooltip_text = DISPLAY_NAMES.get(base, base) if owned \
-				else "%s — с %d уровня, %s монет" % [
-						DISPLAY_NAMES.get(base, base),
+		_buttons[i].tooltip_text = Loc.t(DISPLAY_NAMES.get(base, base)) if owned \
+				else Loc.t("%s — с %d уровня, %s монет") % [
+						Loc.t(DISPLAY_NAMES.get(base, base)),
 						GameState.car_unlock_level(base),
 						_fmt_money(GameState.car_price(base))]
 
@@ -1343,6 +1406,7 @@ func _update_thumb(i: int) -> void:
 	var tex2 := ImageTexture.create_from_image(shot)
 	GameState.car_thumbs[full] = tex2
 	_buttons[i].icon = tex2
+	GameState.keep_materials(vp_info["vp"] as Node)
 	(vp_info["vp"] as SubViewport).queue_free()
 
 
@@ -1389,6 +1453,7 @@ func _generate_thumbs() -> void:
 			var vp_info := pool[k]
 			var holder: Node3D = vp_info["holder"]
 			for old in holder.get_children():
+				GameState.keep_materials(old)   # браузер: шейдеры не выбрасывать
 				old.free()
 			var m := CarModelLibrary.build(_full_id(batch[k]), 3.2, 0.0)
 			if m:
@@ -1407,6 +1472,7 @@ func _generate_thumbs() -> void:
 			GameState.car_thumbs[id] = tex
 			_buttons[i].icon = tex
 	for vp_info in pool:
+		GameState.keep_materials(vp_info["vp"] as Node)
 		(vp_info["vp"] as SubViewport).queue_free()
 
 
@@ -1465,7 +1531,7 @@ func _setup_environment() -> void:
 	key.rotation_degrees = Vector3(-48, -32, 0)
 	key.light_energy = 0.9
 	key.light_color = Color(1.0, 0.95, 0.88)
-	key.shadow_enabled = true
+	key.shadow_enabled = not GameState.lite_gfx()   # браузер: без теней
 	add_child(key)
 
 	# Заполняющий — холодный, с окна напротив.
@@ -1483,6 +1549,7 @@ func _setup_environment() -> void:
 	lamp.spot_range = 9
 	lamp.light_energy = 1.4
 	lamp.light_color = Color(1.0, 0.94, 0.82)
+	lamp.visible = not GameState.lite_gfx()   # браузер: без точечного света
 	add_child(lamp)
 
 	var cam := Camera3D.new()
@@ -1717,7 +1784,7 @@ func _build_test_badge(canvas: Node) -> void:
 	# (TestSpin ловил именно это — табличка съедала перетаскивание).
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var txt := UiKit.plate_label(badge,
-			"СТЕНД · ТЕСТОВЫЙ ПРОФИЛЬ · ВАШ ПРОГРЕСС ЦЕЛ", 17,
+			Loc.t("СТЕНД · ТЕСТОВЫЙ ПРОФИЛЬ · ВАШ ПРОГРЕСС ЦЕЛ"), 17,
 			UiKit.text_on("red"))
 	txt.offset_top = 2
 	txt.offset_bottom = -20
@@ -1726,7 +1793,7 @@ func _build_test_badge(canvas: Node) -> void:
 	sub.position = Vector2(0, 24)
 	sub.size = Vector2(560, 16)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	DisplayServer.window_set_title("Пыль и Пламя — СТЕНД (тестовый профиль)")
+	DisplayServer.window_set_title(Loc.t("Пыль и Пламя — СТЕНД (тестовый профиль)"))
 
 
 ## Жёлтая плашка «ТЕСТОВЫЙ СЕРВЕР» (15.09): эта сборка ходит не на боевые
@@ -1734,7 +1801,7 @@ func _build_test_badge(canvas: Node) -> void:
 ## для проверки нельзя было спутать с той, что лежит в RuStore. Стоит под
 ## плашкой стенда, если есть и она. Мышь не ловит (подиум крутят протяжкой).
 func _build_test_server_badge(canvas: Node) -> void:
-	if not Net.is_test_build():
+	if not _shows_test_marks():
 		return
 	var y := TOP_Y + TOP_H + 8
 	if GameState.is_test_profile():
@@ -1742,10 +1809,17 @@ func _build_test_server_badge(canvas: Node) -> void:
 	var badge := UiKit.plate(canvas, "yellow", Vector2.ZERO, Vector2(400, 32))
 	_place(badge, 16, y, 400, 32)
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	UiKit.plate_label(badge, "ТЕСТОВЫЙ СЕРВЕР · порт %d" % Net.PORT_TEST, 15,
+	UiKit.plate_label(badge, Loc.t("ТЕСТОВЫЙ СЕРВЕР · порт %d") % Net.gate_port(), 15,
 			UiKit.text_on("yellow"))
 	if not GameState.is_test_profile():
-		DisplayServer.window_set_title("Пыль и Пламя — ТЕСТОВЫЙ СЕРВЕР")
+		DisplayServer.window_set_title(Loc.t("Пыль и Пламя — ТЕСТОВЫЙ СЕРВЕР"))
+
+
+## Показывать ли пометки тестовой сборки (плашка, « тест» у версии). В
+## веб-сборке — нет (18.09): на Яндекс Играх она опубликована для игроков,
+## хотя и ходит пока на тестовые веб-ворота (боевых 9970 ещё нет).
+func _shows_test_marks() -> bool:
+	return Net.is_test_build() and not OS.has_feature("web")
 
 
 ## Плашка «СЕТИ НЕТ» под верхней полкой (просьба 10.09: «если сети нет,
@@ -1766,7 +1840,7 @@ func _build_offline_note(canvas: Node) -> void:
 	# стенда — TestSpin ловил именно это).
 	_offline_note.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_offline_note_label = UiKit.plate_label(_offline_note,
-			"СЕТИ НЕТ · ЗАЕЗД С БОТАМИ", 18, UiKit.text_on("red"))
+			Loc.t("СЕТИ НЕТ · ЗАЕЗД С БОТАМИ"), 18, UiKit.text_on("red"))
 	_refresh_offline_note()
 
 
@@ -1775,10 +1849,10 @@ func _build_offline_note(canvas: Node) -> void:
 func _refresh_offline_note() -> void:
 	if _offline_note:
 		if Social.outdated:
-			_offline_note_label.text = "ОБНОВИТЕ ИГРУ · ВЕРСИЯ УСТАРЕЛА"
+			_offline_note_label.text = Loc.t("ОБНОВИТЕ ИГРУ · ВЕРСИЯ УСТАРЕЛА")
 			_offline_note.visible = true
 		else:
-			_offline_note_label.text = "СЕТИ НЕТ · ЗАЕЗД С БОТАМИ"
+			_offline_note_label.text = Loc.t("СЕТИ НЕТ · ЗАЕЗД С БОТАМИ")
 			_offline_note.visible = not Net.device_online()
 
 
@@ -1809,7 +1883,7 @@ func _build_top_shelf(canvas: Node) -> void:
 	# ширине 268 — поля 26 по краям, иначе надпись упирается в заклёпки
 	# таблички (снимок 11.09), снизу — аварийная лента.
 	var title := TextureRect.new()
-	title.texture = load(LOGO_PATH)
+	title.texture = load(LOGO_PATH_EN if Loc.is_en() else LOGO_PATH)
 	title.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	title.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1884,7 +1958,7 @@ func _build_top_shelf(canvas: Node) -> void:
 	# и неброско в правом нижнем углу; у тестовой сборки — пометка «тест».
 	var ver := str(ProjectSettings.get_setting("application/config/version", "?"))
 	var ver_lbl := UiKit.label(canvas, "v%s%s" % [ver,
-			" тест" if Net.is_test_build() else ""], 11, Color(1, 1, 1, 0.45), 0)
+			Loc.t(" тест") if _shows_test_marks() else ""], 11, Color(1, 1, 1, 0.45), 0)
 	_place(ver_lbl, 1280 - 8 - 160, 720 - 20, 160, 16)
 	ver_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	ver_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1914,7 +1988,7 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 
 	# «СТАРТ» — красная эмаль, единственная главная кнопка экрана.
 	_start_btn = Button.new()
-	_start_btn.text = "СТАРТ"
+	_start_btn.text = Loc.t("СТАРТ")
 	UiKit.style_button(_start_btn, "red", 24)
 	_place(_start_btn, 152, ROW_Y, 240, ROW_H, true)
 	_start_btn.pressed.connect(_start_race)
@@ -1932,7 +2006,7 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 	# «ОРУЖИЕ» и «ТЮНИНГ» уехали в её выпадающее меню (игрок: «слишком
 	# загромождён интерфейс главного меню»). Меню — _build_shop_menu.
 	_shop_btn = Button.new()
-	_shop_btn.text = "МАГАЗИН"
+	_shop_btn.text = Loc.t("МАГАЗИН")
 	UiKit.style_button(_shop_btn, "yellow", 20, 10)
 	_place(_shop_btn, 404, ROW_Y, 252, ROW_H, true)
 	_shop_btn.pressed.connect(_toggle_shop)
@@ -1944,7 +2018,7 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 	# Число людей в команде — кружок-бейдж в углу, а не в надписи: надпись
 	# «КОМАНДА 2» не влезала и раздвигала кнопку на табличку имени.
 	_party_btn = Button.new()
-	_party_btn.text = "КОМАНДА"
+	_party_btn.text = Loc.t("КОМАНДА")
 	UiKit.style_button(_party_btn, "teal", 14, 8)
 	_place(_party_btn, 0, ROW_Y - 66, 116, 54, true)
 	_party_btn.pressed.connect(_open_party)
@@ -1957,7 +2031,7 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 	_party_badge.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_party_badge.visible = false
 	_stats_btn = Button.new()
-	_stats_btn.text = "СТАТИСТИКА"
+	_stats_btn.text = Loc.t("СТАТИСТИКА")
 	UiKit.style_button(_stats_btn, "steel", 12, 8)
 	_place(_stats_btn, 540, ROW_Y - 66, 116, 54, true)
 	_stats_btn.pressed.connect(_open_stats)
@@ -1973,9 +2047,9 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 func _build_shop_menu(col: Control) -> void:
 	# «АВТОПАРК» — белая эмаль: жёлтая сливалась с самой кнопкой
 	# «МАГАЗИН» (замечание 16.09).
-	_board_btn = _shop_item(col, "АВТОПАРК", "white", _open_board)
-	_weapons_btn = _shop_item(col, "ОРУЖИЕ", "orange", _open_weapons)
-	_tuning_btn = _shop_item(col, "ТЮНИНГ", "teal", _open_tuning)
+	_board_btn = _shop_item(col, Loc.t("АВТОПАРК"), "white", _open_board)
+	_weapons_btn = _shop_item(col, Loc.t("ОРУЖИЕ"), "orange", _open_weapons)
+	_tuning_btn = _shop_item(col, Loc.t("ТЮНИНГ"), "teal", _open_tuning)
 
 
 ## Пункт меню «МАГАЗИН» — кнопка 252×54 шириной с саму кнопку; место в
@@ -2060,7 +2134,7 @@ func _setup_grid(canvas: CanvasLayer) -> void:
 	board.visible = false   # открывается кнопкой «АВТОПАРК»
 	_grid_panel = board
 	# Заголовок отступает от заклёпок (у крупной таблички они в 24 px от угла).
-	var head := UiKit.label(board, "АВТОПАРК", 20, UiKit.INK)
+	var head := UiKit.label(board, Loc.t("АВТОПАРК"), 20, UiKit.INK)
 	head.position = Vector2(44, 12)
 	head.size = Vector2(300, 26)
 	_count_label = UiKit.label(board, "", 15,
@@ -2068,7 +2142,7 @@ func _setup_grid(canvas: CanvasLayer) -> void:
 	_count_label.position = Vector2(260, 15)
 	_count_label.size = Vector2(BOARD_W - 260 - 176, 22)
 	_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	var close_btn := _mini_button("ЗАКРЫТЬ")
+	var close_btn := _mini_button(Loc.t("ЗАКРЫТЬ"))
 	close_btn.add_theme_font_size_override("font_size", 14)
 	close_btn.position = Vector2(BOARD_W - 44 - 120, 9)
 	close_btn.size = Vector2(120, 32)
@@ -2130,7 +2204,7 @@ func _setup_grid(canvas: CanvasLayer) -> void:
 		_buttons.append(btn)
 		# Жёлтый ярлык «с N уровня» на закрытой ячейке (видимость ставит
 		# _refresh_grid_locks — он же красит силуэты и тултипы).
-		var lock := UiKit.label(btn, "%d ур." % GameState.car_unlock_level(
+		var lock := UiKit.label(btn, Loc.t("%d ур.") % GameState.car_unlock_level(
 				CarModelLibrary.CAR_IDS[i]), 11, UiKit.INK)
 		lock.add_theme_stylebox_override("normal", tag_sb)
 		lock.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)

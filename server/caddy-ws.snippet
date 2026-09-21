@@ -1,0 +1,15 @@
+# Вставка в /etc/caddy/Caddyfile, блок daf.autovsauto.ru (17.09.2026):
+# веб-ворота игры. wss://daf.autovsauto.ru/ws/<порт> → ws://127.0.0.1:<порт>,
+# порт только из диапазона игры 98xx/99xx (9870 тестовые веб-ворота и их
+# комнаты 9871-9873; 9970-9973 — боевые, когда появятся). Всё остальное
+# по-прежнему уходит в панель аналитики (8090).
+daf.autovsauto.ru {
+	encode gzip
+	@ws path_regexp port ^/ws/(9[89][0-9]{2})$
+	handle @ws {
+		reverse_proxy 127.0.0.1:{re.port.1}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8090
+	}
+}

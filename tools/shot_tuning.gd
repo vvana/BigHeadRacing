@@ -51,6 +51,9 @@ func _ready() -> void:
 	# Имя только в памяти (без set_player_name — он пишет профиль): иначе
 	# гараж на пустом стендовом профиле открывает окно «КАК ТЕБЯ ЗОВУТ?»
 	# поверх подиума, и на снимке не видно корму (дым, неон).
+	# `--offline` — без сервера друзей: иначе имя «Стенд» «занято» и окно
+	# имени закрывает панель (18.09).
+	Net.debug_offline = OS.get_cmdline_user_args().has("--offline")
 	if GameState.player_name == "":
 		GameState.player_name = "Стенд"
 	_select = (load("res://scenes/CarSelect.tscn") as PackedScene).instantiate()

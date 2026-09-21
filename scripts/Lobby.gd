@@ -55,13 +55,13 @@ func _ready() -> void:
 	banner.offset_top = 16
 	banner.offset_bottom = 112
 	UiKit.hazard(banner, Vector2(14, 96 - 22), Vector2(400 - 28, 12), 0.9)
-	var title := _label(banner, "ЛОББИ", 34, Color.WHITE, 7)
+	var title := _label(banner, Loc.t("ЛОББИ"), 34, Color.WHITE, 7)
 	title.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	title.offset_bottom = -10
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
-	_status = _label(self, "Подключение…", 22, UiKit.YELLOW, 6)
+	_status = _label(self, Loc.t("Подключение…"), 22, UiKit.YELLOW, 6)
 	_status.anchor_left = 0.5
 	_status.anchor_right = 0.5
 	_status.offset_left = -420
@@ -76,9 +76,9 @@ func _ready() -> void:
 		_build_slot(s)
 
 	var hint := _label(self,
-			"СТАРТ — не дожидаясь остальных  |  ✕ — в гараж"
+			Loc.t("СТАРТ — не дожидаясь остальных  |  ✕ — в гараж")
 			if TouchControls.wanted()
-			else "Пробел — старт, не дожидаясь остальных  |  Esc — в гараж",
+			else Loc.t("Пробел — старт, не дожидаясь остальных  |  Esc — в гараж"),
 			16, Color(1, 1, 1, 0.7), 4)
 	hint.anchor_left = 0.0
 	hint.anchor_right = 1.0
@@ -143,21 +143,21 @@ func set_slot(slot: int, taken: bool, car_id: String, is_me: bool,
 	var wait_l := _wait_labels[slot]
 	if pending and not is_me:
 		name_l.text = ""
-		wait_l.text = "Подключается…"
+		wait_l.text = Loc.t("Подключается…")
 		wait_l.add_theme_color_override("font_color", UiKit.ORANGE_RIVAL)
 		_views[slot].visible = false
 		wait_l.visible = true
 		_car_labels[slot].text = ""
 		_clear_car(slot)
 		return
-	wait_l.text = "Ждём игрока…"
+	wait_l.text = Loc.t("Ждём игрока…")
 	wait_l.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
 	# Имя видно, только когда в слоте кто-то есть: ники ботов приходят с
 	# сервера заранее (_rx_names) и над пустым «Ждём игрока…» выдавали бы,
 	# кто именно приедет ботом.
 	if taken or is_bot or is_me:
 		name_l.text = (pname if pname != "" else "Player %d" % (slot + 1)) \
-				+ (" — ты" if is_me else (" · друг" if is_mate else ""))
+				+ (Loc.t(" — ты") if is_me else (Loc.t(" · друг") if is_mate else ""))
 	else:
 		name_l.text = ""
 	# Цвета — те же, что у стрелок над машинами: свой зелёный, товарищ
@@ -294,7 +294,7 @@ func _build_slot(s: int) -> void:
 	car_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_car_labels.append(car_l)
 
-	var wait_l := _label(panel, "Ждём игрока…", 20, Color(1, 1, 1, 0.45), 5)
+	var wait_l := _label(panel, Loc.t("Ждём игрока…"), 20, Color(1, 1, 1, 0.45), 5)
 	wait_l.position = Vector2(0, h * 0.5 - 16)
 	wait_l.size = Vector2(w, 32)
 	wait_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER

@@ -387,11 +387,146 @@ static func _migrate_user_dir() -> void:
 			return
 
 
+## ── Браузер: облегчённая графика и живые шейдеры (21.09) ──
+## Замер в чистом Chrome: новый игрок ждал ~370 шейдерных программ, каждая
+## 0,1–0,2 с СИНХРОННО (WebGL через ANGLE): 8 с чёрного гаража, 11 с зависшего
+## гаража после «СТАРТ», секундные рывки в заезде. Треть программ — тени
+## (проход глубины + добавочный проход света на каждый материал), ещё треть —
+## повторная компиляция: сцена перестроилась, материалы умерли, а с ними и
+## их программы. Поэтому в браузере: теней и MSAA нет (lite_gfx), а по одному
+## материалу на каждый шейдер живёт вечно (keep_materials).
+static func lite_gfx() -> bool:
+	return OS.has_feature("web") \
+			or OS.get_cmdline_user_args().has("--lite-gfx")
+
+
+var _kept_materials := {}           # RID шейдера → материал (держим ссылку)
+var web_tapped := false             # браузер: игрок уже кликнул (звук разрешён)
+
+
+## Перед сменой/перестройкой сцены: запомнить по одному материалу на шейдер.
+## Одинаковые StandardMaterial3D делят шейдер по ключу настроек; пока жив
+## хоть один — скомпилированные программы не выбрасываются.
+func keep_materials(root: Node) -> void:
+	if not lite_gfx() or root == null:
+		return
+	var stack: Array[Node] = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		stack.append_array(n.get_children())
+		if n is GeometryInstance3D:
+			var g := n as GeometryInstance3D
+			_keep_material(g.material_override)
+			_keep_material(g.material_overlay)
+		if n is MeshInstance3D:
+			var mi := n as MeshInstance3D
+			if mi.mesh != null:
+				for s in mi.mesh.get_surface_count():
+					_keep_material(mi.get_active_material(s))
+		elif n is CPUParticles3D:
+			var pm := (n as CPUParticles3D).mesh
+			if pm != null:
+				for s in pm.get_surface_count():
+					_keep_material(pm.surface_get_material(s))
+		elif n is MultiMeshInstance3D:
+			var mm := (n as MultiMeshInstance3D).multimesh
+			if mm != null and mm.mesh != null:
+				for s in mm.mesh.get_surface_count():
+					_keep_material(mm.mesh.surface_get_material(s))
+
+
+func _keep_material(m: Material) -> void:
+	if m == null:
+		return
+	var key := material_key(m)
+	if key != "" and not _kept_materials.has(key):
+		_kept_materials[key] = m
+
+
+## Ключ «какой шейдер у материала». У BaseMaterial3D в Godot 4.3 RID шейдера
+## из скрипта не достать (get_shader_rid появился позже — первый вариант
+## кода молча падал на нём, и НИ ОДИН материал не запоминался: шейдеры
+## эффектов пересобирались сотнями за заезд, найдено 21.09 вечером). Шейдер
+## стандартного материала определяется его перечислениями, флагами и тем,
+## какие текстуры заданы, — их и собираем: все свойства bool/int и наличие
+## каждой текстуры. Лишнее свойство в ключе (render_priority, кадры атласа)
+## даёт разве что пару лишних материалов в запасе — безвредно.
+var _mat_props := {}                # класс → [[имена bool/int], [имена текстур]]
+
+
+func material_key(m: Material) -> String:
+	if m is ShaderMaterial:
+		var sh := (m as ShaderMaterial).shader
+		return "S%d" % sh.get_rid().get_id() if sh != null else ""
+	if not (m is BaseMaterial3D):
+		return ""
+	var cls := m.get_class()
+	if not _mat_props.has(cls):
+		var flags: Array[String] = []
+		var texs: Array[String] = []
+		for p: Dictionary in m.get_property_list():
+			if (int(p["usage"]) & PROPERTY_USAGE_STORAGE) == 0:
+				continue
+			var pname := str(p["name"])
+			if pname.begins_with("resource_") or pname == "render_priority" 					or pname.begins_with("particles_anim_"):
+				continue
+			if int(p["type"]) == TYPE_BOOL or int(p["type"]) == TYPE_INT:
+				flags.append(pname)
+			elif int(p["type"]) == TYPE_OBJECT 					and str(p["hint_string"]).contains("Texture"):
+				texs.append(pname)
+		_mat_props[cls] = [flags, texs]
+	var key := cls
+	for pname: String in _mat_props[cls][0]:
+		key += "|%d" % int(m.get(pname))
+	for pname: String in _mat_props[cls][1]:
+		key += "1" if m.get(pname) != null else "0"
+	return key
+
+
+var _first_frame_told := false
+
+
+## Браузер: гараж нарисован — страница снимает заставку (shell.html держит её,
+## пока первый кадр компилирует шейдеры) и сообщает площадке LoadingAPI.ready.
+func platform_first_frame() -> void:
+	if _first_frame_told or not OS.has_feature("web"):
+		return
+	_first_frame_told = true
+	await RenderingServer.frame_post_draw
+	await RenderingServer.frame_post_draw
+	JavaScriptBridge.eval("window.bhrFirstFrame && window.bhrFirstFrame()", true)
+
+
+var debug_no_scene_warm := false    # замеры: «?nowarm=1» — без двойников сцены
+
+
+func _apply_debug_flags() -> void:
+	Car.debug_autodrive = OS.get_cmdline_user_args().has("--autodrive")
+	if OS.has_feature("web"):
+		Car.debug_autodrive = bool(JavaScriptBridge.eval(
+				"/^(localhost|127\\.0\\.0\\.1)$/.test(location.hostname) && location.search.indexOf('autodrive=1') >= 0", true))
+		debug_no_scene_warm = bool(JavaScriptBridge.eval(
+				"/^(localhost|127\\.0\\.0\\.1)$/.test(location.hostname) && location.search.indexOf('nowarm=1') >= 0", true))
+
+
+func _apply_lite_gfx() -> void:
+	if not lite_gfx():
+		return
+	var vp := get_tree().root
+	vp.msaa_3d = Viewport.MSAA_DISABLED
+	print("[gfx] браузер: облегчённая графика (без теней и MSAA)")
+
+
 func _ready() -> void:
 	var sel := ""
+	_apply_lite_gfx()
+	_apply_debug_flags()
 	_migrate_user_dir()
+	_apply_platform_lang()
+	_cloud_restore()
 	var cf := ConfigFile.new()
 	if cf.load(PROFILE_PATH) == OK:
+		_save_rev = int(cf.get_value("profile", "rev", 0))
 		xp = int(cf.get_value("profile", "xp", 0))
 		money = int(cf.get_value("profile", "money", 0))
 		_ads_in_pair = int(cf.get_value("profile", "ads_in_pair", 0))
@@ -481,7 +616,7 @@ func set_player_name(n: String) -> void:
 
 ## Имя для показа: пока не введено — просто «Игрок».
 func display_name() -> String:
-	return player_name if player_name != "" else "Игрок"
+	return player_name if player_name != "" else Loc.t("Игрок")
 
 
 ## Имя с платформы (Яндекс Игры). Работает только в web-сборке: страница
@@ -495,6 +630,84 @@ func platform_name() -> String:
 		return ""
 	var v: Variant = JavaScriptBridge.eval("window.bhrPlayerName || ''", true)
 	return sanitize_name(str(v)) if v != null else ""
+
+
+## Язык интерфейса с платформы (Яндекс Игры, требование 2.14): обёртка
+## tools/yandex/shell.html кладёт ysdk.environment.i18n.lang в
+## window.bhrLang сразу после YaGames.init(), до запуска движка. Пустая
+## строка — не web-сборка или SDK нет.
+func platform_lang() -> String:
+	if not OS.has_feature("web"):
+		return ""
+	var v: Variant = JavaScriptBridge.eval("window.bhrLang || ''", true)
+	return str(v).to_lower() if v != null else ""
+
+
+## Выбрать язык игры (Loc): на площадке — по языку SDK, иначе русский;
+## ключ `--lang=en` (стенды, проверка перевода) сильнее всего.
+func _apply_platform_lang() -> void:
+	var lang := platform_lang()
+	var forced := Loc.cmdline_lang()
+	var locale := forced if forced != "" else Loc.pick_locale(lang)
+	Loc.setup(locale)
+	if lang != "" or forced != "":
+		print("[lang] язык площадки «%s» -> игра: %s" % [lang, TranslationServer.get_locale()])
+
+
+## ---- Облачные сохранения Яндекс Игр (требование 1.9, 18.09.2026) ----
+## Игре с прогрессом мало хранилища браузера (IndexedDB теряется при смене
+## устройства/браузера и чистке кэша): профиль дублируется в данные игрока
+## SDK (player.setData — работает и без авторизации). Обёртка
+## tools/yandex/shell.html ДО запуска движка кладёт облачную копию в
+## window.bhrCloudProfile / bhrCloudRev, запись идёт через
+## window.bhrCloudSave(text, rev) (там же — троттлинг под лимиты SDK).
+## Какая копия свежее, решает счётчик записей «rev» (при равенстве — опыт).
+var _save_rev := 0
+
+
+func _cloud_restore() -> void:
+	if not OS.has_feature("web") or is_test_profile():
+		return
+	var v: Variant = JavaScriptBridge.eval("window.bhrCloudProfile || ''", true)
+	var text := str(v) if v != null else ""
+	if text == "":
+		return
+	var cloud := ConfigFile.new()
+	if cloud.parse(text) != OK:
+		push_warning("[cloud] облачный профиль не разобрать — оставляем локальный")
+		return
+	var local := ConfigFile.new()
+	var have_local := local.load(PROFILE_PATH) == OK
+	var c_rev := int(cloud.get_value("profile", "rev", 0))
+	var l_rev := int(local.get_value("profile", "rev", 0)) if have_local else -1
+	var c_xp := int(cloud.get_value("profile", "xp", 0))
+	var l_xp := int(local.get_value("profile", "xp", 0)) if have_local else -1
+	if c_rev > l_rev or (c_rev == l_rev and c_xp > l_xp):
+		if have_local:
+			var abs := ProjectSettings.globalize_path(PROFILE_PATH)
+			DirAccess.copy_absolute(abs, abs + ".bak_cloud")
+		cloud.save(PROFILE_PATH)
+		print("[cloud] взят облачный профиль: rev %d (локальный %d), xp %d" % [c_rev, l_rev, c_xp])
+	else:
+		print("[cloud] локальный профиль свежее: rev %d против облачного %d" % [l_rev, c_rev])
+
+
+func _cloud_push(cf: ConfigFile) -> void:
+	if not OS.has_feature("web") or is_test_profile():
+		return
+	JavaScriptBridge.eval("window.bhrCloudSave && window.bhrCloudSave(%s, %d)"
+			% [JSON.stringify(cf.encode_to_text()), _save_rev])
+
+
+## Разметка геймплея для Яндекс Игр (ysdk.features.GameplayAPI.start/stop,
+## 17.09): заезд или матч идёт — true (после «GO!»), финиш и уход со сцены
+## — false. Идемпотентность и пауза при уходе со вкладки — в обёртке
+## tools/yandex/shell.html (window.bhrGameplay). Вне web — ничего.
+func platform_gameplay(on: bool) -> void:
+	if not OS.has_feature("web"):
+		return
+	JavaScriptBridge.eval("window.bhrGameplay && window.bhrGameplay(%s)"
+			% ("true" if on else "false"))
 
 
 ## Задать число участников заезда (в профиле не хранится — см. race_size).
@@ -1051,4 +1264,7 @@ func _save_profile() -> void:
 	cf.set_value("profile", "uid", uid)
 	cf.set_value("profile", "stats", stats)
 	cf.set_value("profile", "friends", friends)
+	_save_rev += 1
+	cf.set_value("profile", "rev", _save_rev)
 	cf.save(PROFILE_PATH)
+	_cloud_push(cf)

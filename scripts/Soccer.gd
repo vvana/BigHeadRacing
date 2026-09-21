@@ -144,7 +144,7 @@ func _setup_environment() -> void:
 	# Дневное небо, как на травяной трассе (Main._setup_environment).
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-55, -30, 0)
-	sun.shadow_enabled = true
+	sun.shadow_enabled = not GameState.lite_gfx()   # браузер: без теней
 	sun.light_energy = 1.2
 	add_child(sun)
 
@@ -305,6 +305,7 @@ func _countdown() -> void:
 	_pop_count("GO!", UiKit.TEAL)
 	_set_controls(true)
 	_state = State.PLAY
+	GameState.platform_gameplay(true)   # Яндекс Игры: геймплей начался
 	await get_tree().create_timer(0.7).timeout
 	if is_inside_tree() and _count_label:
 		_count_label.visible = false
@@ -337,7 +338,7 @@ func _physics_process(delta: float) -> void:
 			if _time_left <= 60.0 and not _last_minute_said:
 				_last_minute_said = true
 				if _announcer:
-					_announcer.big("ПОСЛЕДНЯЯ МИНУТА", "", "orange")
+					_announcer.big(Loc.t("ПОСЛЕДНЯЯ МИНУТА"), "", "orange")
 			if _time_left <= 0.0:
 				_finish_match()
 				return
@@ -404,15 +405,15 @@ func _on_goal(team: int) -> void:
 		if si >= 0:
 			var scorer_team := 0 if si < TEAM_SIZE else 1
 			# Автор гола — по имени (бот подписан ником, как живой игрок).
-			var scorer_name: String = "вы" if si == 0 else _names[si]
+			var scorer_name: String = Loc.t("вы") if si == 0 else _names[si]
 			if scorer_team != team:
-				sub = "автогол! (%s)" % scorer_name
+				sub = Loc.t("автогол! (%s)") % scorer_name
 			else:
-				sub = "забил: %s" % scorer_name
+				sub = Loc.t("забил: %s") % scorer_name
 				if si == 0:
 					_player_goals += 1
 	if _announcer:
-		_announcer.big("ГОЛ! Счёт %d : %d" % [_score[0], _score[1]], sub,
+		_announcer.big(Loc.t("ГОЛ! Счёт %d : %d") % [_score[0], _score[1]], sub,
 				"teal" if team == 0 else "red")
 	FxKit.confetti_burst(self, _ball.global_position + Vector3.UP * 2.0)
 
@@ -425,7 +426,7 @@ func _kickoff() -> void:
 	_set_controls(true)
 	_state = State.PLAY
 	if _announcer:
-		_announcer.small("ИГРА!")
+		_announcer.small(Loc.t("ИГРА!"))
 
 
 func _respawn_car(i: int) -> void:
@@ -486,12 +487,13 @@ func _check_recovery(delta: float) -> void:
 			_ball_out_time = 0.0
 			_ball.reset_to(_arena.ball_spawn())
 			if _announcer:
-				_announcer.small("Мяч вылетел — вбрасывание в центре")
+				_announcer.small(Loc.t("Мяч вылетел — вбрасывание в центре"))
 
 
 func _finish_match() -> void:
 	_state = State.OVER
 	_time_left = 0.0
+	GameState.platform_gameplay(false)   # Яндекс Игры: геймплей кончился
 	_set_controls(false)
 	for c in _cars:
 		c.race_over = true   # плавное торможение, как после финиша гонки
@@ -503,17 +505,17 @@ func _finish_match() -> void:
 	var coins: int   # монеты за матч — победа как 1-е место гонки не платит:
 	                 # футбол короче и без риска быть уничтоженным
 	if _score[0] > _score[1]:
-		title = "ПОБЕДА СИНИХ %d : %d" % [_score[0], _score[1]]
+		title = Loc.t("ПОБЕДА СИНИХ %d : %d") % [_score[0], _score[1]]
 		kind = "teal"
 		xp = 100
 		coins = 500
 	elif _score[0] < _score[1]:
-		title = "ПОБЕДА КРАСНЫХ %d : %d" % [_score[1], _score[0]]
+		title = Loc.t("ПОБЕДА КРАСНЫХ %d : %d") % [_score[1], _score[0]]
 		kind = "red"
 		xp = 20
 		coins = 200
 	else:
-		title = "НИЧЬЯ %d : %d" % [_score[0], _score[1]]
+		title = Loc.t("НИЧЬЯ %d : %d") % [_score[0], _score[1]]
 		kind = "orange"
 		xp = 40
 		coins = 300
@@ -526,7 +528,7 @@ func _finish_match() -> void:
 	Analytics.soccer(signi(_score[0] - _score[1]), _player_goals,
 			_score[0], _score[1], int((MATCH_TIME - _time_left) * 1000.0))
 	if _announcer:
-		_announcer.big(title, "опыт +%d  ·  монеты +%d" % [xp, coins], kind)
+		_announcer.big(title, Loc.t("опыт +%d  ·  монеты +%d") % [xp, coins], kind)
 	if _end_label:
 		_end_label.visible = true
 
@@ -616,13 +618,13 @@ func report_weapon_hit(_attacker: Car, victim: Car, kind: int) -> void:
 		return
 	match kind:
 		Weapons.SCRAMBLE:
-			_announcer.small("Управление сбито: лево и право поменялись!", "red")
+			_announcer.small(Loc.t("Управление сбито: лево и право поменялись!"), "red")
 		Weapons.FREEZE:
-			_announcer.small("Вас заморозили!", "teal")
+			_announcer.small(Loc.t("Вас заморозили!"), "teal")
 		Weapons.MAGNET:
-			_announcer.small("Вас притянуло магнитом!", "steel")
+			_announcer.small(Loc.t("Вас притянуло магнитом!"), "steel")
 		Weapons.SHIELD:
-			_announcer.small("Вас разбил красный щит!", "red")
+			_announcer.small(Loc.t("Вас разбил красный щит!"), "red")
 
 
 ## Боты применяют подобранное оружие: прицельное — по сопернику в конусе
@@ -986,7 +988,7 @@ func _process(delta: float) -> void:
 				_weapon_name.text = Weapons.display_name(_car.weapon)
 			else:
 				_weapon_icon.texture = _slot_empty_tex
-				_weapon_name.text = "лови бонус"
+				_weapon_name.text = Loc.t("лови бонус")
 			if _touch:
 				_touch.set_bonus_icon(Weapons.icon(_car.weapon)
 						if _car.weapon >= 0 else null)
@@ -995,7 +997,7 @@ func _process(delta: float) -> void:
 		_timer_label.text = "%d:%02d" % [t / 60, t % 60]
 
 	if _touch:
-		_touch.show_tap("В ГАРАЖ" if _state == State.OVER else "")
+		_touch.show_tap(Loc.t("В ГАРАЖ") if _state == State.OVER else "")
 	if Input.is_action_just_pressed("ui_cancel"):
 		get_tree().change_scene_to_file("res://scenes/CarSelect.tscn")
 		return
@@ -1024,7 +1026,7 @@ func _setup_hud() -> void:
 	plate.offset_top = 12
 	plate.offset_bottom = 76
 
-	var blue := UiKit.label(plate, TEAM_NAMES[0], 20,
+	var blue := UiKit.label(plate, Loc.t(TEAM_NAMES[0]), 20,
 			SoccerArena.TEAM_COLORS[0].lightened(0.3), 5)
 	blue.position = Vector2(14, 0)
 	blue.size = Vector2(110, 64)
@@ -1037,7 +1039,7 @@ func _setup_hud() -> void:
 	_score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_score_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
-	var red := UiKit.label(plate, TEAM_NAMES[1], 20,
+	var red := UiKit.label(plate, Loc.t(TEAM_NAMES[1]), 20,
 			SoccerArena.TEAM_COLORS[1].lightened(0.25), 5)
 	red.position = Vector2(256, 0)
 	red.size = Vector2(110, 64)
@@ -1068,7 +1070,7 @@ func _setup_hud() -> void:
 	_speed_label.size = Vector2(84, 64)
 	_speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_speed_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	var kmh := UiKit.label(speed_plate, "км/ч", 14, Color(1, 1, 1, 0.7))
+	var kmh := UiKit.label(speed_plate, Loc.t("км/ч"), 14, Color(1, 1, 1, 0.7))
 	kmh.position = Vector2(94, 0)
 	kmh.size = Vector2(50, 64)
 	kmh.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -1086,7 +1088,7 @@ func _setup_hud() -> void:
 	_weapon_icon.offset_bottom = -114
 	_weapon_icon.texture = _slot_empty_tex
 	canvas.add_child(_weapon_icon)
-	_weapon_name = UiKit.label(canvas, "лови бонус", 14, UiKit.YELLOW, 4)
+	_weapon_name = UiKit.label(canvas, Loc.t("лови бонус"), 14, UiKit.YELLOW, 4)
 	_weapon_name.anchor_top = 1.0
 	_weapon_name.anchor_bottom = 1.0
 	_weapon_name.offset_left = 16
@@ -1103,7 +1105,7 @@ func _setup_hud() -> void:
 	_count_label.visible = false
 
 	# «Enter — в гараж» после финального свистка.
-	_end_label = UiKit.label(canvas, "Enter — в гараж", 22, Color.WHITE, 6)
+	_end_label = UiKit.label(canvas, Loc.t("Enter — в гараж"), 22, Color.WHITE, 6)
 	_end_label.anchor_left = 0.5
 	_end_label.anchor_right = 0.5
 	_end_label.anchor_top = 0.62
@@ -1115,7 +1117,7 @@ func _setup_hud() -> void:
 	_end_label.visible = false
 
 	var help := UiKit.label(canvas,
-			"WASD/стрелки — езда  |  Ctrl/J — оружие  |  Shift — прыжок  |  Space — ручник  |  R — на место  |  Esc — в гараж",
+			Loc.t("WASD/стрелки — езда  |  Ctrl/J — оружие  |  Shift — прыжок  |  Space — ручник  |  R — на место  |  Esc — в гараж"),
 			14, Color(1, 1, 1, 0.7))
 	help.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1128,7 +1130,7 @@ func _setup_hud() -> void:
 		_touch.name = "Touch"
 		add_child(_touch)
 		help.visible = false
-		_end_label.text = "В ГАРАЖ — кнопка внизу"
+		_end_label.text = Loc.t("В ГАРАЖ — кнопка внизу")
 
 	_announcer = Announcer.new()
 	canvas.add_child(_announcer)
@@ -1139,3 +1141,9 @@ func _setup_hud() -> void:
 	_ball_arrow.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_ball_arrow.visible = false
 	canvas.add_child(_ball_arrow)
+
+
+## Уход с арены — для Яндекс Игр геймплей закончился.
+func _exit_tree() -> void:
+	GameState.platform_gameplay(false)
+	GameState.keep_materials(self)   # браузер: шейдеры переживают сцену

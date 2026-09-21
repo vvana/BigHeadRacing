@@ -622,6 +622,7 @@ func _build_street_lamps() -> void:
 		light.light_energy = 3.2
 		light.omni_range = 19.0
 		light.shadow_enabled = false
+		light.visible = not OS.has_feature("web")   # браузер: см. CarModelLibrary (неон)
 		lamp.add_child(light)
 		# Головка фонаря: вверх и к полотну (+Z локально — к трассе;
 		# позиция в локальных координатах, масштаб узла 0.8 её ужмёт).

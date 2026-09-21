@@ -58,3 +58,8 @@ common/physics_interpolation=true
 ; (пресетный texture_format/etc2_astc сам по себе не помогает).
 textures/vram_compression/import_etc2_astc=true
 anti_aliasing/quality/msaa_3d=2
+; Браузер (21.09): предпроход глубины рисует каждую непрозрачную модель
+; дважды и на каждый материал компилирует лишнюю шейдерную программу
+; (0,1–0,2 с каждая, синхронно). При виде сверху перекрытий мало — не нужен.
+driver/depth_prepass/enable.web=false
+anti_aliasing/quality/msaa_3d.web=0
