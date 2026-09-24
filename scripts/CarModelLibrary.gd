@@ -1387,7 +1387,7 @@ static func _attach_underglow(m: Node3D, color: String, base_y: float) -> void:
 		mat.albedo_color = Color(col.r, col.g, col.b, 0.85)
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mat.disable_receive_shadows = true
-	mat.albedo_texture = _glow_texture()
+	mat.albedo_texture = _glow_texture(not black)
 	glow.material_override = mat
 	glow.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	# По самой нижней грани колёс (+2 см). Это высота ДЛЯ ПОДИУМА и лобби,
@@ -1786,22 +1786,48 @@ static func _arcade_glass_material(color: String, tint: Color) -> StandardMateri
 
 
 ## Радиальный градиент пятна неона (белый, прозрачность к краю); общий.
-static var _glow_tex: GradientTexture2D
+static var _glow_tex_add: ImageTexture   # для аддитивного неона: градиент в RGB
+static var _glow_tex_mix: ImageTexture   # для чёрного «неона» (тень): градиент в альфе
 
 
-static func _glow_texture() -> GradientTexture2D:
-	if _glow_tex == null:
-		var g := Gradient.new()
-		g.set_color(0, Color(1, 1, 1, 1.0))
-		g.set_color(1, Color(1, 1, 1, 0.0))
-		g.add_point(0.35, Color(1, 1, 1, 0.75))
-		g.add_point(0.7, Color(1, 1, 1, 0.25))
-		var t := GradientTexture2D.new()
-		t.gradient = g
-		t.fill = GradientTexture2D.FILL_RADIAL
-		t.fill_from = Vector2(0.5, 0.5)
-		t.fill_to = Vector2(0.5, 0.0)
-		t.width = 128
-		t.height = 128
-		_glow_tex = t
-	return _glow_tex
+## Радиальное пятно 128×128. Раньше — GradientTexture2D с градиентом только
+## в АЛЬФЕ (RGB белый): в GL-рендерере (gl_compatibility — веб и с 22.09
+## Android) аддитивное смешивание альфу не учитывает, и неон под машиной
+## выходил сплошным ярким прямоугольником (игрок заметил 22.09 на стенде;
+## в Forward+ альфа работает, потому и не ловилось). Поэтому для аддитивного
+## неона градиент кладём в RGB (чёрный край ничего не добавляет при любом
+## рендерере) И в альфу: с альфой 1 квад на ПРОЗРАЧНОМ вьюпорте (плитки
+## лобби, миниатюры гаража) делал непрозрачным весь свой прямоугольник —
+## чёрный край RGB превращался в «чёрный прямоугольник под машиной»
+## (жалоба 22.09, стенд tools/ShotNeonTile.tscn). Оба канала — √v: и
+## Forward+, и настольный GL множат цвет на альфу (снимки ShotCars до/после),
+## произведение даёт прежнюю яркость v; там, где альфа не учитывается,
+## выйдет просто более широкое пятно, но не сплошной прямоугольник. Для чёрного «неона»
+## (обычное смешивание, тень под днищем) — как раньше, градиент в альфе. Ступени те же: 1,0 в центре →
+## 0,75 на 35 % → 0,25 на 70 % → 0 у края. Картинка собирается в коде
+## (ImageTexture с мип-уровнями).
+static func _glow_texture(additive: bool) -> ImageTexture:
+	var have := _glow_tex_add if additive else _glow_tex_mix
+	if have != null:
+		return have
+	var g := Gradient.new()
+	g.set_color(0, Color(1, 1, 1, 1.0))
+	g.set_color(1, Color(1, 1, 1, 0.0))
+	g.add_point(0.35, Color(1, 1, 1, 0.75))
+	g.add_point(0.7, Color(1, 1, 1, 0.25))
+	const N := 128
+	var img := Image.create(N, N, true, Image.FORMAT_RGBA8)
+	var c := Vector2(N * 0.5, N * 0.5)
+	for y in N:
+		for x in N:
+			var d := Vector2(x + 0.5, y + 0.5).distance_to(c) / (N * 0.5)
+			var v := g.sample(clampf(d, 0.0, 1.0)).a
+			var r := sqrt(v)   # r·r = v: и Forward+, и GL множат цвет на альфу
+			img.set_pixel(x, y, Color(r, r, r, r) if additive else Color(1, 1, 1, v))
+	img.generate_mipmaps()
+	var tex := ImageTexture.create_from_image(img)
+	if additive:
+		_glow_tex_add = tex
+	else:
+		_glow_tex_mix = tex
+	return tex

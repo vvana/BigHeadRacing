@@ -47,7 +47,8 @@ const ICONS := {
 	FREEZE: "res://assets/ui/garage/wg_freeze.png",
 	AIRSTRIKE: "res://assets/ui/garage/wg_airstrike.png",
 	BOOST: "res://assets/ui/garage/wg_boost.png",
-	# Запечён tools/gen_scramble_icon.py (в листе-референсе волны не было).
+	# Запечён tools/gen_scramble_icon.py: перекрещённые стрелки — «лево и
+	# право перепутаны» (в листе-референсе такого знака не было).
 	SCRAMBLE: "res://assets/ui/garage/wg_scramble.png",
 	# Картинка игрока (08.09), вырезана tools/cut_shield_icon.py.
 	SHIELD: "res://assets/ui/garage/wg_shield.png",

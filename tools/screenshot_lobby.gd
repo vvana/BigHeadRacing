@@ -25,7 +25,7 @@ func _ready() -> void:
 	# пустой слот «Ждём игрока…».
 	if args.has("--pending"):
 		_lobby.set_status("Игроков: 2/4
-Ждём игроков: 3…")
+Ждём игроков…")
 		_lobby.set_slot(0, true, "fastback", true, false, "Андрей")
 		_lobby.set_slot(1, false, "diablo", false, true, "Жека_777")
 		_lobby.set_slot(2, true, "chevelle", false, false, "", true)

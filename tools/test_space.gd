@@ -10,6 +10,10 @@ extends Node3D
 ## 3) комета прилетает и ДВИЖЕТСЯ (за секунду > 10 м);
 ## 4) одновременно живёт не больше TrackDecor.COMET_MAX комет;
 ## 5) шаттл есть и ЛЕТИТ по орбите (за секунду сдвинулся > 3 м).
+## 6) (24.09) висящий над пустотой декор — планеты, астероиды, ускорители —
+##    на экране (ортографическая изометрия) НЕ ложится поверх полотна:
+##    вершины каждого, спроецированные по линии взгляда на уровень
+##    дороги, лежат за бортом; и астероиды не круглые (не SphereMesh).
 
 var _main: Node3D
 var _frame := 0
@@ -42,6 +46,11 @@ func _physics_process(_d: float) -> void:
 								and not p.contains("space_shuttle") \
 								and not p.contains("rocket_booster")) \
 					.is_empty()
+			_ok["декор не на дороге"] = _check_clear()
+			var rocks := _decor.find_children("Asteroid*", "MeshInstance3D",
+					false, false)
+			_ok["астероиды не шары"] = rocks.size() >= 8 and rocks.all(
+					func(m: MeshInstance3D) -> bool: return not (m.mesh is SphereMesh))
 			var shuttles := _decor.find_children("space_shuttle*", "", false, false)
 			if not shuttles.is_empty():
 				_shuttle = shuttles[0]
@@ -71,3 +80,39 @@ func _physics_process(_d: float) -> void:
 				print("  %s: %s" % [k, "ok" if _ok[k] else "FAIL"])
 			print("SPACE TEST: %s" % ("PASS" if all_ok else "FAIL"))
 			get_tree().quit(0 if all_ok else 1)
+
+
+## Висящий декор (над уровнем дороги выше 1 м, кроме шаттла и комет — они
+## летают под шоссе) не заслоняет полотно на экране игровой камеры: каждая
+## вершина его сеток, спроецированная по линии взгляда на уровень дороги,
+## лежит за бортом.
+func _check_clear() -> bool:
+	var track: TrackBuilder = _main._track
+	var b := TrackDecor._iso_basis()
+	var ok := true
+	for n: Node in _decor.get_children():
+		if not (n is Node3D) or (n as Node3D).global_position.y < 1.0:
+			continue
+		if n.name.begins_with("Comet") or n.name.begins_with("space_shuttle"):
+			continue
+		var meshes: Array = [n] if n is MeshInstance3D else []
+		meshes.append_array(n.find_children("*", "MeshInstance3D", true, false))
+		var hit := false
+		for mi: MeshInstance3D in meshes:
+			if mi.mesh == null or hit:
+				continue
+			for si in mi.mesh.get_surface_count():
+				var arrays := mi.mesh.surface_get_arrays(si)
+				var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+				for vi in range(0, verts.size(), 3):
+					var c: Vector3 = mi.global_transform * verts[vi]
+					var g := c - b.z * (c.y / b.z.y)
+					if track.distance_from_axis(g) < track.half_width_at_pos(g):
+						hit = true
+						break
+				if hit:
+					break
+		if hit:
+			print("  на дороге: %s в %s" % [n.name, (n as Node3D).global_position])
+			ok = false
+	return ok

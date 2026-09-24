@@ -34,12 +34,13 @@ body { color: white; background-color: #1b1b1b; overflow: hidden; touch-action: 
 
 		<script src="index.js"></script>
 		<script>
-const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"ensureCrossOriginIsolationHeaders":false,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":57493712,"index.wasm":35376909},"focusCanvas":true,"gdextensionLibs":[]};
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"ensureCrossOriginIsolationHeaders":false,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":57525504,"index.wasm":35376909},"focusCanvas":true,"gdextensionLibs":[]};
 const GODOT_THREADS_ENABLED = false;
 const engine = new Engine(GODOT_CONFIG);
 
-// Мост с игрой (см. scripts/GameState.gd platform_name, scripts/CarSelect.gd AD_JS_SHOW):
-//   window.ysdk           — объект SDK Яндекс Игр (реклама: ysdk.adv.showRewardedVideo)
+// Мост с игрой (см. scripts/GameState.gd platform_name, scripts/Ads.gd JS_REWARDED):
+//   window.ysdk           — объект SDK Яндекс Игр (реклама: только ролик с вознаграждением
+//                           ysdk.adv.showRewardedVideo; игра пишет состояние показа в window.bhrAd)
 //   window.bhrPlayerName  — имя авторизованного игрока, если он разрешил личные данные
 //   window.bhrLang        — язык интерфейса от площадки (ysdk.environment.i18n.lang,
 //                           требование 2.14); '' — SDK нет, игра берёт язык по умолчанию

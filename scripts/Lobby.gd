@@ -75,10 +75,11 @@ func _ready() -> void:
 	for s in _slots:
 		_build_slot(s)
 
+	# Раннего старта нет (22.09, «убрать пробел»): заезд стартует по отсчёту,
+	# когда все слоты заняты — подсказка только про выход.
 	var hint := _label(self,
-			Loc.t("СТАРТ — не дожидаясь остальных  |  ✕ — в гараж")
-			if TouchControls.wanted()
-			else Loc.t("Пробел — старт, не дожидаясь остальных  |  Esc — в гараж"),
+			Loc.t("✕ — в гараж") if TouchControls.wanted()
+			else Loc.t("Esc — в гараж"),
 			16, Color(1, 1, 1, 0.7), 4)
 	hint.anchor_left = 0.0
 	hint.anchor_right = 1.0

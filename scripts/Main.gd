@@ -41,6 +41,18 @@ const READY_SHOW := 3.0
 # 21.09). Готовность по-прежнему обязательна для старта, и после неё игроку
 # гарантированы READY_SHOW секунд живого лобби.
 const LOBBY_WAIT_WS := 8.0
+# ОЖИДАНИЕ ЛОББИ СЛУЧАЙНОЙ ДЛИНЫ (24.09, просьба игрока): когда живых
+# соперников нет, лобби с одинаковым сроком каждый раз выдавало ботов —
+# «кого-то ждём» должно длиться по-разному. Срок бросается при открытии
+# лобби в окне LOBBY_WAIT..LOBBY_WAIT_MAX (веб: LOBBY_WAIT_WS..
+# LOBBY_WAIT_WS_MAX, там в срок входят загрузка и прогрев), а после
+# готовности игрока (_rx_ready шлётся ТОЛЬКО после Main._prewarm_fx) живого
+# лобби остаётся не меньше случайных READY_SHOW..READY_SHOW_MAX секунд.
+# Приход ботов (_plan_bots) растягивается на эту живую часть — последний
+# «подключается» незадолго до конца, какой бы длины ни вышло ожидание.
+const LOBBY_WAIT_MAX := 12.0
+const LOBBY_WAIT_WS_MAX := 16.0
+const READY_SHOW_MAX := 6.0
 # Сколько лобби показывает «слоты заняли боты», прежде чем начать отсчёт.
 # Без паузы игрок не успевает увидеть, с кем едет: отсчёт прячет лобби.
 const BOTS_SHOW := 2.2
@@ -111,6 +123,10 @@ var _first_finish_time := -1.0      # когда финишировал перв
 # Доезжать дают всем, но не вечно: спустя столько секунд после первого
 # финишёра заезд закрывается принудительно (места — по текущему прогрессу).
 const FINISH_TIMEOUT := 40.0
+## Сервер (22.09): живой игрок, чья машина не сдвинулась на IDLE_MOVE м за
+## IDLE_KICK с идущего заезда, выбрасывается из него (_tick_idle_kick).
+const IDLE_KICK := 30.0
+const IDLE_MOVE := 2.0
 # Хронометраж (09.09, вечер): время гонки и лучший круг каждой машины —
 # для таблицы мест на финише. Считает тот, кто судит (сервер/оффлайн),
 # клиенту приходит в _rx_car_finished / _rx_finish. Мс от GO.
@@ -256,6 +272,11 @@ var _lobby_wait := -1.0             # сервер: остаток ожидан�
 # hello (клиент шлёт его из готовой сцены Main). _want_start — старт уже
 # запрошен (Пробел или таймаут лобби), ждём только загрузки всех.
 var _hello_done := {}               # слот → true: клиент прислал hello
+var _uid_of_slot := {}              # сервер: слот → uid игрока (из hello, протокол 26+)
+var _idle_pos := {}                 # сервер: слот → где машина игрока стояла (IDLE_KICK)
+var _idle_since := {}               # сервер: слот → секунда, с которой стоит
+var _idle_kick := IDLE_KICK         # порог бездействия (стенд укорачивает)
+var _last_kick := ""                # сервер: причина последнего выброса (для стендов)
 # Мало «прислал hello»: hello уходит из _ready сцены, когда трасса и машины
 # только ПОСТРОЕНЫ, а ни одного кадра ещё не нарисовано — на телефоне между
 # этим и первой картинкой уходят секунды (шейдеры, текстуры), и заезд
@@ -350,8 +371,26 @@ var _minimap: Minimap           # мини-карта в правом верхн
 var _count_label: Label         # отсчёт 3-2-1-GO
 var _finish_root: Control       # баннер финиша
 var _finish_label: Label
-var _finish_xp_label: Label     # строка «+N ОПЫТА · УРОВЕНЬ K» на баннере
-var _records_label: Label       # рекорды трассы под таблицей мест
+# Итог заезда под таблицей мест (22.09: вместо четырёх жёлтых строк одного
+# кегля — блоки с иерархией): три плашки наград (опыт / монеты / рейтинг),
+# полоса уровня и две карточки рекордов трассы (круг / гонка).
+var _reward_vals: Dictionary = {}   # "xp" | "coins" | "rating" → Label значения
+var _level_label: Label             # «УРОВЕНЬ 21»
+var _level_fill: Panel              # жёлтая заливка полосы уровня
+var _level_bar_w := 0.0             # полная ширина полосы (для заливки)
+var _level_text: Label              # «895 / 900»
+var _rec_cards: Array = []          # [{card, caption, time, name, tag}] — 0 круг, 1 гонка
+# Удвоение наград заезда за ролик (22.09): кнопка под плашками наград,
+# один ролик на заезд — опыт и монеты этого заезда начисляются ещё раз.
+var _hud_canvas: CanvasLayer        # слой HUD (под ним — заглушка ролика)
+var _ad_x2_btn: Button              # «▶ ×2» в группе наград / «×2 ✓»
+var _x2_group: Panel                # группа «опыт + монеты + ▶ ×2» (жёлтая подсветка)
+var _x2_tags: Array = []            # ярлычки «×2» на плашках опыта и монет
+var _ad_x2_done := false            # удвоение уже получено
+var _ad_showing := false            # ролик идёт: Enter/Esc не действуют
+var _finish_xp := 0                 # награды этого заезда (для удвоения)
+var _finish_coins := 0
+var _finish_rdelta := 0
 var _result_rows: Array = []    # строки таблицы мест: {place, name, time, lap}
 var _my_kills := 0              # мои уничтоженные соперники (опыт за заезд)
 var _my_deaths := 0             # сколько раз уничтожили меня (статистика)
@@ -384,7 +423,7 @@ func _ready() -> void:
 	# Браузер: материал каждого эффекта, появившегося в сцене (взрыв, снаряд,
 	# пятно), — в вечные (GameState.keep_materials). Иначе эффект удалялся, его
 	# шейдер умирал, и следующий такой же взрыв компилировал программы заново.
-	if GameState.lite_gfx() and not Net.is_server():
+	if GameState.warm_gfx() and not Net.is_server():
 		child_entered_tree.connect(func(n: Node) -> void:
 			(func() -> void:
 				if is_instance_valid(n):
@@ -394,10 +433,11 @@ func _ready() -> void:
 	Music.play_race()
 	# Браузер: трассу сервера ещё не знаем — строим черновик без косметики
 	# (см. TrackBuilder.bare), _rx_track перестроит сцену под настоящую.
-	TrackBuilder.bare = Net.is_client() and GameState.lite_gfx() 			and not TrackBuilder.KINDS.has(GameState.track_kind)
+	TrackBuilder.bare = Net.is_client() and GameState.warm_gfx() 			and not TrackBuilder.KINDS.has(GameState.track_kind)
 	_track_kind = _pick_track_kind()
 	if not Net.is_client():
 		_load_records()
+	Ads.preload_all()   # Android: ролик — заранее, к финишу (web — по требованию)
 	_setup_environment()
 	_lt = _load_mark("музыка+окружение", _lt)
 
@@ -496,10 +536,11 @@ func _ready() -> void:
 ## «двойников»: крошечный меш с тем же материалом. Материалы уходят в
 ## GameState.keep_materials — программы живут до конца сессии.
 var _warm_done := false
+var ready_at_ms := 0                # когда ушла готовность (читает tools/measure_net_start.gd)
 
 
 func _prewarm_fx() -> void:
-	if _warm_done or not GameState.lite_gfx() or _net_started 			or _cars.is_empty() or _lobby == null or not _lobby.visible:
+	if _warm_done or not GameState.warm_gfx() or _net_started 			or _cars.is_empty() or _lobby == null or not _lobby.visible:
 		return
 	_warm_done = true
 	var t0 := Time.get_ticks_msec()
@@ -619,7 +660,10 @@ func _prewarm_fx() -> void:
 				tmm.multimesh = mm
 				twin = tmm
 			twin.material_override = m
-			twin.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			# Там, где тени есть (Windows/Android), двойник их отбрасывает —
+			# иначе теневой проход этого материала остался бы непрогретым.
+			if GameState.lite_gfx():
+				twin.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			holder.add_child(twin)
 			twin.global_position = at + Vector3.UP * (0.5 + 0.01 * n_twins)
 			n_twins += 1
@@ -1130,15 +1174,21 @@ func _process(delta: float) -> void:
 		_snowfall.global_position = _car.visual_origin() + Vector3.UP * 16.0
 
 	if _touch:
-		_touch.show_tap(_touch_hint())
+		# В лобби кнопки езды тоже прячем: машина стоит за экраном лобби,
+		# а «СТАРТ» там больше нет (22.09).
+		_touch.show_tap(_touch_hint(), _lobby == null or not _lobby.visible)
 
 	# Ввод опрашиваем напрямую (как езду в Car), а не через события —
 	# надёжнее: событие может не дойти до _unhandled_input.
-	if Input.is_action_just_pressed("ui_cancel"):
+	# Пока идёт ролик удвоения, Enter/Esc (и кнопка «В ГАРАЖ» телефона =
+	# ui_accept) не действуют: уход посреди ролика оставил бы игрока без
+	# награды за просмотр.
+	if Input.is_action_just_pressed("ui_cancel") and not _ad_showing:
 		Net.leave()
 		get_tree().change_scene_to_file("res://scenes/CarSelect.tscn")
 		return
-	if (_finished or _my_finished) and Input.is_action_just_pressed("ui_accept"):
+	if (_finished or _my_finished) and not _ad_showing \
+			and Input.is_action_just_pressed("ui_accept"):
 		Net.leave()
 		get_tree().change_scene_to_file("res://scenes/CarSelect.tscn")
 		return
@@ -1150,10 +1200,9 @@ func _process(delta: float) -> void:
 				and Net.my_slot >= 0 and _last_state_time > 0.0 \
 				and Time.get_ticks_msec() / 1000.0 - _last_state_time > 5.0:
 			_on_net_lost()
-		# В лобби пробел просит сервер начать, не дожидаясь второго игрока.
-		if _lobby != null and _lobby.visible and not _net_lost \
-				and not _kicked and Input.is_action_just_pressed("ui_accept"):
-			_rx_start_request.rpc_id(1)
+			# Раннего старта по пробелу из лобби больше нет (22.09, «убрать
+			# пробел»): заезд стартует только по отсчёту лобби, когда все
+			# слоты заняты — живыми игроками или подключившимися ботами.
 		# Своя машина клиент-авторитетна — и возврат на трассу (R и
 		# автовозврат) для неё делаем мы, сервер её не двигает. Ждущему
 		# следующего заезда возвращать нечего: он стоит на решётке за
@@ -1169,12 +1218,10 @@ func _process(delta: float) -> void:
 	_check_recovery(delta)
 
 
-## Что писать на кнопке-подсказке экранного управления (телефон): в лобби
-## «СТАРТ» (= Пробел), после финиша «В ГАРАЖ» (= Enter), в заезде — ничего,
-## тогда видны кнопки езды.
+## Что писать на кнопке-подсказке экранного управления (телефон): после
+## финиша «В ГАРАЖ» (= Enter), в заезде и в лобби — ничего (в лобби
+## кнопки езды прячет второй аргумент show_tap; «СТАРТ» убран 22.09).
 func _touch_hint() -> String:
-	if _lobby != null and _lobby.visible:
-		return Loc.t("СТАРТ")
 	if _finished or _my_finished:
 		return Loc.t("В ГАРАЖ")
 	return ""
@@ -1295,9 +1342,11 @@ func _show_finish(place: int) -> void:
 			_car.weapon_uses if _car != null else {},
 			Net.party_id != "")
 	_finish_label.text = Loc.t("ФИНИШ!  МЕСТО %d ИЗ %d") % [place, _cars.size()]
-	if _finish_xp_label:
-		_finish_xp_label.text = Loc.t("+%d ОПЫТА  ·  +%d МОНЕТ  ·  РЕЙТИНГ %+d\nУРОВЕНЬ %d  (%d / %d)") \
-				% [gained, coins, rdelta, info.x, info.y, info.z]
+	_finish_xp = gained
+	_finish_coins = coins
+	_finish_rdelta = rdelta
+	_set_finish_rewards(gained, coins, rdelta, info)
+	_refresh_ad_x2_btn()
 	if info.x > before.x and _announcer:
 		_announcer.big(Loc.t("НОВЫЙ УРОВЕНЬ %d!") % info.x, "", "teal")
 	_finish_root.visible = true
@@ -1329,6 +1378,8 @@ func _finish_race() -> void:
 		for i in _cars.size():
 			if not _finish_order.has(i):
 				_record_human_result(i, _place_of(i))
+		# Заезд окончен — вышедшим из него вход снова открыт (Rooms.mark_left).
+		Rooms.clear_left(Net.port)
 		_reset_server_after_race()
 		return
 	# Сам не доехал, а заезд кончился (таймаут) — место по прогрессу.
@@ -1372,6 +1423,193 @@ func _build_results_table(plate: Control, top: float, row_h: float) -> void:
 					time = cells[2], lap = cells[3]})
 
 
+## Итог заезда под таблицей мест (22.09): черта-разделитель, три плашки
+## наград (значение крупно, подпись мелко и бледно), полоса уровня
+## («УРОВЕНЬ N» слева, жёлтая заливка, «опыт / нужно» справа) и две
+## карточки рекордов трассы. Значения ставят _set_finish_rewards и
+## _set_record_card. Ширина содержимого 620 px (поля 40).
+func _build_finish_summary(plate: Control, sep_y: float, chips_y: float,
+		bar_y: float, cards_y: float) -> void:
+	const X0 := 40.0
+	const W := 620.0
+	var dim := Color(1, 1, 1, 0.55)
+	var line := ColorRect.new()
+	line.color = Color(UiKit.RIM.r, UiKit.RIM.g, UiKit.RIM.b, 0.5)
+	line.position = Vector2(X0, sep_y)
+	line.size = Vector2(W, 1)
+	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	plate.add_child(line)
+
+	# Награды. Опыт и монеты — в одной жёлто-подсвеченной группе с кнопкой
+	# «▶ ×2» на конце и ярлычками «×2» на самих плашках (просьба 22.09:
+	# «непонятно, что удваивает» — как в мобильных гонках, предложение
+	# живёт прямо на цифрах). Рейтинг — отдельной плашкой справа: он не
+	# удваивается. Монеты жёлтые (как в гараже), опыт белый, рейтинг
+	# красится по знаку в _set_finish_rewards.
+	_reward_vals.clear()
+	_x2_tags.clear()
+	const GROUP_W := 458.0   # 8 + 156 + 8 + 156 + 8 + 114 + 8
+	const CHIP_H := 58.0
+	_x2_group = _summary_box(plate, Vector2(X0, chips_y),
+			Vector2(GROUP_W, CHIP_H + 16.0))
+	var chips := [["xp", Loc.t("ОПЫТА"), Color.WHITE, _x2_group, Vector2(8, 8), 156.0],
+			["coins", Loc.t("МОНЕТ"), UiKit.YELLOW, _x2_group, Vector2(172, 8), 156.0],
+			["rating", Loc.t("РЕЙТИНГ"), UiKit.GREEN_ME, plate,
+					Vector2(X0 + GROUP_W + 12.0, chips_y + 8.0), W - GROUP_W - 12.0]]
+	for c in chips:
+		var chip_w: float = c[5]
+		var chip := _summary_box(c[3], c[4], Vector2(chip_w, CHIP_H))
+		var v := _make_label(chip, "", 24, c[2], 6)
+		v.position = Vector2(0, 6)
+		v.size = Vector2(chip_w, 30)
+		v.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		v.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		var cap := _make_label(chip, c[1], 11, dim, 0)
+		cap.position = Vector2(0, 38)
+		cap.size = Vector2(chip_w, 14)
+		cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		cap.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		_reward_vals[c[0]] = v
+		if c[0] != "rating":
+			_x2_tags.append(_corner_tag(chip, "×2", 4.0, 5.0))
+
+	# «▶ ×2» — жёлтая кнопка в группе, той же высоты, что плашки.
+	_ad_x2_btn = Button.new()
+	UiKit.style_button(_ad_x2_btn, "yellow", 22)
+	_ad_x2_btn.icon = load(UiKit.DIR + "play.png")
+	_ad_x2_btn.icon_alignment = HORIZONTAL_ALIGNMENT_LEFT   # по центру значок ложится на текст
+	_ad_x2_btn.add_theme_constant_override("icon_max_width", 22)
+	_ad_x2_btn.add_theme_constant_override("h_separation", 6)
+	for cn in ["icon_normal_color", "icon_hover_color", "icon_pressed_color"]:
+		_ad_x2_btn.add_theme_color_override(cn, UiKit.INK)
+	_ad_x2_btn.add_theme_color_override("icon_disabled_color",
+			Color(UiKit.INK.r, UiKit.INK.g, UiKit.INK.b, 0.6))
+	# Поля текстуры кнопки по 20 px сверху и снизу дают минимум ~60 px —
+	# ужимаем вертикальные поля под высоту плашки (кант остаётся).
+	for state in ["normal", "hover", "pressed", "disabled"]:
+		var st := _ad_x2_btn.get_theme_stylebox(state) as StyleBoxTexture
+		if st:
+			st.content_margin_top = 6
+			st.content_margin_bottom = 6
+			st.content_margin_left = 10
+			st.content_margin_right = 10
+	_ad_x2_btn.tooltip_text = Loc.t("Досмотри ролик — опыт и монеты заезда начислятся ещё раз")
+	_ad_x2_btn.position = Vector2(336, 8)
+	_ad_x2_btn.size = Vector2(114, CHIP_H)
+	_ad_x2_btn.pressed.connect(_ad_x2_pressed)
+	_x2_group.add_child(_ad_x2_btn)
+	Ads.rewarded_ready_changed.connect(func(_ready: bool) -> void:
+		_refresh_ad_x2_btn())
+	_refresh_ad_x2_btn()
+
+	# Полоса уровня.
+	_level_label = _make_label(plate, "", 15, Color.WHITE, 5)
+	_level_label.position = Vector2(X0, bar_y)
+	_level_label.size = Vector2(150, 22)
+	_level_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var track := Panel.new()
+	var tsb := StyleBoxFlat.new()
+	tsb.bg_color = Color(0, 0, 0, 0.38)
+	tsb.set_corner_radius_all(6)
+	tsb.set_border_width_all(1)
+	tsb.border_color = Color(UiKit.RIM.r, UiKit.RIM.g, UiKit.RIM.b, 0.5)
+	track.add_theme_stylebox_override("panel", tsb)
+	track.position = Vector2(X0 + 156.0, bar_y + 3.0)
+	_level_bar_w = W - 156.0 - 96.0
+	track.size = Vector2(_level_bar_w, 16.0)
+	track.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	plate.add_child(track)
+	_level_fill = Panel.new()
+	var fsb := StyleBoxFlat.new()
+	fsb.bg_color = UiKit.YELLOW
+	fsb.set_corner_radius_all(6)
+	_level_fill.add_theme_stylebox_override("panel", fsb)
+	_level_fill.position = Vector2.ZERO
+	_level_fill.size = Vector2(0, 16.0)
+	_level_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	track.add_child(_level_fill)
+	_level_text = _make_label(plate, "", 13, dim, 0)
+	_level_text.position = Vector2(X0 + W - 90.0, bar_y)
+	_level_text.size = Vector2(90, 22)
+	_level_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_level_text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+
+	# Карточки рекордов: подпись слева вверху, ярлык «★ НОВЫЙ» справа
+	# вверху, ниже время крупно и владелец справа бледно.
+	_rec_cards.clear()
+	var card_w := (W - 12.0) / 2.0
+	for i in 2:
+		var card := _summary_box(plate, Vector2(X0 + i * (card_w + 12.0), cards_y),
+				Vector2(card_w, 56.0))
+		var cap := _make_label(card,
+				Loc.t("РЕКОРД КРУГА") if i == 0 else Loc.t("РЕКОРД ГОНКИ"),
+				11, dim, 0)
+		cap.position = Vector2(12, 6)
+		cap.size = Vector2(card_w - 110.0, 14)
+		cap.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		var tag := _corner_tag(card, Loc.t("★ НОВЫЙ"), 8.0, 5.0)
+		tag.visible = false
+		var time := _make_label(card, "", 22, Color.WHITE, 6)
+		time.position = Vector2(12, 22)
+		time.size = Vector2(120, 30)
+		time.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		var who := _make_label(card, "", 18, Color(1, 1, 1, 0.9), 5)
+		who.position = Vector2(132, 22)
+		who.size = Vector2(card_w - 144.0, 30)
+		who.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		who.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		who.clip_text = true
+		who.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		_rec_cards.append({card = card, caption = cap, time = time, name = who,
+				tag = tag})
+		_set_record_card(i, 0, "", false)
+
+
+## Жёлтый ярлычок с чернильным текстом в правом верхнем углу родителя
+## («★ НОВЫЙ» на карточке рекорда, «×2» на плашке награды); растёт влево
+## от правого края. right/top — отступы от углов.
+func _corner_tag(parent: Control, text: String, right: float,
+		top: float) -> PanelContainer:
+	var tag := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = UiKit.YELLOW
+	sb.set_corner_radius_all(4)
+	sb.content_margin_left = 7
+	sb.content_margin_right = 7
+	sb.content_margin_top = 1
+	sb.content_margin_bottom = 1
+	tag.add_theme_stylebox_override("panel", sb)
+	tag.anchor_left = 1.0
+	tag.anchor_right = 1.0
+	tag.offset_left = -right
+	tag.offset_right = -right
+	tag.offset_top = top
+	tag.offset_bottom = top
+	tag.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(tag)
+	var l := _make_label(tag, text, 11, UiKit.INK, 0)
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	return tag
+
+
+## Слегка высветленная вставка на стальной плите (плашка награды, карточка
+## рекорда).
+func _summary_box(parent: Control, pos: Vector2, size: Vector2) -> Panel:
+	var p := Panel.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(1, 1, 1, 0.05)
+	sb.set_corner_radius_all(6)
+	sb.set_border_width_all(1)
+	sb.border_color = Color(UiKit.RIM.r, UiKit.RIM.g, UiKit.RIM.b, 0.5)
+	p.add_theme_stylebox_override("panel", sb)
+	p.position = pos
+	p.size = size
+	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(p)
+	return p
+
+
 ## «м:сс.сс»; 0 — прочерк.
 static func fmt_ms(ms: int) -> String:
 	if ms <= 0:
@@ -1413,21 +1651,132 @@ func _refresh_results() -> void:
 		(row.lap as Label).text = fmt_ms(_best_lap_ms[i])
 		for k in ["place", "name", "time", "lap"]:
 			(row[k] as Label).add_theme_color_override("font_color", col)
-	if _records_label:
-		var lap_ms := int(_records.get("lap_ms", 0))
-		var race_ms := int(_records.get("race_ms", 0))
-		var lap_txt := Loc.t("РЕКОРД КРУГА: %s") % (("%s — %s" % [fmt_ms(lap_ms),
-				str(_records.get("lap_name", ""))]) if lap_ms > 0 else Loc.t("пока нет"))
-		var race_txt := Loc.t("РЕКОРД ГОНКИ: %s") % (("%s — %s" % [fmt_ms(race_ms),
-				str(_records.get("race_name", ""))]) if race_ms > 0 else Loc.t("пока нет"))
-		if _record_lap_new:
-			lap_txt += Loc.t("  ★ НОВЫЙ!")
-		if _record_race_new:
-			race_txt += Loc.t("  ★ НОВЫЙ!")
-		_records_label.text = lap_txt + "\n" + race_txt
-		_records_label.add_theme_color_override("font_color",
-				UiKit.YELLOW if _record_lap_new or _record_race_new
-				else Color(1, 1, 1, 0.9))
+	if _rec_cards.size() == 2:
+		_set_record_card(0, int(_records.get("lap_ms", 0)),
+				str(_records.get("lap_name", "")), _record_lap_new)
+		_set_record_card(1, int(_records.get("race_ms", 0)),
+				str(_records.get("race_name", "")), _record_race_new)
+
+
+## Карточка рекорда трассы: время крупно, владелец мелко справа; побитый
+## в этом заезде — жёлтые время и кант, ярлык «★ НОВЫЙ» в углу.
+func _set_record_card(idx: int, ms: int, holder: String, is_new: bool) -> void:
+	var c: Dictionary = _rec_cards[idx]
+	var has := ms > 0
+	(c.time as Label).text = fmt_ms(ms) if has else "—"
+	(c.name as Label).text = holder if has else Loc.t("пока нет")
+	(c.time as Label).add_theme_color_override("font_color",
+			UiKit.YELLOW if is_new else Color.WHITE)
+	(c.tag as Control).visible = is_new
+	var sb := StyleBoxFlat.new()
+	sb.set_corner_radius_all(6)
+	sb.set_border_width_all(1)
+	if is_new:
+		sb.bg_color = Color(UiKit.YELLOW.r, UiKit.YELLOW.g, UiKit.YELLOW.b, 0.10)
+		sb.border_color = Color(UiKit.YELLOW.r, UiKit.YELLOW.g, UiKit.YELLOW.b, 0.85)
+	else:
+		sb.bg_color = Color(1, 1, 1, 0.05)
+		sb.border_color = Color(UiKit.RIM.r, UiKit.RIM.g, UiKit.RIM.b, 0.5)
+	(c.card as Panel).add_theme_stylebox_override("panel", sb)
+
+
+## Награды за заезд на плите финиша: значения в плашках (монеты жёлтые,
+## рейтинг зелёный при росте и красный при падении), полоса уровня.
+## info — GameState.level_info(): (уровень, опыт в уровне, нужно до следующего).
+func _set_finish_rewards(xp: int, coins: int, rdelta: int, info: Vector3i) -> void:
+	if _reward_vals.is_empty():
+		return
+	(_reward_vals.xp as Label).text = "+%d" % xp
+	(_reward_vals.coins as Label).text = "+%d" % coins
+	var rl: Label = _reward_vals.rating
+	rl.text = "%+d" % rdelta if rdelta != 0 else "0"
+	rl.add_theme_color_override("font_color",
+			UiKit.GREEN_ME if rdelta > 0
+			else (Color(1.0, 0.5, 0.45) if rdelta < 0 else Color.WHITE))
+	_level_label.text = Loc.t("УРОВЕНЬ %d") % info.x
+	_level_text.text = "%d / %d" % [info.y, info.z]
+	var ratio := clampf(float(info.y) / float(maxi(1, info.z)), 0.0, 1.0)
+	_level_fill.size.x = maxf(0.0, _level_bar_w * ratio)
+	_level_fill.visible = ratio > 0.0
+
+
+## Подпись и доступность кнопки удвоения наград за ролик.
+func _refresh_ad_x2_btn() -> void:
+	if _ad_x2_btn == null:
+		return
+	# Android: предложение показываем только с загруженным роликом (просьба
+	# 22.09: «если ролик не загрузился, то ×2 не будет»); загрузился позже —
+	# Ads.rewarded_ready_changed приведёт сюда снова. Яндекс Игры и стол —
+	# предложение всегда (у ysdk предзагрузки нет, показ по требованию).
+	var offer := _ad_x2_done or _ad_showing or Ads.rewarded_ready()
+	_ad_x2_btn.visible = offer
+	if _ad_showing:
+		_ad_x2_btn.disabled = true
+		_ad_x2_btn.text = "…"
+	elif _ad_x2_done:
+		_ad_x2_btn.disabled = true
+		_ad_x2_btn.text = "×2 ✓"
+		_ad_x2_btn.icon = null
+	else:
+		_ad_x2_btn.disabled = false
+		_ad_x2_btn.text = "×2"
+	# Ярлычки «×2» на плашках — пока удвоение ещё не получено; группа
+	# подсвечена жёлтым, пока предложение в силе.
+	for t in _x2_tags:
+		(t as Control).visible = offer and not _ad_x2_done
+	if _x2_group:
+		var sb := StyleBoxFlat.new()
+		sb.set_corner_radius_all(6)
+		sb.set_border_width_all(1)
+		if _ad_x2_done or not offer:
+			sb.bg_color = Color(1, 1, 1, 0.03)
+			sb.border_color = Color(UiKit.RIM.r, UiKit.RIM.g, UiKit.RIM.b, 0.5)
+		else:
+			sb.bg_color = Color(UiKit.YELLOW.r, UiKit.YELLOW.g, UiKit.YELLOW.b, 0.10)
+			sb.border_color = Color(UiKit.YELLOW.r, UiKit.YELLOW.g, UiKit.YELLOW.b, 0.7)
+		_x2_group.add_theme_stylebox_override("panel", sb)
+
+
+## «УДВОИТЬ ЗА РЕКЛАМУ»: один ролик на заезд, только после своего финиша.
+func _ad_x2_pressed() -> void:
+	if _ad_showing or _ad_x2_done or not _my_finished or _hud_canvas == null:
+		return
+	_ad_showing = true
+	_refresh_ad_x2_btn()
+	RewardedAd.play(_hud_canvas,
+			Loc.t("Удвоение наград заезда · на Яндекс Играх здесь идёт видео"),
+			_on_ad_x2_done)
+
+
+## Ролик удвоения закрыт (RewardedAd). rewarded — досмотрен: опыт и монеты
+## заезда начисляются ещё раз (бонус за взятый уровень — как всегда, в
+## add_xp), плашки показывают удвоенные суммы и «подпрыгивают». Рейтинг
+## не удваивается. Недосмотренный ролик — без награды, кнопка снова активна.
+func _on_ad_x2_done(rewarded: bool) -> void:
+	_ad_showing = false
+	if rewarded and not _ad_x2_done and _my_finished:
+		_ad_x2_done = true
+		var before: Vector3i = GameState.level_info()
+		GameState.add_money(_finish_coins)
+		GameState.add_xp(_finish_xp)
+		var info: Vector3i = GameState.level_info()
+		_set_finish_rewards(_finish_xp * 2, _finish_coins * 2, _finish_rdelta,
+				info)
+		for key in ["xp", "coins"]:
+			var l: Label = _reward_vals[key]
+			l.pivot_offset = l.size * 0.5
+			l.scale = Vector2(1.35, 1.35)
+			create_tween().tween_property(l, "scale", Vector2.ONE, 0.45) \
+					.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
+		if info.x > before.x and _announcer:
+			_announcer.big(Loc.t("НОВЫЙ УРОВЕНЬ %d!") % info.x, "", "teal")
+		Analytics.push_event("ad_x2", {xp = _finish_xp, coins = _finish_coins,
+				level = info.x})
+	elif not rewarded and Ads.available() and Ads.last_error != "" and _announcer:
+		# Android / Яндекс Игры: ролик не показался (нет заполнения / сеть /
+		# onError площадки) — сказать, а не молча вернуть кнопку.
+		_announcer.small(Loc.t("Реклама не загрузилась"), "red")
+	_refresh_ad_x2_btn()
 
 
 ## Судья: рекорды всех видов трасс из файла, свои — по _track_kind.
@@ -1937,6 +2286,7 @@ func _make_label(parent: Node, txt: String, font_size: int,
 func _setup_hud() -> void:
 	var canvas := CanvasLayer.new()
 	add_child(canvas)
+	_hud_canvas = canvas
 	_ui_font = UiKit.font()
 	_slot_empty_tex = load("res://assets/ui/garage/slot_empty.png")
 
@@ -2040,9 +2390,13 @@ func _setup_hud() -> void:
 	var n_rows := _cars.size()
 	var table_top := 88.0
 	var row_h := 22.0
-	var rec_top := table_top + 22.0 + n_rows * row_h + 10.0
-	var xp_top := rec_top + 46.0
-	var plate_h := xp_top + 50.0 + 34.0
+	# Под таблицей — тонкая черта, три плашки наград, полоса уровня и две
+	# карточки рекордов; поля 40 px по бокам (содержимое 620 px).
+	var blk_top := table_top + 22.0 + n_rows * row_h + 10.0
+	var chips_top := blk_top + 12.0
+	var bar_top := chips_top + 74.0 + 12.0     # группа наград с «▶ ×2» — 74
+	var cards_top := bar_top + 22.0 + 12.0
+	var plate_h := cards_top + 56.0 + 14.0 + 38.0
 	var fin_plate := UiKit.plate(_finish_root, "steel", Vector2.ZERO,
 			Vector2(700, plate_h), false)
 	fin_plate.anchor_left = 0.5
@@ -2063,27 +2417,7 @@ func _setup_hud() -> void:
 	_finish_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_finish_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_build_results_table(fin_plate, table_top, row_h)
-	_records_label = _make_label(fin_plate, "", 15, Color(1, 1, 1, 0.9), 5)
-	_records_label.anchor_left = 0.0
-	_records_label.anchor_right = 1.0
-	_records_label.offset_left = 40.0
-	_records_label.offset_right = -40.0
-	_records_label.offset_top = rec_top
-	_records_label.offset_bottom = rec_top + 44.0
-	_records_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_records_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	# Итог — ДВЕ строки (09.09: в одну «+110 ОПЫТА · +625 МОНЕТ · УРОВЕНЬ
-	# 19 (775 / 820) · РЕЙТИНГ +22» вылезала за плиту). Поля 40 px по
-	# бокам, чтобы и при четырёхзначных монетах строка сидела внутри.
-	_finish_xp_label = _make_label(fin_plate, "", 18, UiKit.YELLOW, 6)
-	_finish_xp_label.anchor_left = 0.0
-	_finish_xp_label.anchor_right = 1.0
-	_finish_xp_label.offset_left = 40.0
-	_finish_xp_label.offset_right = -40.0
-	_finish_xp_label.offset_top = xp_top
-	_finish_xp_label.offset_bottom = xp_top + 50.0
-	_finish_xp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_finish_xp_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_build_finish_summary(fin_plate, blk_top, chips_top, bar_top, cards_top)
 	var finish_hint := _make_label(fin_plate, Loc.t("ENTER — В ГАРАЖ"), 16,
 			Color(1, 1, 1, 0.8), 5)
 	finish_hint.anchor_left = 0.0
@@ -2111,7 +2445,9 @@ func _setup_hud() -> void:
 		_touch.name = "Touch"
 		add_child(_touch)
 		help.visible = false
-		finish_hint.text = Loc.t("В ГАРАЖ — КНОПКА ВНИЗУ")
+		# Подпись «В ГАРАЖ — кнопка внизу» убрана (22.09): внизу и так стоит
+		# кнопка с той же надписью, подпись её дублировала.
+		finish_hint.visible = false
 		# Значок бонуса слева на телефоне лишний: тот же значок рисует
 		# кнопка «БОНУС» справа (просьба 14.09). Подпись оружия остаётся —
 		# по ней видно ступень («Ракета II») — и встаёт под «МЕСТО».
@@ -2206,8 +2542,8 @@ func _on_peer_joined(_id: int, slot: int) -> void:
 	# Первый игрок: даём LOBBY_WAIT секунд на то, чтобы подтянулись остальные,
 	# и назначаем ботам моменты «подключения» (_plan_bots).
 	if _lobby_wait < 0.0:
-		_lobby_wait = LOBBY_WAIT_WS if Net.uses_ws() else LOBBY_WAIT
-		_plan_bots()
+		_lobby_wait = _roll_lobby_wait()
+		_plan_bots(_lobby_wait)
 	# Пришёл ещё один — продлеваем ожидание до JOIN_GRACE, если оставалось
 	# меньше. Друзья жмут «играть» не по секундомеру: один заходит на
 	# двадцатой секунде чужого ожидания, и без продления заезд стартовал бы
@@ -2223,6 +2559,22 @@ func _on_peer_left(_id: int, slot: int) -> void:
 	# Машину бросил живой игрок — возвращаем её боту. Иначе она зависла бы
 	# марионеткой на последнем присланном состоянии навсегда.
 	var car := _cars[slot]
+	# Вышел из ИДУЩЕГО заезда, не доехав (Esc, обрыв связи, выброс за
+	# бездействие) — до конца этого заезда в новый не пустим (22.09,
+	# Rooms.mark_left; проверка — в _rx_hello). Опоздавшие и ждущие
+	# следующего заезда не ехали — их не касается.
+	if _net_started and not _finished and _hello_done.has(slot) \
+			and not _late_slots.has(slot) and not _finish_order.has(slot):
+		var who := str(_uid_of_slot.get(slot, ""))
+		if who != "":
+			var left := _race_time_left()
+			Rooms.mark_left(who, Net.port,
+					Time.get_unix_time_from_system() + left)
+			print("[net] слот %d вышел из идущего заезда — вход закрыт на ~%d с"
+					% [slot, int(left)])
+	_uid_of_slot.erase(slot)
+	_idle_pos.erase(slot)
+	_idle_since.erase(slot)
 	car.net_make_local()
 	_hello_done.erase(slot)
 	_ready_done.erase(slot)
@@ -2338,7 +2690,8 @@ func _say_hello() -> void:
 			return
 		_rx_hello.rpc_id(1, GameState.selected_car_id, Net.PROTOCOL,
 				Net.want_size, GameState.display_name(),
-				GameState.weapon_steps(), Net.party_id, Net.party_size)
+				GameState.weapon_steps(), Net.party_id, Net.party_size,
+				GameState.uid)
 		await get_tree().create_timer(1.0).timeout
 		if not is_inside_tree():
 			return
@@ -2515,9 +2868,22 @@ func _start_with_bots() -> void:
 	_start_net_race()
 
 
+## Сервер: случайный срок ожидания лобби (см. LOBBY_WAIT_MAX).
+func _roll_lobby_wait() -> float:
+	if Net.uses_ws():
+		return _bot_rng.randf_range(LOBBY_WAIT_WS, LOBBY_WAIT_WS_MAX)
+	return _bot_rng.randf_range(LOBBY_WAIT, LOBBY_WAIT_MAX)
+
+
+## Сервер: случайный остаток живого лобби после готовности игрока.
+func _roll_ready_show() -> float:
+	return _bot_rng.randf_range(READY_SHOW, READY_SHOW_MAX)
+
+
 ## Сервер: назначить каждому свободному слоту момент «подключения» бота
-## (см. BOT_FIRST/BOT_TAIL/BOT_GAP). Порядок слотов случайный.
-func _plan_bots() -> void:
+## в окне BOT_FIRST..span−BOT_TAIL от начала хода часов _lobby_clock (см.
+## BOT_FIRST/BOT_TAIL/BOT_GAP). Порядок слотов случайный.
+func _plan_bots(span: float) -> void:
 	_bot_plan.clear()
 	_lobby_clock = 0.0
 	var free: Array[int] = []
@@ -2532,7 +2898,7 @@ func _plan_bots() -> void:
 		var t := free[i]
 		free[i] = free[j]
 		free[j] = t
-	var last := LOBBY_WAIT - BOT_TAIL
+	var last := maxf(span - BOT_TAIL, BOT_FIRST + BOT_GAP)
 	var times: Array[float] = []
 	for s in free:
 		times.append(_bot_rng.randf_range(BOT_FIRST, last))
@@ -2599,6 +2965,8 @@ func _server_tick(delta: float) -> void:
 				if not _net_started else 0)
 		# Заодно хороним завершившиеся процессы комнат (у комнат список пуст).
 		Rooms.reap_children()
+		# И выбрасываем простоявших IDLE_KICK с (22.09).
+		_tick_idle_kick()
 	# Пустая комната без гонки живёт не вечно: погасла — память свободна.
 	if Net.is_room:
 		if Net.slot_of_peer.is_empty() and not _net_started:
@@ -2868,7 +3236,7 @@ func _put_state(dst: PackedFloat32Array, ci: int, p: Vector3, q: Quaternion,
 @rpc("any_peer", "call_remote", "reliable")
 func _rx_hello(car_id: String, proto: int, want_size := 4,
 		pname := "", steps := PackedByteArray(), party := "",
-		party_size := 0) -> void:
+		party_size := 0, uid := "") -> void:
 	if not Net.is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
@@ -2891,6 +3259,22 @@ func _rx_hello(car_id: String, proto: int, want_size := 4,
 				Net.multiplayer.multiplayer_peer.disconnect_peer(id))
 		return
 	var slot: int = Net.slot_of_peer.get(id, -1)
+	# Вышел из ИДУЩЕГО заезда, не доехав, — в новый не пускаем, пока тот не
+	# кончится (22.09, Rooms.mark_left / left_until). Проверка ДО
+	# перенаправления по комнатам: отказ даёт уже ворота. Клиент без uid
+	# (сборка 1.1.1 из RuStore) в реестр не попадает — ему это правило не
+	# применить.
+	var who := SocialServer.clean_uid(uid)
+	if who != "":
+		var until := Rooms.left_until(who)
+		if until > 0.0:
+			var left := maxi(1, ceili(until - Time.get_unix_time_from_system()))
+			print("[net] пир %d (uid %s…) вышел из идущего заезда — вход закрыт ещё %d с"
+					% [id, who.left(6), left])
+			_kick_peer(id, "Ты вышел из заезда, не доехав — дождись его окончания (ещё ~%d с)." % left)
+			return
+		if slot >= 0:
+			_uid_of_slot[slot] = who
 	# РАЗМЕР ЗАЕЗДА (4..8) задаёт ПЕРВЫЙ игрок пустого лобби: он один, гонка
 	# не идёт — принимаем его желание и перестраиваем сцену под новое число
 	# машин (сцена сервера уже построена под старое). Соединение и слот
@@ -3023,15 +3407,29 @@ func _mark_ready(slot: int) -> void:
 			and Net.slot_of_peer.size() < Net.race_size:
 		_want_start = false
 		_want_by_timer = false
-		_lobby_wait = maxf(_lobby_wait, READY_SHOW)
+		_lobby_wait = maxf(_lobby_wait, _roll_ready_show())
+		_replan_bots_on_first_ready()
 		_rx_lobby.rpc(_lobby_players(), ceili(_lobby_wait))
 		return
-	# Веб-ворота: часы шли, пока он грузился, — живого лобби не меньше READY_SHOW.
+	# Веб-ворота: часы шли, пока он грузился, — живого лобби не меньше
+	# случайных READY_SHOW..READY_SHOW_MAX.
 	if Net.uses_ws() and not _want_start and _lobby_wait >= 0.0 \
-			and _lobby_wait < READY_SHOW and not _net_started and not _starting:
-		_lobby_wait = READY_SHOW
+			and not _net_started and not _starting:
+		_lobby_wait = maxf(_lobby_wait, _roll_ready_show())
 		_rx_lobby.rpc(_lobby_players(), ceili(_lobby_wait))
+	_replan_bots_on_first_ready()
 	_maybe_start()
+
+
+## Сервер: первый игрок в лобби прогрелся и видит его — с этой секунды идут
+## часы прихода ботов (_lobby_clock), и план растягиваем на весь ОСТАВШИЙСЯ
+## срок: у веб-ворот часы ожидания шли и во время загрузки, план от
+## открытия лобби мог бы не уложиться (боты разом в конце) или сжаться.
+func _replan_bots_on_first_ready() -> void:
+	if _ready_done.size() != 1 or _bot_mask != 0 or _lobby_wait <= 0.0 \
+			or _net_started or _starting:
+		return
+	_plan_bots(_lobby_wait)
 
 
 ## Игрок БЫЛ В ЛОББИ, но догрузился уже после старта. Такое бывает: если
@@ -3157,18 +3555,37 @@ func _rx_shove(victim_slot: int, dir: Vector3, closing: float,
 	if not Net.is_server():
 		return
 	var s: int = Net.slot_of_peer.get(multiplayer.get_remote_sender_id(), -1)
+	_apply_shove_report(s, victim_slot, dir, closing, spin)
+
+
+## Сервер: доклад о таране от игрока слота s по машине victim_slot (см.
+## _rx_shove; отдельно от rpc — ради стенда TestBotShove). Жертва — либо
+## марионетка другого живого игрока (толчок пересылаем владельцу), либо
+## БОТ (22.09, «при столкновении ничего не происходит, противник едет как
+## по рельсам»): бот на сервере — обычное тело, толчок применяем здесь же.
+## Раньше доклад по боту отбрасывался («бот толкается серверным
+## рикошетом»), а серверный рикошет марионетки агрессора о бота НЕ
+## случается: марионетка отстаёт от игрока на путь до сервера
+## (net_wire_lag), бот на экране игрока — на буфер + путь от сервера
+## (net_client_lag); на 20 м/с это 5–9 м зазора между ними на сервере,
+## пока на экране игрок упёрся боту в бампер. Игрок видел только свой
+## отскок. Возвращает, принят ли доклад.
+func _apply_shove_report(s: int, victim_slot: int, dir: Vector3,
+		closing: float, spin: float) -> bool:
 	if s < 0 or s >= _cars.size() \
 			or victim_slot < 0 or victim_slot >= _cars.size() \
 			or victim_slot == s:
-		return
+		return false
 	var victim := _cars[victim_slot]
-	# Жертва должна быть машиной живого игрока (боты толкаются здесь же,
-	# на сервере, обычным рикошетом) и рядом с агрессором ПО НАШЕЙ картине.
+	# Жертва должна быть машиной живого игрока или ботом (на сервере —
+	# LOCAL; свободных слотов в идущем заезде нет: их занимают боты) и
+	# рядом с агрессором ПО НАШЕЙ картине.
 	# Допуск 8 м — щедрый: у агрессора жертва отстаёт на ~0.35 c буфера.
-	if victim.net_role != Car.NetRole.PUPPET:
-		return
+	var to_bot := victim.net_role == Car.NetRole.LOCAL
+	if victim.net_role != Car.NetRole.PUPPET and not to_bot:
+		return false
 	if not (dir.is_finite() and is_finite(closing) and is_finite(spin)):
-		return
+		return false
 	# Агрессор видел жертву В ПРОШЛОМ (на свой буфер ~0.35 c): на встречных
 	# курсах 30+ м/с серверные «сейчас»-позиции расходятся дальше прежнего
 	# допуска, и честный таран молча выбрасывался («тяжело оказывать
@@ -3180,14 +3597,21 @@ func _rx_shove(victim_slot: int, dir: Vector3, closing: float,
 			victim.past_position(Car.aim_lag(attacker.net_shot_lag(),
 					victim)))
 	if minf(d_now, d_past) > 8.0:
-		return
+		return false
 	var now := Time.get_ticks_msec() / 1000.0
 	var key := s * 100 + victim_slot
 	if now - float(_shove_sent.get(key, -1.0e12)) < 0.15:
-		return
+		return false
 	_shove_sent[key] = now
+	if to_bot:
+		# Бот: те же капы, что у пересылки; дедуп с собственным рикошетом
+		# бота о марионетку (_touch_mute / _shove_rx) — внутри.
+		victim.apply_net_shove(attacker, dir, clampf(closing, 0.0, 20.0),
+				clampf(spin, -3.0, 3.0))
+		return true
 	net_forward_fx(victim, Car.NetFx.SHOVE,
 			[s, dir, clampf(closing, 0.0, 20.0), clampf(spin, -3.0, 3.0)])
+	return true
 
 
 ## Клиент просит выстрел. Оружие по-прежнему применяет ТОЛЬКО сервер:
@@ -3204,13 +3628,11 @@ func _rx_press() -> void:
 
 @rpc("any_peer", "call_remote", "reliable")
 func _rx_start_request() -> void:
-	if not Net.is_server():
-		return
-	# Пробел не стартует гонку в обход загрузки: старт только запрашивается,
-	# а состоится, когда все подключённые пришлют hello (_maybe_start).
-	_want_start = true
-	_want_by_timer = false
-	_maybe_start()
+	# Ранний старт из лобби убран (22.09, «убрать пробел»): заезд стартует
+	# только по отсчёту лобби (_tick_lobby → _maybe_start). Сам rpc
+	# оставлен, чтобы старые клиенты (RuStore 1.1.1 шлёт его по пробелу)
+	# не получали ошибку «метод не найден» — просьба молча игнорируется.
+	pass
 
 
 # ── сервер → клиенты ──
@@ -3254,6 +3676,68 @@ func _route_elsewhere(id: int, slot: int) -> bool:
 		if Net.multiplayer.multiplayer_peer != null and Net.guests.has(id):
 			Net.multiplayer.multiplayer_peer.disconnect_peer(id))
 	return true
+
+
+## Сервер: отказать пиру с объяснением и разорвать соединение с задержкой,
+## чтобы сообщение успело дойти (клиент покажет его в лобби: _rx_kick).
+func _kick_peer(id: int, reason: String) -> void:
+	_last_kick = reason
+	_rx_kick.rpc_id(id, reason)
+	get_tree().create_timer(0.5).timeout.connect(func() -> void:
+		if Net.multiplayer.multiplayer_peer != null \
+				and (Net.slot_of_peer.has(id) or Net.guests.has(id)):
+			Net.multiplayer.multiplayer_peer.disconnect_peer(id))
+
+
+## Сервер: сколько секунд заезду ещё ехать (оценка сверху). После первого
+## финиша — остаток FINISH_TIMEOUT; до него — лидеру доехать по его же
+## среднему темпу с GO плюс FINISH_TIMEOUT на отстающих. По этому сроку
+## закрывается вход вышедшему (Rooms.mark_left), если заезд бросили все и
+## снять запись по-настоящему некому (трасса перезапускается сразу).
+func _race_time_left() -> float:
+	var now := Time.get_ticks_msec() / 1000.0
+	if _first_finish_time >= 0.0:
+		return clampf(FINISH_TIMEOUT - (now - _first_finish_time),
+				0.0, FINISH_TIMEOUT)
+	if _track == null or _track._curve == null or _progress.is_empty():
+		return FINISH_TIMEOUT
+	var length := _track._curve.get_baked_length()
+	var leader: float = _progress.max()
+	var elapsed := (Time.get_ticks_msec() - _go_ms) / 1000.0 if _go_ms > 0 else 0.0
+	var speed := 15.0
+	if elapsed > 5.0 and leader > 20.0:
+		speed = clampf(leader / elapsed, 8.0, 40.0)
+	var eta := clampf((LAPS * length - leader) / speed, 0.0, 480.0)
+	return eta + FINISH_TIMEOUT
+
+
+## Сервер, раз в секунду: живой игрок, чья машина за IDLE_KICK с не
+## сдвинулась на IDLE_MOVE м во время заезда, выбрасывается (просьба
+## 22.09: «если игрок неактивен 30 сек — выбрасывает из гонки»). Доехавшие,
+## опоздавшие и ждущие следующего заезда не считаются. Взрыв и автовозврат
+## машину двигают — их за бездействие не примут.
+func _tick_idle_kick() -> void:
+	if not _net_started or _finished:
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	for pid: int in Net.slot_of_peer.keys():
+		var slot: int = Net.slot_of_peer[pid]
+		if slot < 0 or slot >= _cars.size() or not _hello_done.has(slot) \
+				or _late_slots.has(slot) or _finish_order.has(slot):
+			continue
+		var pos: Vector3 = _cars[slot].global_position
+		if not _idle_pos.has(slot) \
+				or pos.distance_to(_idle_pos[slot]) > IDLE_MOVE:
+			_idle_pos[slot] = pos
+			_idle_since[slot] = now
+			continue
+		if now - float(_idle_since[slot]) >= _idle_kick:
+			print("[net] слот %d: %d с без движения — выброшен из заезда"
+					% [slot, int(_idle_kick)])
+			_idle_pos.erase(slot)
+			_idle_since.erase(slot)
+			_kick_peer(pid, "%d секунд без движения — ты исключён из заезда."
+					% int(_idle_kick))
 
 
 ## Битовая маска слотов, за которыми сидит ЖИВОЙ игрок.
@@ -3406,6 +3890,7 @@ func _say_ready() -> void:
 		_ready_sent = false
 		return
 	print("[net] сцена на экране — подтверждаем готовность серверу")
+	ready_at_ms = Time.get_ticks_msec()
 	_rx_ready.rpc_id(1)
 
 
@@ -3575,7 +4060,8 @@ func _rx_lobby(players: int, secs: int) -> void:
 		return
 	var txt := Loc.t("Игроков: %d/%d") % [players, _cars.size()]
 	if secs > 0:
-		txt += "\n" + Loc.t("Ждём игроков: %d…") % secs
+		# Секунды ожидания в лобби не показываем (23.09, просьба игрока).
+		txt += "\n" + Loc.t("Ждём игроков…")
 	elif secs == -2:
 		# Команда друзей ещё съезжается (сервер держит лобби, см.
 		# Main._party_waiting).
@@ -3757,16 +4243,20 @@ func _rx_state(xf: PackedFloat32Array, flags: PackedByteArray,
 			c.show_effect_icon(kind, 0.25)
 
 
-## Клиент: мой рикошет о марионетку ЖИВОГО ИГРОКА (бота двигает сам сервер).
-## Его машину моя половина рикошета не сдвинет — она клиент-авторитетна;
-## докладываем серверу, тот проверит и перешлёт толчок владельцу (28.08:
-## «при столкновении не могу его сдвинуть или поддеть»).
+## Клиент: мой рикошет о марионетку ЖИВОГО ИГРОКА или БОТА. Чужую машину
+## моя половина рикошета не сдвинет — машина игрока клиент-авторитетна, а
+## бот живёт на сервере; докладываем серверу, тот проверит и перешлёт
+## толчок владельцу либо применит к боту (28.08: «при столкновении не могу
+## его сдвинуть или поддеть»; 22.09 — то же про ботов: слот бота не в
+## _slot_taken, и доклад по нему раньше не уходил вовсе).
 func net_report_shove(victim: Car, dir: Vector3, closing: float,
 		spin: float) -> void:
 	if not Net.is_client() or Net.my_slot < 0:
 		return
 	var v := _cars.find(victim)
-	if v < 0 or v >= _slot_taken.size() or not _slot_taken[v]:
+	if v < 0 or v >= _slot_taken.size():
+		return
+	if not _slot_taken[v] and (_bot_mask & (1 << v)) == 0:
 		return
 	# Не чаще, чем раз в 0.15 c на жертву: контакт может мигать серией.
 	var now := Time.get_ticks_msec() / 1000.0
@@ -4003,6 +4493,9 @@ func _rx_slot_taken(slot: int, taken: bool) -> void:
 func _rx_kick(reason: String) -> void:
 	Net.my_slot = -2   # не −1: _say_hello перестаёт повторять hello
 	_kicked = true     # чтобы «связь потеряна» не перетёрло причину
+	# Выброшен посреди заезда (бездействие, 22.09) — руль отнимаем сразу.
+	if _car != null and is_instance_valid(_car):
+		_car.controls_enabled = false
 	if _lobby:
 		_lobby.set_status(Loc.server(reason) + "\n" + Loc.t("Esc — в гараж"))
 		_lobby.show_screen()

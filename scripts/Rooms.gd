@@ -164,3 +164,59 @@ static func spawn(port: int) -> void:
 	var pid := OS.create_process(OS.get_executable_path(), args)
 	_spawn_pid[port] = pid
 	print("[rooms] поднимаем комнату на порту %d (pid %d)" % [port, pid])
+
+
+# ---- Реестр «вышедших из заезда» (22.09) ----
+# Игрок, покинувший ИДУЩИЙ заезд не доехав (Esc, обрыв связи, выброс за
+# бездействие), в новый заезд не садится, пока тот не кончится (просьба
+# игрока 22.09). Запись — файл <реестр>/left/<uid>.json {uid, port, until,
+# ts}: общий для ворот и всех комнат (тот же user://, как визитки), так что
+# отказ даёт уже ворота при hello (Main._rx_hello), до перенаправления.
+# until — unix-секунда, до которой вход закрыт: заезд снимает свои записи
+# по окончании (clear_left из Main._finish_race), а если заезд бросили все
+# и трасса перезапустилась, срок — оценка Main._race_time_left.
+
+static func _left_dir() -> String:
+	return _dir() + "/left"
+
+
+static func mark_left(uid: String, port: int, until: float) -> void:
+	if uid == "":
+		return
+	DirAccess.make_dir_recursive_absolute(_left_dir())
+	var f := FileAccess.open("%s/%s.json" % [_left_dir(), uid], FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify({
+		uid = uid, port = port, until = until, ts = _now(),
+	}))
+
+
+## До какой unix-секунды игроку закрыт вход (0 — не закрыт). Просроченная
+## или битая запись прибирается.
+static func left_until(uid: String) -> float:
+	if uid == "":
+		return 0.0
+	var path := "%s/%s.json" % [_left_dir(), uid]
+	if not FileAccess.file_exists(path):
+		return 0.0
+	var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if typeof(data) != TYPE_DICTIONARY or not data.has("until") \
+			or float(data.until) <= _now():
+		DirAccess.remove_absolute(path)
+		return 0.0
+	return float(data.until)
+
+
+## Заезд на порту port окончен — все его записи снимаются.
+static func clear_left(port: int) -> void:
+	var dir := DirAccess.open(_left_dir())
+	if dir == null:
+		return
+	for f: String in dir.get_files():
+		if not f.ends_with(".json"):
+			continue
+		var data: Variant = JSON.parse_string(
+				FileAccess.get_file_as_string(_left_dir() + "/" + f))
+		if typeof(data) != TYPE_DICTIONARY or int(data.get("port", -1)) == port:
+			dir.remove(f)

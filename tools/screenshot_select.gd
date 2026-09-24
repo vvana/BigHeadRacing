@@ -4,6 +4,7 @@ extends Node3D
 ## слева (carselect_board.png); `--shop` — раскрыто меню кнопки
 ## «МАГАЗИН» (carselect_shop.png); `--bottom` — открытую панель перед
 ## снимком прокрутить донизу (шапка с «ЗАКРЫТЬ» обязана остаться);
+## `--daily` — окно ежедневной награды (carselect_daily.png);
 ## `--offline` (10.09) — прикинуться устройством без сети (Net.debug_offline):
 ## в гараже обязана появиться плашка «СЕТИ НЕТ · ЗАЕЗД С БОТАМИ». Запуск С ОКНОМ:
 ## godot --path . res://tools/ScreenshotSelect.tscn -- <папка_вывода> [--board]
@@ -77,6 +78,15 @@ func _physics_process(_d: float) -> void:
 		Social.outdated_text = SocialServer.outdated_text(Net.PROTOCOL + 1,
 				Net.PROTOCOL)
 		Social.outdated_changed.emit()
+	# `--daily` (23.09) — окно ежедневной награды в середине недели:
+	# три дня забраны, сегодня четвёртый (carselect_daily.png).
+	if _frame == 40 and OS.get_cmdline_user_args().has("--daily"):
+		# Середина недели: три дня забраны, сегодня четвёртый. Окно имени
+		# («имя занято» от сервера друзей) снимку мешает — закрываем.
+		_select.call("_close_name_dialog")
+		GameState._daily_day = 3
+		GameState._daily_last = GameState._day_number() - 1
+		_select.call("_show_daily")
 	if _frame == 40 and stats:
 		GameState.stats = {races = 37, net_races = 21, wins = 9, podiums = 19,
 				place_sum = 118, best_place = 1, kills = 44, rating = 1187,
@@ -103,6 +113,8 @@ func _physics_process(_d: float) -> void:
 			name = "carselect_shop.png"
 		if OS.get_cmdline_user_args().has("--name"):
 			name = "carselect_name.png"
+		if OS.get_cmdline_user_args().has("--daily"):
+			name = "carselect_daily.png"
 		if OS.get_cmdline_user_args().has("--offline"):
 			name = "carselect_offline.png"
 		if OS.get_cmdline_user_args().has("--outdated"):

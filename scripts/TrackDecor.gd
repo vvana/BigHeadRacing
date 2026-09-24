@@ -1051,107 +1051,296 @@ const PLANET_COLORS: Array[Color] = [
 ]
 
 
-## Космос: планеты и астероиды вокруг трассы. ВСЕ планеты — в дальнем
-## фоне, кольцом вокруг контура (жалоба 31.08: «планеты должны быть на
-## заднем фоне, а не перед трассой» — прежние ближние «спутники» в
-## 30-44 м от полотна висели прямо перед камерой). Только визуал, без
-## коллизий.
+## Космос: планеты, шаттл, кометы и астероиды вокруг трассы. Только
+## визуал, без коллизий.
+##
+## ГДЕ ЖИВЁТ ДЕКОР (23.09). Камера — ортографическая изометрия (IsoCamera:
+## окно ~46×26 м вокруг машины, наклон 32°), горизонта и «заднего плана» у
+## неё нет: всё, что попадает в кадр, проецируется на игровое поле. Высокий
+## объект в кадре ложится ПОВЕРХ дороги (так висели ближние «спутники»
+## до 31.08 — жалоба «планеты перед трассой»), а объект в дальнем кольце
+## (150-195 м, как было 31.08-23.09) не виден НИКОГДА — зато его тень
+## доставала до полотна (жалоба 23.09: «что-то отбрасывает тень на
+## дорогу, но в камеру не попадает»: свет под 55° уносит тень на 0.7
+## высоты вбок — тень планеты на 47 м лежала на оси трассы, тень шаттла
+## на 55 м ползла по полотну ~10 % оборота; считано по
+## TrackBuilder.distance_from_axis). Просьбы 23.09: «поместить их за
+## трассу, чтобы хотя бы были видны», затем «не прятать планеты под
+## трассу: пусть попадают в зону видимости камеры, но не перекрывают
+## трассу». Решение — ставить объект по его МЕСТУ НА ЭКРАНЕ: у
+## ортографической камеры объект на высоте H виден там, где лежала бы
+## точка земли, сдвинутая от него на 1.6·H по диагонали к −X−Z
+## («видимый след», см. _apparent). ПЛАНЕТЫ парят над пустотой рядом с
+## полотном (центр на R+6 над уровнем дороги); кандидат подбирается
+## так, чтобы весь видимый диск (13 точек в плоскости экрана, каждая
+## спроецирована на уровень дороги) лежал ВНЕ полотна с запасом — тогда
+## планета никогда не закрывает дорогу и машины — и чтобы из какой-нибудь
+## точки оси в окно камеры попадало не меньше 60 % диска (_iso_visible).
+## Само тело планеты тоже держится в стороне от полотна (прыгнувшая
+## машина не влетит в шар). Дорога планету не заслоняет (та выше).
+## Тонкость: окно камеры — ~46×26 м вокруг машины, полотно с бортами
+## ±12 м, так что пустоты в кадре — полоска ~11 м сбоку от дороги (когда
+## дорога идёт вдоль диагонали экрана) или ~7 м экранных «за» ней (когда
+## поперёк) — планеты потому некрупные (R 4-7, кольчатые мельче), иначе
+## ни в один просвет не влезут.
+## ШАТТЛ летит вдоль трассы вровень с полотном (см. ниже), КОМЕТЫ
+## прошивают мир под шоссе (в просветах — росчерк, под полотном скрыты).
+## Тени у планет, шаттла и комет выключены (_no_shadow): планета над
+## пустотой рядом с дорогой при свете под 55° бросала бы тень на
+## полотно, а тень на звёздном поле не нужна.
 func _build_space() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 20260902
-	# Дальние планеты — по кругу вокруг трассы, высоко.
+	# Планеты — над пустотой, у самой трассы, каждая целиком в стороне от
+	# полотна и на экране (см. заголовок). Пять цветных (одна с кольцами)
+	# и «Сатурн» с двойным кольцом. Кандидат: видимый след на нормали к
+	# оси в 2.5-4 м от борта плюс габарит (кольчатым — внешнее кольцо),
+	# случайные отметка и сторона; само тело — на 1.6·H по диагонали
+	# +X+Z от следа (высота H = R + 6). Берётся, если весь видимый диск
+	# вне полотна, тело не над дорогой, до соседей ≥ 45 м, и из проб —
+	# с наибольшей долей диска в окне (не меньше 60 %, кольчатым 50 %).
+	var planets: Array[Vector3] = []
+	var specs: Array = []   # [радиус, цвет, кольца]
 	for k in 5:
-		var ang := TAU * k / 5.0 + rng.randf_range(-0.25, 0.25)
-		var dist := rng.randf_range(150.0, 195.0)
-		var pos := Vector3(cos(ang) * dist, rng.randf_range(35.0, 90.0),
-				sin(ang) * dist)
-		_spawn_planet(pos, rng.randf_range(12.0, 26.0), PLANET_COLORS[k],
-				k == 1, rng)   # одной из планет — кольца
-	# «Сатурн» — тоже в дальнем фоне, но КРУПНЫЙ и с двойным кольцом
-	# (просьба 31.08: планета с кольцом должна быть на виду). Размер
-	# вместо близости: читается с любой точки трассы, полотно не заслоняет.
-	_spawn_planet(Vector3(cos(0.9) * 165.0, 62.0, sin(0.9) * 165.0),
-			20.0, Color(0.88, 0.74, 0.48), true, rng)
+		specs.append([rng.randf_range(4.0, 7.0) if k != 1 else 3.5,
+				PLANET_COLORS[k], k == 1])
+	specs.append([4.0, Color(0.88, 0.74, 0.48), true])   # «Сатурн»
+	var length := _track._curve.get_baked_length()
+	var cam_b := _iso_basis()
+	for spec: Array in specs:
+		var radius: float = spec[0]
+		var ringed: bool = spec[2]
+		# Габарит по горизонтали: у кольчатых — внешнее кольцо (2.3 R).
+		var reach := radius * (2.3 if ringed else 1.0)
+		var h := radius + 6.0
+		var best := Vector3.INF
+		var best_vis := 0.0
+		# Кольчатым просветов хватает реже (габарит 2.3 R при том, что
+		# на экране кольцо — узкий эллипс): проб больше, порог ниже.
+		for _try in (400 if ringed else 160):
+			var off := rng.randf_range(0.0, length)
+			var q := _track._curve.sample_baked(off)
+			var right := _track.right_at_offset(off)
+			var side := 1.0 if rng.randf() < 0.5 else -1.0
+			var lat := _track.half_width_at_offset(off) + rng.randf_range(2.5, 4.0) \
+					+ reach * rng.randf_range(1.0, 1.9)
+			var foot := Vector3(q.x + right.x * lat * side, 0.0,
+					q.z + right.z * lat * side)
+			# Тело: назад по линии взгляда от следа на высоту h.
+			var pos := foot + cam_b.z * (h / cam_b.z.y)
+			if _track.distance_from_axis(pos) < _track.half_width_at_pos(pos) \
+					+ 2.0 + reach:
+				continue   # тело над дорогой (своей или другого витка)
+			if not _apparent_clear(pos, reach, cam_b):
+				continue   # диск на экране задел бы полотно
+			var crowded := false
+			for pq in planets:
+				if Vector2(pq.x - pos.x, pq.z - pos.z).length() < 45.0:
+					crowded = true
+					break
+			if crowded:
+				continue
+			var vis := _iso_visible(pos, reach)
+			if vis > best_vis:
+				best_vis = vis
+				best = pos
+			if vis >= 0.99:
+				break
+		if best_vis >= (0.5 if ringed else 0.6):
+			_spawn_planet(best, radius, spec[1], ringed, rng)
+			planets.append(best)
+		else:
+			push_warning("TrackDecor: планете R=%.1f%s не нашлось места (лучшее %.2f)"
+					% [radius, " с кольцами" if ringed else "", best_vis])
 	# Кометы прилетают периодически, шаттл кружит по орбите, ускорители
 	# кувыркаются (см. _process).
 	_comet_rng.seed = 20260903
 	set_process(true)
-	# Космический шаттл (Palmov) на медленной орбите вокруг мира — между
-	# трассой и кольцом планет, полный оборот ~2 минуты.
-	_shuttle = _spawn(PDIR + "space_shuttle.fbx",
-			Vector3(cos(_shuttle_ang) * SHUTTLE_R, SHUTTLE_H,
-					sin(_shuttle_ang) * SHUTTLE_R),
-			Vector3.FORWARD, 2.2, false)
-	# Астероиды: серые глыбы, парят невысоко над «пустотой».
+	# Космический шаттл (Palmov) летит ВДОЛЬ шоссе: в SHUTTLE_LAT от оси
+	# снаружи поворотов (на прямых — где был), чуть ниже дороги (дно на
+	# SHUTTLE_Y, верх около уровня полотна — за юбку не цепляет: он в
+	# 5 м от борта), SHUTTLE_SPEED м/с — машины его обгоняют каждый круг
+	# и видят краем кадра. Мелкий (0.5: ~8×4×11 м). Смену стороны в
+	# повороте делает нырком под дорогу. См. _process.
+	_shuttle = _spawn(PDIR + "space_shuttle.fbx", Vector3(0, SHUTTLE_Y, 0),
+			Vector3.FORWARD, 0.5, false)
+	if _shuttle != null:
+		_no_shadow(_shuttle)
+	# Астероиды: серые неровные глыбы (не шары — жалоба 24.09 «астероиды
+	# не должны быть идеально круглыми»), парят невысоко у полотна. Ставятся
+	# так же, как планеты, по месту на экране: до 24.09 они висели на 3-12 м
+	# где попало в 10+ м от оси, и у ортографической камеры высокая глыба
+	# ложилась на экране ПОВЕРХ дороги (след сдвинут на 1.6·H) — игрок
+	# принимал их за планеты, «перекрывающие трассу». Теперь весь видимый
+	# диск глыбы за бортом (_float_spot).
 	var rock_mat := StandardMaterial3D.new()
 	rock_mat.albedo_color = Color(0.42, 0.4, 0.48)
 	rock_mat.roughness = 1.0
-	var half := TrackBuilder.GROUND_SIZE * 0.47
-	var edge := TrackBuilder.TRACK_HALF_WIDTH + TrackBuilder.SHOULDER
-	var placed := 0
-	var attempts := 0
-	while placed < 16 and attempts < 300:
-		attempts += 1
-		var x := rng.randf_range(-half, half)
-		var z := rng.randf_range(-half, half)
-		if _track.distance_from_axis(Vector3(x, 0, z)) < edge + 10.0:
+	var rock_meshes: Array[ArrayMesh] = []
+	for k in 5:
+		rock_meshes.append(_rock_mesh(rng))
+	var rocks: Array[Vector3] = []
+	for k in 16:
+		var sc := Vector3(rng.randf_range(1.0, 2.6),
+				rng.randf_range(0.8, 2.0), rng.randf_range(1.0, 2.6))
+		var reach := ROCK_BULGE * maxf(sc.x, maxf(sc.y, sc.z))
+		var pos := _float_spot(rng, reach, 1.5, 6.0, 1.0, 9.0, cam_b,
+				planets, 18.0, rocks, 9.0)
+		if pos == Vector3.INF:
 			continue
 		var rock := MeshInstance3D.new()
-		var s := SphereMesh.new()
-		s.radius = 1.0
-		s.height = 2.0
-		s.radial_segments = 7   # гранёная «глыба», а не гладкий шар
-		s.rings = 4
-		rock.mesh = s
+		rock.name = "Asteroid"
+		rock.mesh = rock_meshes[k % rock_meshes.size()]
 		rock.material_override = rock_mat
-		rock.scale = Vector3(rng.randf_range(1.2, 3.4),
-				rng.randf_range(1.0, 2.6), rng.randf_range(1.2, 3.4))
+		rock.scale = sc
 		rock.rotation_degrees = Vector3(rng.randf_range(0, 360),
 				rng.randf_range(0, 360), rng.randf_range(0, 360))
-		add_child(rock)
-		rock.position = Vector3(x, rng.randf_range(3.0, 12.0), z)
-		placed += 1
+		add_child(rock, true)
+		rock.position = pos
+		rocks.append(pos)
 
 	# «Космический мусор»: отработанные ракетные ускорители (Palmov)
-	# дрейфуют среди астероидов и медленно кувыркаются (см. _process).
-	var junk_placed := 0
-	var junk_attempts := 0
-	while junk_placed < 5 and junk_attempts < 120:
-		junk_attempts += 1
-		var x := rng.randf_range(-half, half)
-		var z := rng.randf_range(-half, half)
-		if _track.distance_from_axis(Vector3(x, 0, z)) < edge + 14.0:
-			continue
+	# дрейфуют среди астероидов и медленно кувыркаются (см. _process). Место —
+	# как у астероидов; габарит — полудлина модели (кувыркается же).
+	for k in 5:
 		var yaw := Vector3(rng.randf_range(-1, 1), 0, rng.randf_range(-1, 1))
 		if yaw.length_squared() < 0.01:
 			yaw = Vector3.FORWARD
-		var junk := _spawn(PDIR + "rocket_booster.fbx",
-				Vector3(x, rng.randf_range(5.0, 16.0), z), yaw,
+		var junk := _spawn(PDIR + "rocket_booster.fbx", Vector3.ZERO, yaw,
 				rng.randf_range(0.5, 0.8), false)
-		if junk != null:
-			junk.rotation.x = rng.randf_range(-0.5, 0.5)
-			junk.rotation.z = rng.randf_range(-0.4, 0.4)
-			_junk.append({"node": junk, "spin": Vector3(
-					rng.randf_range(-0.1, 0.1), rng.randf_range(-0.15, 0.15),
-					rng.randf_range(-0.1, 0.1))})
-		junk_placed += 1
+		if junk == null:
+			continue
+		var reach := _node_reach(junk)
+		var pos := _float_spot(rng, reach, 2.0, 7.0, 1.5, 9.0, cam_b,
+				planets, 18.0, rocks, 10.0)
+		if pos == Vector3.INF:
+			junk.queue_free()
+			continue
+		junk.position = pos
+		rocks.append(pos)
+		junk.rotation.x = rng.randf_range(-0.5, 0.5)
+		junk.rotation.z = rng.randf_range(-0.4, 0.4)
+		_junk.append({"node": junk, "spin": Vector3(
+				rng.randf_range(-0.1, 0.1), rng.randf_range(-0.15, 0.15),
+				rng.randf_range(-0.1, 0.1))})
 
 
-## ---- Кометы (только космос): далёкий белый росчерк, периодически
-## проносящийся по небу СБОКУ от мира (жалоба 31.08: «кометы должны быть
-## вдалеке в виде пролетающей белой полосы» — раньше летели прямо над
-## трассой крупным болидом).
+## Во сколько раз выступ глыбы (_rock_mesh) дальше единичной сферы.
+const ROCK_BULGE := 1.3
+
+
+## Место для висящего у полотна декора с габаритом reach (радиус описанного
+## шара): видимый след — на нормали к оси в lat_lo..lat_hi м от борта плюс
+## габарит, высота h_lo..h_hi над дорогой, тело — назад по линии взгляда.
+## Годится, если тело не над полотном, видимый диск целиком за бортом
+## (_apparent_clear) и до планет не ближе planet_gap, до прочего — gap
+## (по горизонтали). Не нашлось за 80 проб — Vector3.INF.
+func _float_spot(rng: RandomNumberGenerator, reach: float, h_lo: float,
+		h_hi: float, lat_lo: float, lat_hi: float, cam_b: Basis,
+		planets: Array[Vector3], planet_gap: float, taken: Array[Vector3],
+		gap: float) -> Vector3:
+	var length := _track._curve.get_baked_length()
+	for _try in 80:
+		var off := rng.randf_range(0.0, length)
+		var q := _track._curve.sample_baked(off)
+		var right := _track.right_at_offset(off)
+		var side := 1.0 if rng.randf() < 0.5 else -1.0
+		var lat := _track.half_width_at_offset(off) + rng.randf_range(lat_lo, lat_hi) 				+ reach
+		var foot := Vector3(q.x + right.x * lat * side, 0.0,
+				q.z + right.z * lat * side)
+		var h := rng.randf_range(h_lo, h_hi) + reach
+		var pos := foot + cam_b.z * (h / cam_b.z.y)
+		if _track.distance_from_axis(pos) < _track.half_width_at_pos(pos) 				+ 2.0 + reach:
+			continue
+		if not _apparent_clear(pos, reach, cam_b):
+			continue
+		var ok := true
+		for pq in planets:
+			if Vector2(pq.x - pos.x, pq.z - pos.z).length() < planet_gap:
+				ok = false
+				break
+		for pq in taken:
+			if not ok or Vector2(pq.x - pos.x, pq.z - pos.z).length() < gap:
+				ok = false
+				break
+		if ok:
+			return pos
+	return Vector3.INF
+
+
+## Неровная гранёная глыба (радиус ~1, выступы до ROCK_BULGE): сфера,
+## вершины которой сдвинуты по шуму от направления (швы и полюса сферы —
+## одна точка, одно направление: трещин нет) и сплюснуты парой «сколов»;
+## нормали по граням — плоская заливка, как у камня.
+static func _rock_mesh(rng: RandomNumberGenerator) -> ArrayMesh:
+	var noise := FastNoiseLite.new()
+	noise.seed = rng.randi()
+	noise.frequency = 0.9
+	noise.fractal_octaves = 2
+	var cuts: Array[Vector3] = []
+	for k in 2:
+		cuts.append(Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1),
+				rng.randf_range(-1, 1)).normalized())
+	var src := SphereMesh.new()
+	src.radius = 1.0
+	src.height = 2.0
+	src.radial_segments = 12
+	src.rings = 7
+	var arrays := src.get_mesh_arrays()
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	for i in verts.size():
+		var d := verts[i].normalized()
+		var r := 1.0 + 0.3 * noise.get_noise_3dv(d * 1.7)
+		# Скол: всё, что дальше 0.6 по направлению скола, срезано.
+		for c in cuts:
+			var along := d.dot(c) * r
+			if along > 0.62:
+				r *= 0.62 / along
+		verts[i] = d * minf(r, ROCK_BULGE)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var idx: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+	for i in idx:
+		st.add_vertex(verts[i])
+	st.generate_normals()   # вершины не общие — нормали по граням
+	return st.commit()
+
+
+## Радиус шара с центром в начале узла, в который помещается всё его
+## содержимое (по габаритам сеток, с текущими масштабом и поворотом).
+static func _node_reach(root: Node3D) -> float:
+	var reach := 0.0
+	var inv := root.global_transform.affine_inverse()
+	for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
+		if mi.mesh == null:
+			continue
+		var ab := mi.mesh.get_aabb()
+		for k in 8:
+			var c := inv * (mi.global_transform * ab.get_endpoint(k))
+			reach = maxf(reach, (c * root.scale).length())
+	return reach
+
+
+## ---- Кометы (только космос): белый росчерк, периодически проносящийся
+## ПОД шоссе через весь мир (23.09; до того — по небу сбоку от мира на
+## 260 м, где ортографическая камера его не видела ни разу, см.
+## _build_space). Летит ровно, на 7-10 м ниже дороги (голова под юбкой
+## борта, глубже — на экране уползает под дорогу): в просветах между
+## витками и за бортом мелькает белой полосой, под полотном скрыт.
 const COMET_MAX := 3          # больше одновременно не держим
 const COMET_FIRST := 1.5      # первая — почти сразу после старта, с
-const COMET_DIST := 260.0     # хорда пролёта: ближе к центру мира не заходит
+const COMET_CHORD := 90.0     # хорда пролёта не дальше этого от центра мира
 const COMET_RUN := 220.0      # плечо пролёта в каждую сторону от хорды, м
-const SHUTTLE_R := 150.0      # радиус орбиты шаттла (планеты — на 150-195)
-const SHUTTLE_H := 55.0       # высота орбиты, м
+const SHUTTLE_LAT := 21.0     # шаттл: смещение от оси трассы, м
+const SHUTTLE_Y := -3.0       # ...высота дна (чуть ниже полотна)
+const SHUTTLE_SPEED := 14.0   # ...скорость вдоль трассы, м/с
 var _comets: Array[Dictionary] = []
 var _comet_timer := COMET_FIRST
 var _comet_rng := RandomNumberGenerator.new()
 var _shuttle: Node3D
-var _shuttle_ang := 2.4       # стартовая точка орбиты — в стороне от старта
+var _shuttle_off := 60.0      # отметка шаттла на оси (стартует впереди)
+var _shuttle_lat := SHUTTLE_LAT   # текущее боковое смещение (знак — сторона)
+var _shuttle_side := 1.0
 var _junk: Array[Dictionary] = []   # кувыркающиеся ускорители
 
 
@@ -1171,39 +1360,56 @@ func _process(delta: float) -> void:
 			node.queue_free()
 			_comets.remove_at(i)
 		i -= 1
-	# Шаттл: круговая орбита с лёгкой «волной» по высоте, нос по ходу.
+	# Шаттл: вдоль оси трассы со сдвигом вбок, снаружи поворотов
+	# (сторона по знаку кривизны: cross(t0, t1).y > 0 — поворот налево,
+	# снаружи — справа), на прямых сторона не меняется; смещение
+	# перетекает плавно (~3 с) — при смене стороны он ныряет под дорогу.
 	if _shuttle != null:
-		_shuttle_ang += delta * (TAU / 120.0)
-		var pos := Vector3(cos(_shuttle_ang) * SHUTTLE_R,
-				SHUTTLE_H + sin(_shuttle_ang * 3.0) * 4.0,
-				sin(_shuttle_ang) * SHUTTLE_R)
-		var ahead := Vector3(cos(_shuttle_ang + 0.02) * SHUTTLE_R,
-				SHUTTLE_H + sin((_shuttle_ang + 0.02) * 3.0) * 4.0,
-				sin(_shuttle_ang + 0.02) * SHUTTLE_R)
+		var curve := _track._curve
+		var length := curve.get_baked_length()
+		_shuttle_off = fposmod(_shuttle_off + delta * SHUTTLE_SPEED, length)
+		var q := curve.sample_baked(_shuttle_off)
+		var q0 := curve.sample_baked(fposmod(_shuttle_off - 4.0, length))
+		var q2 := curve.sample_baked(fposmod(_shuttle_off + 4.0, length))
+		var t0 := (q - q0); t0.y = 0.0; t0 = t0.normalized()
+		var t1 := (q2 - q); t1.y = 0.0; t1 = t1.normalized()
+		var bend := t0.cross(t1).y
+		if absf(bend) > 0.03:
+			_shuttle_side = -signf(bend)
+		_shuttle_lat = move_toward(_shuttle_lat, SHUTTLE_LAT * _shuttle_side,
+				delta * 14.0)
+		var tng := (t0 + t1).normalized()
+		var left := Vector3.UP.cross(tng)
+		var pos := q + left * _shuttle_lat
+		pos.y = SHUTTLE_Y + sin(_shuttle_off * 0.12) * 0.6
 		_shuttle.position = pos
-		_shuttle.look_at(ahead)
+		_shuttle.rotation.y = atan2(tng.x, tng.z)
+		# Крен в сторону перетекания, как у самолёта.
+		_shuttle.rotation.z = clampf((SHUTTLE_LAT * _shuttle_side - _shuttle_lat)
+				* 0.02, -0.5, 0.5)
 	# Ускорители медленно кувыркаются.
 	for j in _junk:
 		(j["node"] as Node3D).rotation += (j["spin"] as Vector3) * delta
 
 
-## Комета проносится ВДАЛИ: по прямой, чья ближайшая к центру мира точка —
-## на COMET_DIST (за планетным кольцом, к трассе не приближается). Курс —
-## касательная к этому кругу, чуть со снижением: «падающая звезда».
+## Комета проносится ПОД шоссе через мир: по прямой, чья ближайшая к
+## центру мира точка — не дальше COMET_CHORD. Курс — касательная к этому
+## кругу, без снижения (иначе за 440 м пролёта ушла бы сквозь звёздное
+## поле на -SPACE_VOID_DROP).
 func _spawn_comet() -> void:
 	var ang := _comet_rng.randf_range(0.0, TAU)
-	var base := Vector3(cos(ang) * COMET_DIST,
-			_comet_rng.randf_range(70.0, 130.0), sin(ang) * COMET_DIST)
+	var chord := _comet_rng.randf_range(0.0, COMET_CHORD)
+	var base := Vector3(cos(ang) * chord,
+			_comet_rng.randf_range(-10.0, -7.0), sin(ang) * chord)
 	# Касательное направление (по или против часовой — случайно).
 	var dir := Vector3(-sin(ang), 0.0, cos(ang))
 	if _comet_rng.randf() < 0.5:
 		dir = -dir
-	dir.y = _comet_rng.randf_range(-0.25, -0.05)   # лёгкое снижение
-	dir = dir.normalized()
 	var start := base - dir * COMET_RUN
 	var vel := dir * _comet_rng.randf_range(70.0, 110.0)
 	var node := _make_comet()
 	node.name = "Comet"
+	_no_shadow(node)
 	add_child(node)
 	node.position = start
 	node.look_at(start + vel)   # -Z по ходу, хвост построен в +Z
@@ -1215,15 +1421,15 @@ func _spawn_comet() -> void:
 
 
 ## Комета: БЕЛАЯ ПОЛОСА — маленькая яркая голова и длинный тонкий
-## хвост-росчерк назад (+Z), сужающийся в точку. С дистанции ~260 м
-## читается именно как пролетающая белая чёрточка. UNSHADED — светится
-## в темноте.
+## хвост-росчерк назад (+Z), сужающийся в точку. Пролетает под шоссе в
+## окне камеры (~46 м) — росчерк почти во весь экран. UNSHADED —
+## светится в темноте.
 func _make_comet() -> Node3D:
 	var root := Node3D.new()
 	var head := MeshInstance3D.new()
 	var s := SphereMesh.new()
-	s.radius = 1.6
-	s.height = 3.2
+	s.radius = 1.2
+	s.height = 2.4
 	head.mesh = s
 	var hm := StandardMaterial3D.new()
 	hm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -1236,9 +1442,9 @@ func _make_comet() -> Node3D:
 
 	var tail := MeshInstance3D.new()
 	var cone := CylinderMesh.new()
-	cone.top_radius = 1.3    # тонкий у головы (с 260+ м — нитка)...
+	cone.top_radius = 1.0    # тонкий у головы...
 	cone.bottom_radius = 0.0 # ...в точку позади — росчерк движения
-	cone.height = 60.0       # длинный: полоса, а не болид
+	cone.height = 40.0       # длинный: полоса, а не болид
 	tail.mesh = cone
 	var tm := StandardMaterial3D.new()
 	tm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -1250,9 +1456,15 @@ func _make_comet() -> Node3D:
 	# Поворот -90° вокруг X кладёт ось цилиндра (+Y) на -Z: широкий конец
 	# к голове, остриё назад по +Z.
 	tail.rotation_degrees.x = -90.0
-	tail.position.z = 30.0
+	tail.position.z = 20.0
 	root.add_child(tail)
 	return root
+
+
+## Кольца на экране: отношение малой оси эллипса к большой (0 — ребром,
+## 1 — плашмя кругом) и поворот эллипса от горизонтали экрана, градусы.
+const RING_OPEN := 0.25
+const RING_ROLL := 22.0
 
 
 ## Планета: светящийся изнутри шар (иначе в темноте не видна), по желанию —
@@ -1277,13 +1489,23 @@ func _spawn_planet(pos: Vector3, radius: float, col: Color, ringed: bool,
 	if ringed:
 		# Двойное кольцо «как у Сатурна»: широкая яркая полоса + узкая
 		# потемнее с просветом (одиночный тор читался как обруч, а не диск).
+		# Наклон — от ЭКРАНА, а не от мира (жалоба 24.09 «кольца не должны
+		# быть параллельны камере»: горизонтальное кольцо под камерой с
+		# наклоном 32° плюс случайный крен планеты смотрело на игрока почти
+		# плашмя, кругом). Теперь на экране кольцо — узкий эллипс (сжатие
+		# RING_OPEN), повёрнутый на RING_ROLL° вбок, как на снимках Сатурна.
+		var b := _iso_basis()
+		var tilt := asin(RING_OPEN)
+		var roll := deg_to_rad(rng.randf_range(RING_ROLL - 8.0, RING_ROLL + 8.0)) 				* (1.0 if rng.randf() < 0.5 else -1.0)
+		var up := (b.y * cos(tilt) + b.z * sin(tilt)).rotated(b.z, roll)
+		var ax := b.x.rotated(b.z, roll)
+		var ring_basis := Basis(ax, up, ax.cross(up)).orthonormalized()
 		for cfg: Array in [[1.25, 1.85, 0.45], [1.95, 2.3, 0.15]]:
 			var ring := MeshInstance3D.new()
 			var torus := TorusMesh.new()
 			torus.inner_radius = radius * float(cfg[0])
 			torus.outer_radius = radius * float(cfg[1])
 			ring.mesh = torus
-			ring.scale.y = 0.03   # плоский диск
 			var rcol := col.lightened(float(cfg[2]))
 			var rmat := StandardMaterial3D.new()
 			rmat.albedo_color = rcol
@@ -1292,10 +1514,101 @@ func _spawn_planet(pos: Vector3, radius: float, col: Color, ringed: bool,
 			ring.material_override = rmat
 			ring.name = "PlanetRing"
 			planet.add_child(ring)
-			ring.rotation_degrees = Vector3(20, 0, 10)
+			# Плоский диск (0.03 по оси кольца) в экранном наклоне.
+			ring.global_basis = ring_basis * Basis.from_scale(Vector3(1.0, 0.03, 1.0))
+	_no_shadow(planet)   # фон, см. _build_space
 
 
 ## ---------- утилиты ----------
+
+## Базис ИГРОВОЙ камеры (IsoCamera: наклон и поворот — из её умолчаний):
+## x — вправо по экрану, y — вверх по экрану, z — от сцены к камере.
+static func _iso_basis() -> Basis:
+	var cam := IsoCamera.new()
+	var b := Basis.from_euler(Vector3(deg_to_rad(cam.pitch_deg),
+			deg_to_rad(cam.yaw_deg), 0.0))
+	cam.free()
+	return b
+
+
+## 13 точек диска (шар с центром p, радиус r, как он виден на экране):
+## центр и окружность в плоскости экрана.
+static func _disc_samples(p: Vector3, r: float, b: Basis) -> Array[Vector3]:
+	var samples: Array[Vector3] = [p]
+	for k in 12:
+		var a := TAU * k / 12.0
+		samples.append(p + (b.x * cos(a) + b.y * sin(a)) * r)
+	return samples
+
+
+## «Видимый след» точки: где на уровне дороги (y = 0) она лежит для
+## ортографической камеры — точка пересечения её линии взгляда с
+## плоскостью полотна.
+static func _apparent(p: Vector3, b: Basis) -> Vector3:
+	return p - b.z * (p.y / b.z.y)
+
+
+## Не задевает ли видимый диск шара (p, r) полотно ни в одной точке —
+## след каждой из 13 точек диска дальше борта с запасом 1.5 м. Так
+## планета над пустотой никогда не ложится на экране поверх дороги.
+func _apparent_clear(p: Vector3, r: float, b: Basis) -> bool:
+	for sp in _disc_samples(p, r, b):
+		var g := _apparent(sp, b)
+		if _track.distance_from_axis(g) < _track.half_width_at_pos(g) + 1.5:
+			return false
+	return true
+
+
+## Какая наибольшая доля диска (шар с центром p и радиусом r, как он
+## виден на экране) попадает в кадр ИГРОВОЙ камеры, стоящей над
+## какой-нибудь точкой оси трассы (ширину окна считаем по узкому экрану,
+## 1.6 высоты). Диск — 13 точек в плоскости экрана; точка не считается,
+## если линия взгляда от неё к камере упирается в дорогу (для точки под
+## дорогой линия выходит на уровень полотна в стороне +X+Z) или если она
+## вне окна. Заслонение от положения камеры не зависит — считается один
+## раз; проверяются точки оси в ±70 м от ближайшей к p (дальше окно не
+## достаёт).
+func _iso_visible(p: Vector3, r: float) -> float:
+	var b := _iso_basis()
+	var cam := IsoCamera.new()
+	var half_h := cam.ortho_size * 0.5
+	cam.free()
+	var half_w := half_h * 1.6
+	var samples := _disc_samples(p, r, b)
+	var open: Array[Vector3] = []   # точки, не заслонённые дорогой
+	for sp in samples:
+		if sp.y < 0.0:
+			var g := _apparent(sp, b)
+			if _track.distance_from_axis(g) < _track.half_width_at_pos(g) + 1.0:
+				continue
+		open.append(sp)
+	if open.is_empty():
+		return 0.0
+	var curve := _track._curve
+	var length := curve.get_baked_length()
+	var near := curve.get_closest_offset(p)
+	var best := 0
+	var off := -70.0
+	while off <= 70.0:
+		var q := curve.sample_baked(fposmod(near + off, length))
+		var n := 0
+		for sp in open:
+			var d := sp - q
+			if absf(d.dot(b.x)) < half_w and absf(d.dot(b.y)) < half_h:
+				n += 1
+		best = maxi(best, n)
+		off += 2.0
+	return float(best) / float(samples.size())
+
+
+## Выключает тени у узла и всех его MeshInstance3D-потомков (фоновый
+## декор космоса, см. _build_space).
+static func _no_shadow(root: Node3D) -> void:
+	if root is GeometryInstance3D:
+		(root as GeometryInstance3D).cast_shadow = 				GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
 
 func _axis(t: float) -> Vector3:
 	var length: float = _track._curve.get_baked_length()

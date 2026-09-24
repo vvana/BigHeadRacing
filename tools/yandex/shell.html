@@ -36,8 +36,9 @@ const GODOT_CONFIG = $GODOT_CONFIG;
 const GODOT_THREADS_ENABLED = $GODOT_THREADS_ENABLED;
 const engine = new Engine(GODOT_CONFIG);
 
-// Мост с игрой (см. scripts/GameState.gd platform_name, scripts/CarSelect.gd AD_JS_SHOW):
-//   window.ysdk           — объект SDK Яндекс Игр (реклама: ysdk.adv.showRewardedVideo)
+// Мост с игрой (см. scripts/GameState.gd platform_name, scripts/Ads.gd JS_REWARDED):
+//   window.ysdk           — объект SDK Яндекс Игр (реклама: только ролик с вознаграждением
+//                           ysdk.adv.showRewardedVideo; игра пишет состояние показа в window.bhrAd)
 //   window.bhrPlayerName  — имя авторизованного игрока, если он разрешил личные данные
 //   window.bhrLang        — язык интерфейса от площадки (ysdk.environment.i18n.lang,
 //                           требование 2.14); '' — SDK нет, игра берёт язык по умолчанию

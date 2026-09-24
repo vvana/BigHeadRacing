@@ -47,6 +47,15 @@ var _speed := 55.0
 var _life := 2.2
 var _first_check := true   # первый кадр: отрезок тянется от носа стрелявшего
 var _spent := false        # уже погас (_boom): касания дальше не считаются
+## Путь снаряда по кадрам физики (сервер): [{pos, live}] — по нему
+## попадание СНАРЯДА БОТА в ЖИВОГО ИГРОКА судится по его экрану, с отмоткой
+## на его пинг (22.09, см. _puppet_back и _physics_process). live=false —
+## записи после гашения: копия у клиента уже погасла, там не бьём.
+var _hist: Array = []
+const HIST_MAX := 45     # 0.75 с: пинг клампится 0.5 с + запас
+## Погасший снаряд (о стену, бота) доживает невидимым AFTER_LIFE, дочитывая
+## отмотанные кадры для игроков с пингом (их копия ещё летит).
+const AFTER_LIFE := 0.55
 
 
 func _ready() -> void:
@@ -150,10 +159,46 @@ func _physics_process(delta: float) -> void:
 	if _first_check:
 		_first_check = false
 		prev -= direction * 2.3
-	if homing:
-		_home(delta)
-	global_position += direction * _speed * delta
-	_hug_ground()
+		_hist.append({"pos": prev, "live": true})
+	if not _spent:
+		if homing:
+			_home(delta)
+		global_position += direction * _speed * delta
+		_hug_ground()
+	_hist.append({"pos": global_position, "live": not _spent})
+	if _hist.size() > HIST_MAX:
+		_hist.pop_front()
+	# СНАРЯД БОТА ПО ЖИВОМУ ИГРОКУ (22.09, «на экране ракета ещё летит, а
+	# взрыв уже есть»): копия снаряда у него появляется по rpc на полпути
+	# позже сервера, сам он на сервере — марионетка на полпути позади,
+	# итого на его экране снаряд на ПИНГ позади серверного (55 м/с × 0.2 с
+	# = 11 м). Тело марионетки снаряд здесь НЕ бьёт (_on_body_entered),
+	# а судит по отрезку своего пути на её пинг назад против её нынешнего
+	# места — как волна глушилки (ScrambleWave._touches_body_past). Гасим
+	# в ОТМОТАННОЙ точке: там сейчас и копия на экране жертвы.
+	if lag <= 0.0 and not inert:
+		for node in get_tree().get_nodes_in_group("cars"):
+			var car := node as Car
+			var back := _puppet_back(car)
+			if back <= 0 or car == shooter or not car.alive or car.is_ghost():
+				continue
+			var i := _hist.size() - 1 - back
+			if i < 1 or not bool(_hist[i]["live"]):
+				continue
+			var a: Vector3 = _hist[i - 1]["pos"]
+			var b: Vector3 = _hist[i]["pos"]
+			var f := car.true_forward()
+			for k: float in [0.0, 1.1, -1.1]:
+				if _segment_gap(a, b, car.global_position + f * k) < HIT_R * hit_mult:
+					_hit_car(car)
+					global_position = b
+					_boom()
+					return
+	if _spent:
+		_life -= delta
+		if _life <= -AFTER_LIFE:
+			queue_free()
+		return
 	# Попадание по ОТМОТАННЫМ положениям — для снаряда живого игрока.
 	# Проверяем не точку, а отрезок за кадр: на 55 м/с снаряд проходит
 	# 0.92 м, и проверка «где он сейчас» пропускала бы задетые вскользь.
@@ -180,7 +225,11 @@ func _physics_process(delta: float) -> void:
 					return
 	_life -= delta
 	if _life <= 0.0:
-		queue_free()
+		# Срок вышел. На сервере — дожить невидимым (копии с пингом ещё летят).
+		if inert or not Net.is_server():
+			queue_free()
+		else:
+			_retire()
 
 
 ## САМОНАВЕДЕНИЕ (ракета II, спецификация игрока 04.09: «если пролетает
@@ -278,6 +327,10 @@ func _on_body_entered(body: Node3D) -> void:
 	# упёрлась на экране сервера (жалоба 07.09). Двойного удара нет: после
 	# _boom снаряд «истрачен» (_spent) и больше никого не трогает.
 	if car != null:
+		# Марионетку живого игрока снаряд бота судит по её экрану, с
+		# отмоткой (см. _physics_process): тело — не попадание, летим дальше.
+		if lag <= 0.0 and _puppet_back(car) > 0:
+			return
 		if car.alive and not car.is_ghost():
 			_hit_car(car)
 		elif lag > 0.0:
@@ -308,6 +361,15 @@ func _hit_car(car: Car) -> void:
 		car.destroy()
 
 
+## На сколько кадров отматывать путь снаряда для этой машины: марионетка
+## живого игрока на сервере — её пинг (2 × net_wire_lag − Car.LEAD);
+## боты, оффлайн, клиент — 0 (по текущему, как раньше).
+func _puppet_back(car: Car) -> int:
+	if car == null or not Net.is_server() or car.net_role != Car.NetRole.PUPPET:
+		return 0
+	return int(round(maxf(0.0, 2.0 * car.net_wire_lag - Car.LEAD) * 60.0))
+
+
 func _boom() -> void:
 	if _spent:
 		return
@@ -324,4 +386,23 @@ func _boom() -> void:
 		FxKit.snow_burst(get_parent(), global_position)
 	else:
 		SparksFx.spawn(get_parent(), global_position, 6.0)
-	queue_free()
+	# Сервер: узел доживает невидимым (AFTER_LIFE, см. _physics_process) —
+	# дочитать отмотанные кадры для игроков с пингом. Копия и оффлайн —
+	# сразу прочь, как раньше.
+	if inert or not Net.is_server():
+		queue_free()
+		return
+	_retire()
+
+
+## Снаряд истрачен, но узел живёт ещё AFTER_LIFE невидимым и без тела:
+## сервер дочитывает отмотанные кадры пути для марионеток с пингом.
+func _retire() -> void:
+	_spent = true
+	_life = 0.0
+	set_deferred("monitoring", false)
+	for c in get_children():
+		if c is MeshInstance3D:
+			c.visible = false
+		elif c is CPUParticles3D:
+			c.emitting = false

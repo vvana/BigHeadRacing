@@ -25,3 +25,18 @@
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Android-шаблон сборки Godot (android/build): свои правки (gradle, манифест,
+# res) коммитятся, а тяжёлое генерируемое — нет: godot-lib*.aar по ~90 МиБ
+# ставит «Проект → Установить шаблон сборки Android», assets/ заполняет экспорт.
+/android/build/libs/
+/android/build/assets/
+/android/build/build/
+/android/build/.gradle/
+
+# Бэкапы файлов и свалка скриншотов в корне
+*.bak_*
+/image*.png
+/image*.jpeg
+/photo_*.jpg
+/tools/_loc_missing.txt

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bhr_measurenetstart"]
+
+[ext_resource type="Script" path="res://tools/measure_net_start.gd" id="1_mns"]
+
+[node name="MeasureNetStart" type="Node"]
+script = ExtResource("1_mns")

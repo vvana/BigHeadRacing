@@ -62,6 +62,16 @@ var _rings: Array[MeshInstance3D] = []
 var _ring_mats: Array[StandardMaterial3D] = []
 var _track_off := -1.0   # своя отметка на оси трассы (непрерывность)
 var _stunned := {}       # id уже оглушённых машин: каждую волна берёт раз
+## Путь волны по кадрам физики (сервер): [{pos, live}] — по нему попадание в
+## ЖИВОГО ИГРОКА судится с отмоткой на его пинг (см. _physics_process).
+## Первая запись — «хвост» первого кадра (нос стрелявшего). live=false —
+## записи после смерти волны: копия у клиента уже погасла, там не бьём.
+var _hist: Array = []
+const HIST_MAX := 45     # 0.75 с: пинг клампится 0.5 с + запас
+## Сколько волна доживает НЕВИДИМОЙ после срока, чтобы дочитать отмотанные
+## кадры для игроков с пингом (иначе последние 0.5 с пути их не задевали бы).
+const AFTER_LIFE := 0.55
+var _dead := false
 
 
 func _ready() -> void:
@@ -133,9 +143,14 @@ func _physics_process(delta: float) -> void:
 	if _first_check:
 		_first_check = false
 		prev -= direction * 2.3
-	global_position += direction * SPEED * speed_mult * delta
-	_clamp_inside_walls()
-	_hug_ground()
+		_hist.append({"pos": prev, "live": true})
+	if not _dead:
+		global_position += direction * SPEED * speed_mult * delta
+		_clamp_inside_walls()
+		_hug_ground()
+	_hist.append({"pos": global_position, "live": not _dead})
+	if _hist.size() > HIST_MAX:
+		_hist.pop_front()
 	# Машины считаем ВРУЧНУЮ отрезком за кадр и радиусом колец HIT_R —
 	# и с отмоткой (живой игрок, протокол 13), и без (боты, оффлайн).
 	# Кузов — ПРЯМОУГОЛЬНИК (BODY_HALF_L × BODY_HALF_W в осях машины):
@@ -161,20 +176,37 @@ func _physics_process(delta: float) -> void:
 					or not car.alive or car.is_ghost() \
 					or _stunned.has(car.get_instance_id()):
 				continue
-			# Цель — и ТЕКУЩАЯ (что жертва видит у себя), и ОТМОТАННАЯ (что
-			# видел стрелявший): коснулось на любом из экранов — оглушает (09.09).
+			# Цель — и по ЭКРАНУ ЖЕРТВЫ, и по ОТМОТАННОЙ картине стрелявшего:
+			# коснулось на любом из экранов — оглушает (09.09).
+			# Экран жертвы — живого игрока (22.09, «оглушение не зацепило
+			# меня, но сработало»): копия волны у него появляется по rpc на
+			# полпути позже сервера, а сам он на сервере — марионетка,
+			# отставшая на полпути до сервера. Итого на его экране волна на
+			# ПИНГ позади серверной: при 25 м/с и 0.2 с — 5 м. Раньше сервер
+			# бил по текущему положению, и волна, на экране не дошедшая до
+			# машины, глушила. Теперь для марионетки отрезок волны берётся из
+			# истории на пинг назад (минус упреждение марионетки LEAD); ботов
+			# и оффлайн — как раньше, по текущему.
 			var fwd := car.true_forward()
-			var hit := _touches_body(prev, global_position, car.global_position, fwd)
-			if not hit and lag > 0.0:
+			var hit := _touches_body_past(car, prev, fwd)
+			if not hit and lag > 0.0 and not _dead:
 				hit = _touches_body(prev, global_position,
 						car.past_position(Car.aim_lag(lag, car)), fwd)
 			if hit:
 				_stunned[car.get_instance_id()] = true
 				_hit_car(car)
 	_life -= delta
-	if _life <= 0.0:
-		# Срок вышел — волна тает там, где её застало время.
+	if _life <= 0.0 and not _dead:
+		# Срок вышел — волна тает там, где её застало время. Узел живёт
+		# ещё AFTER_LIFE невидимым: дочитывает отмотанные кадры для игроков
+		# с пингом (копия у них ещё летит).
+		_dead = true
 		_fade()
+		for r in _rings:
+			r.visible = false
+		if inert:
+			queue_free()
+	if _life <= -AFTER_LIFE:
 		queue_free()
 
 
@@ -250,6 +282,26 @@ func _hug_ground() -> void:
 ## пробуется с шагом 0.25 м, каждая проба переводится в оси кузова и
 ## меряется до ближайшей точки прямоугольника BODY_HALF_L × BODY_HALF_W.
 ## Попадание — дистанция меньше радиуса колец (с запасом HIT_GRACE).
+## Отрезок волны ЗА ЭТОТ КАДР против машины — по её экрану: для марионетки
+## живого игрока на сервере отрезок берётся из _hist на её пинг назад
+## (2 × net_wire_lag − Car.LEAD), для остальных — текущий (prev → сейчас).
+## Истории на такую глубину ещё нет (волна моложе пинга) или кадр уже
+## после смерти волны — на экране жертвы волны там нет, не бьём.
+func _touches_body_past(car: Car, prev: Vector3, fwd: Vector3) -> bool:
+	var back := 0
+	if Net.is_server() and car.net_role == Car.NetRole.PUPPET:
+		back = int(round(maxf(0.0, 2.0 * car.net_wire_lag - Car.LEAD) * 60.0))
+	if back <= 0:
+		if _dead:
+			return false
+		return _touches_body(prev, global_position, car.global_position, fwd)
+	var i := _hist.size() - 1 - back
+	if i < 1 or not bool(_hist[i]["live"]):
+		return false
+	return _touches_body(_hist[i - 1]["pos"], _hist[i]["pos"],
+			car.global_position, fwd)
+
+
 func _touches_body(a: Vector3, b: Vector3, center: Vector3,
 		fwd: Vector3) -> bool:
 	var right := Vector3(-fwd.z, 0.0, fwd.x)

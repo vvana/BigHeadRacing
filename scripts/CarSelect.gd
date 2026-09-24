@@ -47,6 +47,15 @@ const BOARD_H := 594
 ## (снимок 03.09). Держим ряд 74 px — с запасом под метрики любой машины.
 const ROW_H := 74
 const ROW_Y := -12 - ROW_H
+## Телефон (22.09, «кнопки в гараже неудобно нажимать»): холст 1280×720 на
+## экране в 6 дюймов даёт 74 px ≈ 7 мм, а пальцу нужно 9–10 мм. Нижний ряд
+## («РЕЖИМ», «СТАРТ», «МАГАЗИН») — 100 px, ряд над ним («КОМАНДА»,
+## «СТАТИСТИКА», пункты меню «МАГАЗИН») — 72 px, стрелки листания и
+## «ЗАКРЫТЬ» панелей тоже крупнее. На столе всё как было.
+var _touch_ui := TouchControls.wanted()
+var _row_h := 100.0 if _touch_ui else float(ROW_H)
+var _row_y := -12.0 - _row_h
+var _row2_h := 72.0 if _touch_ui else 54.0
 ## Левая колонка (имя машины, краски, нижний ряд кнопок, подсказка) —
 ## один Control шириной COL_W. Пока подменю закрыты, машина стоит по
 ## центру экрана и колонка центрирована (COL_X_CENTER); открыли
@@ -62,18 +71,8 @@ const UI_DIR := "res://assets/ui/garage/"
 const LOGO_PATH := "res://assets/ui/logo_title.png"
 const LOGO_PATH_EN := "res://assets/ui/logo_title_en.png"   # tools/gen_logo.py en
 
-## Показ ролика на Яндекс Играх. Результат складываем в window.bhrAd и
-## опрашиваем из _process (JavaScriptBridge не умеет ждать промис).
-const AD_JS_SHOW := """
-window.bhrAd = {state: 'showing', rewarded: false};
-try {
-	window.ysdk.adv.showRewardedVideo({callbacks: {
-		onRewarded: function() { window.bhrAd.rewarded = true; },
-		onClose: function() { window.bhrAd.state = 'closed'; },
-		onError: function(e) { window.bhrAd.state = 'error'; }
-	}});
-} catch (e) { window.bhrAd.state = 'error'; }
-"""
+## Показ ролика (Яндекс Игры / заглушка вне web) — RewardedAd.play (22.09,
+## общий с плитой финиша); здесь только учёт пар и кнопка.
 
 var _index := 0
 var _turntable: Node3D
@@ -101,6 +100,8 @@ var _coin_flash: Label            # «+500» взлетает над кошел�
 var _ad_btn: Button               # «+500 ЗА РЕКЛАМУ» / «ЧЕРЕЗ 9:59»
 var _ad_showing := false          # ролик идёт (ждём результата платформы)
 var _ad_tick := 0.0               # таймер обновления кнопки рекламы
+var _daily_box: Control           # окно ежедневной награды (null — нет)
+var _daily_btn: Button            # «ЗАБРАТЬ +N» в этом окне
 var _loading_veil: Control        # браузер: плашка «ЗАГРУЗКА…» перед заездом
 var _connecting := false          # «СТАРТ» уже нажат, ждём сервер
 var _start_btn: Button            # «СТАРТ» (у купленной машины)
@@ -166,6 +167,11 @@ func _ready() -> void:
 			_refresh_name_btn()
 		else:
 			_open_name_dialog(true)
+	# Ежедневный вход (23.09): неделя нарастающих наград. Окно показываем
+	# сразу, но не поверх окна имени — его покажем, когда имя введут;
+	# на профиле стенда — только по просьбе (GameState.debug_daily).
+	if _name_dialog == null and _daily_auto():
+		_show_daily()
 	# Браузер: первый клик сессии (окно имени — тоже клик, там экран не нужен).
 	if _name_dialog != null:
 		GameState.web_tapped = true
@@ -192,14 +198,12 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
-	# Кнопка рекламы живёт по часам (обратный отсчёт) и ждёт результат
-	# ролика от платформы — обновляем дважды в секунду, всегда.
+	# Кнопка рекламы живёт по часам (обратный отсчёт) — обновляем дважды
+	# в секунду, всегда.
 	_ad_tick -= delta
 	if _ad_tick <= 0.0:
 		_ad_tick = 0.5
 		_refresh_ad_btn()
-		if _ad_showing and OS.has_feature("web"):
-			_poll_web_ad()
 	# Сеть могла появиться или пропасть, пока игрок стоит в гараже (телефон
 	# выехал из подвала, включили Wi-Fi) — плашку «СЕТИ НЕТ» и строку друзей
 	# пересматриваем раз в 2 с. Чаще незачем: опрос адресов устройства не
@@ -220,7 +224,7 @@ func _process(delta: float) -> void:
 	# Подиум сам не крутится — только рукой (см. _unhandled_input).
 	# Открыто окно ввода имени — клавиши достаются ему, а не выбору машины
 	# (иначе Enter в поле имени тут же запускал бы гонку).
-	if _name_dialog != null or _ad_showing:
+	if _name_dialog != null or _daily_box != null or _ad_showing:
 		return
 	# Окно имени закрылось Enter-ом В ЭТОМ ЖЕ кадре (без связи с сервером
 	# друзей имя принимается сразу) — тот же Enter ещё «только что нажат»
@@ -296,7 +300,7 @@ func _process(delta: float) -> void:
 ## эмуляция Godot, input_devices/pointing/emulate_mouse_from_touch),
 ## поэтому отдельной ветки для тачскрина не нужно.
 func _unhandled_input(event: InputEvent) -> void:
-	if _name_dialog != null or _ad_showing:
+	if _name_dialog != null or _daily_box != null or _ad_showing:
 		return
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
@@ -317,7 +321,7 @@ func _unhandled_input(event: InputEvent) -> void:
 ## два кадра, чтобы она успела нарисоваться, — и только потом смена сцены.
 func _go_scene(path: String) -> void:
 	print("[load] гараж -> %s, t=%d мс" % [path.get_file(), Time.get_ticks_msec()])
-	if GameState.lite_gfx() and _canvas != null and _loading_veil == null:
+	if GameState.warm_gfx() and _canvas != null and _loading_veil == null:
 		_loading_veil = _make_veil(Loc.t("ЗАГРУЗКА…"), "")
 		await get_tree().process_frame
 		await get_tree().process_frame
@@ -436,9 +440,14 @@ func _start_race() -> void:
 ## гараж: ехать без команды игрок не просил.
 func _on_party_go(port: int, size: int, party_id: String, count: int) -> void:
 	Analytics.party_race(count, size)   # метрика: команда поехала (10.09)
-	if _connecting or _name_dialog != null or _ad_showing \
-			or not is_inside_tree() or Social.outdated:
+	if _connecting or _name_dialog != null or _ad_showing:
 		return
+	if not is_inside_tree() or Social.outdated:
+		return
+	# Команда поехала, а перед игроком висит окно ежедневной награды —
+	# убираем его и едем: подарок никуда не денется, гараж предложит
+	# его снова после заезда.
+	_close_daily()
 	var base: String = CarModelLibrary.CAR_IDS[_index]
 	if not GameState.car_owned(base):
 		base = CarModelLibrary.base_id(GameState.selected_car_id)
@@ -701,8 +710,8 @@ func _place(c: Control, x: float, y: float, w: float, h: float,
 ## от «СТАРТ». Числа участников больше не выбирают: в заезде всегда 8
 ## машин (GameState.race_size), в футболе — те же 8, 4 на 4.
 func _build_mode_ui(col: Control) -> void:
-	var panel := UiKit.plate(col, "steel", Vector2.ZERO, Vector2(140, ROW_H))
-	_place(panel, 0, ROW_Y, 140, ROW_H, true)
+	var panel := UiKit.plate(col, "steel", Vector2.ZERO, Vector2(140, _row_h))
+	_place(panel, 0, _row_y, 140, _row_h, true)
 
 	var title := UiKit.label(panel, Loc.t("РЕЖИМ"), 12, Color(1, 1, 1, 0.7))
 	title.position = Vector2(0, 8)
@@ -712,9 +721,9 @@ func _build_mode_ui(col: Control) -> void:
 	# Кнопка плоского стиля (UiKit.style_button мелкой кнопке навязывает
 	# рост и заклёпки — см. _mini_button).
 	_mode_button = _mini_button(Loc.t("ГОНКА"))
-	_mode_button.add_theme_font_size_override("font_size", 17)
+	_mode_button.add_theme_font_size_override("font_size", 22 if _touch_ui else 17)
 	_mode_button.position = Vector2(12, 28)
-	_mode_button.size = Vector2(116, 34)
+	_mode_button.size = Vector2(116, _row_h - 40.0)
 	_mode_button.pressed.connect(_toggle_mode)
 	panel.add_child(_mode_button)
 
@@ -934,13 +943,16 @@ func _close_name_dialog() -> void:
 	_name_hint = null
 	_accept_block = 3
 	_refresh_name_btn()
+	if _daily_auto():
+		_show_daily()
 
 
 # ---- Реклама с вознаграждением ----
 # Учёт — в GameState (ЭКОНОМИКА.md, раздел 1): пара роликов → +500 монет,
-# после пары 10 минут отдыха. Ролики показывает платформа (Яндекс Игры,
-# ysdk.adv.showRewardedVideo); вне web-сборки — заглушка с отсчётом, чтобы
-# сценарий можно было прогнать руками и стендом TestAdButton.
+# после пары 10 минут отдыха. Ролики показывает платформа (Яндекс Игры —
+# ysdk.adv.showRewardedVideo, Android — Yandex Mobile Ads; scripts/Ads.gd);
+# на столе — заглушка с отсчётом, чтобы сценарий можно было прогнать
+# руками и стендом TestAdButton.
 
 func _build_ad_ui(canvas: Node, x: float, w: float) -> void:
 	_ad_btn = Button.new()
@@ -982,83 +994,23 @@ func _ad_pressed() -> void:
 		return
 	_ad_showing = true
 	_dragging = false
-	_set_sound_muted(true)   # платформа требует тишины на время ролика
 	_refresh_ad_btn()
-	if OS.has_feature("web"):
-		JavaScriptBridge.eval(AD_JS_SHOW)
-	else:
-		_simulate_ad()
-
-
-## Результат ролика от платформы (window.bhrAd, см. AD_JS_SHOW).
-func _poll_web_ad() -> void:
-	var v: Variant = JavaScriptBridge.eval(
-			"JSON.stringify(window.bhrAd || {state: 'error'})", true)
-	if v == null:
-		return
-	var d: Variant = JSON.parse_string(str(v))
-	if d is Dictionary and String(d.get("state", "showing")) != "showing":
-		_ad_finished(bool(d.get("rewarded", false)))
-
-
-## Заглушка ролика вне web-сборки: стальная табличка с отсчётом 3-2-1,
-## после — как досмотренный. Чтобы механику можно было пощупать в
-## настольной сборке; на Яндекс Играх сюда не заходим.
-func _simulate_ad() -> void:
-	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.55)
-	dim.mouse_filter = Control.MOUSE_FILTER_STOP
-	_canvas.add_child(dim)
-	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var plate := UiKit.plate(dim, "steel", Vector2.ZERO, Vector2(460, 200))
-	plate.anchor_left = 0.5
-	plate.anchor_right = 0.5
-	plate.anchor_top = 0.5
-	plate.anchor_bottom = 0.5
-	plate.offset_left = -230
-	plate.offset_right = 230
-	plate.offset_top = -100
-	plate.offset_bottom = 100
-	var title := UiKit.label(plate, Loc.t("РЕКЛАМА"), 26, Color.WHITE, 6)
-	title.position = Vector2(0, 16)
-	title.size = Vector2(460, 34)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	var sub := UiKit.label(plate, Loc.t("Ролик %d из %d · на Яндекс Играх здесь идёт видео")
+	RewardedAd.play(_canvas,
+			Loc.t("Ролик %d из %d · на Яндекс Играх здесь идёт видео")
 			% [GameState.ad_pair_progress() + 1, GameState.AD_PAIR_SIZE],
-			14, Color(1, 1, 1, 0.7))
-	sub.position = Vector2(0, 54)
-	sub.size = Vector2(460, 22)
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	var count := UiKit.label(plate, "3", 56, UiKit.YELLOW, 8)
-	count.position = Vector2(0, 88)
-	count.size = Vector2(460, 80)
-	count.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	for s in [3, 2, 1]:
-		count.text = str(s)
-		await get_tree().create_timer(1.0).timeout
-		if not is_inside_tree():
-			return
-	dim.queue_free()
-	_ad_finished(true)
+			_ad_finished)
 
 
-## Ролик закрыт. rewarded — досмотрен до конца (награда — только за
-## второй ролик пары, GameState.register_ad).
+## Ролик закрыт (RewardedAd). rewarded — досмотрен до конца (награда —
+## только за второй ролик пары, GameState.register_ad).
 func _ad_finished(rewarded: bool) -> void:
 	_ad_showing = false
-	_set_sound_muted(false)
 	if rewarded:
 		var got: int = GameState.register_ad()
 		_refresh_money_label()
 		if got > 0:
 			_flash_coins("+%s" % _fmt_money(got))
 	_refresh_ad_btn()
-
-
-func _set_sound_muted(muted: bool) -> void:
-	Music.ad_muted = muted   # чтобы возврат фокуса не включил звук в ролике
-	AudioServer.set_bus_mute(AudioServer.get_bus_index("Master"),
-			muted or Music.is_focus_muted())
 
 
 ## «+500» взлетает над кошельком и тает.
@@ -1076,6 +1028,128 @@ func _flash_coins(txt: String) -> void:
 	tw.tween_property(_coin_flash, "modulate:a", 0.0, 1.3) \
 			.set_ease(Tween.EASE_IN)
 	tw.chain().tween_callback(func() -> void: _coin_flash.visible = false)
+
+
+# ---- Ежедневный вход (23.09) ----
+# «Заходи каждый день — денег всё больше»: неделя из семи табличек,
+# сегодняшняя подсвечена, забранные помечены галочкой. Учёт и суммы —
+# в GameState (DAILY_REWARDS, ЭКОНОМИКА.md, раздел 1). Окно всплывает
+# само при входе в гараж, пока награда за сегодня не забрана, и
+# закрывается кнопкой «ЗАБРАТЬ» — другого выхода нет нарочно: это
+# подарок, отказываться от него незачем.
+
+const DAILY_W := 720.0        # окно
+const DAILY_H := 344.0
+const DAILY_CARD_W := 86.0    # табличка дня
+const DAILY_CARD_H := 112.0
+const DAILY_GAP := 12.0
+
+
+## Всплывает ли окно само (настоящая игра, а не стенд — см. debug_daily).
+func _daily_auto() -> bool:
+	return GameState.debug_daily or not GameState.is_test_profile()
+
+func _show_daily() -> void:
+	if _daily_box != null or not GameState.daily_available():
+		return
+	var today: int = GameState.daily_index()
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.55)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP   # клики вниз не пропускаем
+	_canvas.add_child(dim)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_daily_box = dim
+
+	var plate := UiKit.plate(dim, "steel", Vector2.ZERO,
+			Vector2(DAILY_W, DAILY_H))
+	plate.anchor_left = 0.5
+	plate.anchor_right = 0.5
+	plate.anchor_top = 0.5
+	plate.anchor_bottom = 0.5
+	plate.offset_left = -DAILY_W * 0.5
+	plate.offset_right = DAILY_W * 0.5
+	plate.offset_top = -DAILY_H * 0.5
+	plate.offset_bottom = DAILY_H * 0.5
+
+	var title := UiKit.label(plate, Loc.t("ЕЖЕДНЕВНАЯ НАГРАДА"), 26,
+			Color.WHITE, 6)
+	title.position = Vector2(0, 14)
+	title.size = Vector2(DAILY_W, 34)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var hint := UiKit.label(plate,
+			Loc.t("Заходи каждый день — награда растёт. Пропустишь день — неделя сначала"),
+			14, Color(1, 1, 1, 0.72))
+	hint.position = Vector2(0, 52)
+	hint.size = Vector2(DAILY_W, 22)
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+
+	# Семь табличек в ряд: забранные — бирюзовые с галочкой, сегодняшняя —
+	# жёлтая и крупнее цифрой, будущие — белые приглушённые.
+	var days: int = GameState.DAILY_REWARDS.size()
+	var row_w := days * DAILY_CARD_W + (days - 1) * DAILY_GAP
+	var x0 := (DAILY_W - row_w) * 0.5
+	for i in range(days):
+		var done := i < today
+		var now := i == today
+		var kind := "teal" if done else ("yellow" if now else "white")
+		var card := UiKit.plate(plate, kind,
+				Vector2(x0 + i * (DAILY_CARD_W + DAILY_GAP), 86.0),
+				Vector2(DAILY_CARD_W, DAILY_CARD_H))
+		if not (done or now):
+			card.modulate = Color(1, 1, 1, 0.62)
+		var ink: Color = UiKit.text_on(kind)
+		var num := UiKit.label(card, Loc.t("ДЕНЬ %d") % (i + 1), 13,
+				Color(ink.r, ink.g, ink.b, 0.8))
+		num.position = Vector2(0, 12)
+		num.size = Vector2(DAILY_CARD_W, 18)
+		num.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		var coin := TextureRect.new()
+		coin.texture = load(UI_DIR + "coin.png")
+		coin.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		coin.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		coin.position = Vector2((DAILY_CARD_W - 28.0) * 0.5, 32)
+		coin.size = Vector2(28, 28)
+		coin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		card.add_child(coin)
+		var sum := UiKit.label(card,
+				_fmt_money(int(GameState.DAILY_REWARDS[i])),
+				18 if now else 16, ink)
+		sum.position = Vector2(0, 62)
+		sum.size = Vector2(DAILY_CARD_W, 24)
+		sum.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		if done:
+			var tick := UiKit.label(card, "✓", 20, ink)
+			tick.position = Vector2(0, 86)
+			tick.size = Vector2(DAILY_CARD_W, 22)
+			tick.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+
+	var take := Button.new()
+	take.text = Loc.t("ЗАБРАТЬ +%s") % _fmt_money(GameState.daily_reward())
+	UiKit.style_button(take, "orange", 26 if _touch_ui else 22)
+	var bh := 76.0 if _touch_ui else 62.0
+	take.position = Vector2((DAILY_W - 300.0) * 0.5, DAILY_H - bh - 26.0)
+	take.size = Vector2(300, bh)
+	take.pressed.connect(_daily_take)
+	plate.add_child(take)
+	_daily_btn = take
+
+
+## «ЗАБРАТЬ»: монеты в кошелёк, окно закрывается. Повторное нажатие
+## (двойной тык по телефону) уже ничего не даёт — claim_daily вернёт 0.
+func _daily_take() -> void:
+	var got: int = GameState.claim_daily()
+	_close_daily()
+	_refresh_money_label()
+	if got > 0:
+		_flash_coins("+%s" % _fmt_money(got))
+
+
+func _close_daily() -> void:
+	if _daily_box != null:
+		_daily_box.queue_free()
+		_daily_box = null
+	_daily_btn = null
+	_accept_block = 3
 
 
 # ---- Подиум и доска ----
@@ -1417,12 +1491,31 @@ func _on_cell_pressed(i: int) -> void:
 		_set_index(i)
 
 
-const THUMB_CACHE_DIR := "user://thumbs"
+# thumbs2 (22.09): в старом кэше могли осесть миниатюры с «чёрным
+# прямоугольником» неона (регрессия _glow_texture того же дня) — id
+# миниатюры включает неон, и битая картинка пережила бы починку.
+const THUMB_CACHE_DIR := "user://thumbs2"
+const THUMB_CACHE_OLD := "user://thumbs"
 const THUMB_BATCH := 8  # сколько машин рендерим за один кадр
 
+
+## Снести старый кэш миниатюр (см. THUMB_CACHE_DIR) — один раз, при
+## первом заходе в гараж после обновления.
+static func _drop_old_thumbs() -> void:
+	if not DirAccess.dir_exists_absolute(THUMB_CACHE_OLD):
+		return
+	var d := DirAccess.open(THUMB_CACHE_OLD)
+	if d == null:
+		return
+	for f in d.get_files():
+		d.remove(f)
+	DirAccess.remove_absolute(THUMB_CACHE_OLD)
+
+
 ## Раздаёт миниатюры кнопкам: из памяти → с диска → рендер недостающих
-## пачками по THUMB_BATCH вьюпортов за кадр (и сохранение в user://thumbs).
+## пачками по THUMB_BATCH вьюпортов за кадр (и сохранение в THUMB_CACHE_DIR).
 func _generate_thumbs() -> void:
+	_drop_old_thumbs()
 	DirAccess.make_dir_recursive_absolute(THUMB_CACHE_DIR)
 	var missing: Array[int] = []
 	for i in CarModelLibrary.CAR_IDS.size():
@@ -1975,29 +2068,30 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 	# (жалоба игрока). Теперь это просто крупная надпись с обводкой, а
 	# третьего ряда нет вовсе — «СТАТИСТИКА» переехала на место «ОРУЖИЯ».
 	_name_label = UiKit.label(col, "", 30, Color.WHITE, 6)
-	_place(_name_label, 126, ROW_Y - 66, 404, 54, true)
+	_place(_name_label, 126, _row_y - _row2_h - 12.0, 404, _row2_h, true)
 	_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_name_label.clip_text = true
 
 	# Стрелки листания по бокам машины — оранжевые таблички.
-	_make_arrow(canvas, UI_DIR + "arrow_l.png", 226,
+	var aw := 108.0 if _touch_ui else 76.0
+	_make_arrow(canvas, UI_DIR + "arrow_l.png", 264.0 - aw * 0.5,
 			func() -> void: _step_owned(-1))
-	_make_arrow(canvas, UI_DIR + "arrow_r.png", 978,
+	_make_arrow(canvas, UI_DIR + "arrow_r.png", 1016.0 - aw * 0.5,
 			func() -> void: _step_owned(1))
 
 	# «СТАРТ» — красная эмаль, единственная главная кнопка экрана.
 	_start_btn = Button.new()
 	_start_btn.text = Loc.t("СТАРТ")
-	UiKit.style_button(_start_btn, "red", 24)
-	_place(_start_btn, 152, ROW_Y, 240, ROW_H, true)
+	UiKit.style_button(_start_btn, "red", 30 if _touch_ui else 24)
+	_place(_start_btn, 152, _row_y, 240, _row_h, true)
 	_start_btn.pressed.connect(_start_race)
 	col.add_child(_start_btn)
 
 	# «КУПИТЬ · цена» — на месте «СТАРТ», видна только у закрытой машины.
 	_buy_btn = Button.new()
-	UiKit.style_button(_buy_btn, "orange", 18)
-	_place(_buy_btn, 152, ROW_Y, 240, ROW_H, true)
+	UiKit.style_button(_buy_btn, "orange", 22 if _touch_ui else 18)
+	_place(_buy_btn, 152, _row_y, 240, _row_h, true)
 	_buy_btn.visible = false
 	_buy_btn.pressed.connect(_buy_pressed)
 	col.add_child(_buy_btn)
@@ -2007,8 +2101,8 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 	# загромождён интерфейс главного меню»). Меню — _build_shop_menu.
 	_shop_btn = Button.new()
 	_shop_btn.text = Loc.t("МАГАЗИН")
-	UiKit.style_button(_shop_btn, "yellow", 20, 10)
-	_place(_shop_btn, 404, ROW_Y, 252, ROW_H, true)
+	UiKit.style_button(_shop_btn, "yellow", 26 if _touch_ui else 20, 10)
+	_place(_shop_btn, 404, _row_y, 252, _row_h, true)
 	_shop_btn.pressed.connect(_toggle_shop)
 	col.add_child(_shop_btn)
 
@@ -2019,8 +2113,8 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 	# «КОМАНДА 2» не влезала и раздвигала кнопку на табличку имени.
 	_party_btn = Button.new()
 	_party_btn.text = Loc.t("КОМАНДА")
-	UiKit.style_button(_party_btn, "teal", 14, 8)
-	_place(_party_btn, 0, ROW_Y - 66, 116, 54, true)
+	UiKit.style_button(_party_btn, "teal", 16 if _touch_ui else 14, 8)
+	_place(_party_btn, 0, _row_y - _row2_h - 12.0, 116, _row2_h, true)
 	_party_btn.pressed.connect(_open_party)
 	col.add_child(_party_btn)
 	_party_badge = UiKit.label(_party_btn, "", 13, Color.WHITE, 3)
@@ -2032,8 +2126,8 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 	_party_badge.visible = false
 	_stats_btn = Button.new()
 	_stats_btn.text = Loc.t("СТАТИСТИКА")
-	UiKit.style_button(_stats_btn, "steel", 12, 8)
-	_place(_stats_btn, 540, ROW_Y - 66, 116, 54, true)
+	UiKit.style_button(_stats_btn, "steel", 13 if _touch_ui else 12, 8)
+	_place(_stats_btn, 540, _row_y - _row2_h - 12.0, 116, _row2_h, true)
 	_stats_btn.pressed.connect(_open_stats)
 	col.add_child(_stats_btn)
 
@@ -2058,8 +2152,8 @@ func _shop_item(col: Control, txt: String, kind: String,
 		on_press: Callable) -> Button:
 	var b := Button.new()
 	b.text = txt
-	UiKit.style_button(b, kind, 16, 10)
-	_place(b, 404, ROW_Y - 62, 252, 54, true)
+	UiKit.style_button(b, kind, 20 if _touch_ui else 16, 10)
+	_place(b, 404, _row_y - _row2_h - 8.0, 252, _row2_h, true)
 	b.visible = false
 	b.pressed.connect(func() -> void:
 		_set_shop_menu(false)
@@ -2072,13 +2166,13 @@ func _shop_item(col: Control, txt: String, kind: String,
 ## Разложить пункты меню снизу вверх над «МАГАЗИНОМ» (шаг 62 px) —
 ## закрыто меню или машина не куплена (тюнинга нет), пункт просто скрыт.
 func _layout_shop_menu() -> void:
-	var y := ROW_Y - 62
+	var y := _row_y - _row2_h - 8.0
 	for b in _shop_items:
 		var show: bool = _shop_open and (b != _tuning_btn or _tuning_ok)
 		b.visible = show
 		if show:
-			_place(b, 404, y, 252, 54, true)
-			y -= 62
+			_place(b, 404, y, 252, _row2_h, true)
+			y -= _row2_h + 8.0
 
 
 func _set_shop_menu(open: bool) -> void:
@@ -2101,10 +2195,11 @@ func _make_arrow(canvas: CanvasLayer, tex_path: String, x: float,
 	btn.focus_mode = Control.FOCUS_NONE
 	btn.anchor_top = 0.5
 	btn.anchor_bottom = 0.5
+	var aw := 108.0 if _touch_ui else 76.0
 	btn.offset_left = x
-	btn.offset_right = x + 76
-	btn.offset_top = -38
-	btn.offset_bottom = 38
+	btn.offset_right = x + aw
+	btn.offset_top = -aw * 0.5
+	btn.offset_bottom = aw * 0.5
 	btn.modulate = Color(1, 1, 1, 0.94)
 	btn.pressed.connect(on_press)
 	btn.button_down.connect(func() -> void: btn.modulate = Color(0.75, 0.75, 0.75))
@@ -2139,13 +2234,15 @@ func _setup_grid(canvas: CanvasLayer) -> void:
 	head.size = Vector2(300, 26)
 	_count_label = UiKit.label(board, "", 15,
 			Color(UiKit.INK.r, UiKit.INK.g, UiKit.INK.b, 0.7))
+	var cw := 150.0 if _touch_ui else 120.0
+	var ch := 46.0 if _touch_ui else 32.0
 	_count_label.position = Vector2(260, 15)
-	_count_label.size = Vector2(BOARD_W - 260 - 176, 22)
+	_count_label.size = Vector2(BOARD_W - 260 - 56 - cw, 22)
 	_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	var close_btn := _mini_button(Loc.t("ЗАКРЫТЬ"))
-	close_btn.add_theme_font_size_override("font_size", 14)
-	close_btn.position = Vector2(BOARD_W - 44 - 120, 9)
-	close_btn.size = Vector2(120, 32)
+	close_btn.add_theme_font_size_override("font_size", 18 if _touch_ui else 14)
+	close_btn.position = Vector2(BOARD_W - 44 - cw, 9 if ch <= 32.0 else 4)
+	close_btn.size = Vector2(cw, ch)
 	close_btn.pressed.connect(_close_board)
 	board.add_child(close_btn)
 	UiKit.hazard(board, Vector2(14, BOARD_H - 22), Vector2(BOARD_W - 28, 10), 0.95)

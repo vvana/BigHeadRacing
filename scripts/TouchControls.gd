@@ -137,13 +137,15 @@ func set_bonus_icon(tex: Texture2D) -> void:
 
 
 ## Кнопка-подсказка внизу по центру: "" — спрятать и показать езду;
-## текст («СТАРТ», «В ГАРАЖ») — показать её (нажатие = ui_accept) и
-## спрятать кнопки езды (машина в лобби/после финиша всё равно стоит).
-func show_tap(text: String) -> void:
-	if _tap_text == text:
+## текст («В ГАРАЖ») — показать её (нажатие = ui_accept) и спрятать
+## кнопки езды (машина после финиша всё равно стоит). allow_drive = false
+## при пустом тексте прячет и её, и езду (лобби, 22.09: «СТАРТ» убран).
+func show_tap(text: String, allow_drive := true) -> void:
+	var key := text if allow_drive else text + ""
+	if _tap_text == key:
 		return
-	_tap_text = text
-	var driving := text.is_empty()
+	_tap_text = key
+	var driving := text.is_empty() and allow_drive
 	for k in ["gas", "brake", "left", "right", "bonus"]:
 		_by_kind[k].visible = driving
 	_by_kind["tap"].visible = not driving

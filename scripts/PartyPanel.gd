@@ -111,8 +111,10 @@ func _build() -> void:
 	head.add_child(title)
 	var close_btn := Button.new()
 	close_btn.text = Loc.t("ЗАКРЫТЬ")
-	UiKit.style_button(close_btn, "steel", 14)
-	close_btn.custom_minimum_size = Vector2(110, 34)
+	# Телефон (22.09): кнопка крупнее — 34 px на экране в 6 дюймов это ~3 мм.
+	var touch := TouchControls.wanted()
+	UiKit.style_button(close_btn, "steel", 18 if touch else 14)
+	close_btn.custom_minimum_size = Vector2(150, 48) if touch else Vector2(110, 34)
 	close_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	close_btn.pressed.connect(close)
 	head.add_child(close_btn)

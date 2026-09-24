@@ -12,6 +12,7 @@ extends Node
 signal purchased(kind: String, key: String, price: int)   # "car"/"item"/"weapon"/"pack"
 signal level_up(level: int)
 signal ad_rewarded(coins: int)
+signal daily_claimed(day: int, coins: int)   # награда за вход, день 1..7
 
 var selected_car_id := "vz01_red"
 
@@ -189,6 +190,23 @@ const AD_COOLDOWN := 600.0      # секунд отдыха после пары 
 
 var _ads_in_pair := 0           # роликов текущей пары уже досмотрено
 var _ad_pair_done_at := 0.0     # unix-время завершения последней пары
+
+# ---- Ежедневный вход: неделя нарастающих наград (23.09) ----
+# Зашёл в гараж — забрал монеты за сегодняшний день цепочки, и на сегодня
+# всё; завтра сумма больше, седьмой день — самый щедрый. Пропустил день —
+# цепочка начинается с первого. После седьмого неделя идёт по кругу, чтобы
+# награда не кончалась (ЭКОНОМИКА.md, раздел 1). Учёт по МЕСТНОМУ календарю
+# (см. _day_number): «новый день» — это новая дата на часах устройства,
+# а не сутки от прошлого получения.
+const DAILY_REWARDS := [300, 500, 800, 1200, 1800, 2500, 4000]
+
+var _daily_day := 0             # дней цепочки уже забрано (0..7)
+var _daily_last := 0            # номер дня, когда забирали в прошлый раз
+
+## Окно награды всплывает только в НАСТОЯЩЕЙ игре: на тестовом профиле
+## оно закрыло бы собой гараж во всех стендах и снимках. Стенд, которому
+## окно нужно (test_daily, screenshot_select --daily), ставит флаг сам.
+var debug_daily := false
 
 # ---- Идентификатор игрока (09.09) ----
 # Случайная строка, один раз на профиль. По ней сервер друзей (Social)
@@ -400,6 +418,15 @@ static func lite_gfx() -> bool:
 			or OS.get_cmdline_user_args().has("--lite-gfx")
 
 
+## ПРОГРЕВ И ЗАГРУЗКА — для ВСЕХ клиентов с экраном (21.09, вечер: то, что в
+## браузере не трогает картинку, забрали в Windows/Android): «вечные» материалы
+## и прогрев эффектов под лобби (Main._prewarm_fx), черновик трассы до ответа
+## сервера (TrackBuilder.bare), плашка «ЗАГРУЗКА…» в гараже. Выделенному серверу
+## и headless-стендам не нужно. Ключ --no-warm выключает — для замеров «до/после».
+static func warm_gfx() -> bool:
+	return DisplayServer.get_name() != "headless" 			and not OS.get_cmdline_user_args().has("--server") 			and not OS.get_cmdline_user_args().has("--no-warm")
+
+
 var _kept_materials := {}           # RID шейдера → материал (держим ссылку)
 var web_tapped := false             # браузер: игрок уже кликнул (звук разрешён)
 
@@ -408,7 +435,7 @@ var web_tapped := false             # браузер: игрок уже клик
 ## Одинаковые StandardMaterial3D делят шейдер по ключу настроек; пока жив
 ## хоть один — скомпилированные программы не выбрасываются.
 func keep_materials(root: Node) -> void:
-	if not lite_gfx() or root == null:
+	if not warm_gfx() or root == null:
 		return
 	var stack: Array[Node] = [root]
 	while not stack.is_empty():
@@ -532,6 +559,8 @@ func _ready() -> void:
 		_ads_in_pair = int(cf.get_value("profile", "ads_in_pair", 0))
 		_ad_pair_done_at = float(cf.get_value("profile",
 				"ad_pair_done_at", 0.0))
+		_daily_day = int(cf.get_value("profile", "daily_day", 0))
+		_daily_last = int(cf.get_value("profile", "daily_last", 0))
 		game_mode = str(cf.get_value("profile", "game_mode", MODE_RACE))
 		player_name = sanitize_name(str(cf.get_value("profile",
 				"player_name", "")))
@@ -1219,6 +1248,57 @@ func register_ad() -> int:
 	return AD_PAIR_REWARD
 
 
+# ---- Ежедневный вход ----
+# Гараж на входе показывает окно с неделей наград (CarSelect._show_daily):
+# спрашивает daily_available() / daily_index() / daily_reward(), по кнопке
+# зовёт claim_daily().
+
+## Сегодняшняя дата числом (дней от эпохи) по МЕСТНОМУ календарю игрока.
+static func _day_number() -> int:
+	var t := Time.get_datetime_dict_from_system()
+	var midnight := Time.get_unix_time_from_datetime_dict({
+		year = t.year, month = t.month, day = t.day,
+		hour = 0, minute = 0, second = 0,
+	})
+	return int(midnight / 86400)
+
+
+## Какой день недели наград сейчас предлагается (0..6). Пропуск дня
+## (или переведённые далеко назад часы) — цепочка с начала; забрал все
+## семь и пришёл на следующий день — новая неделя с первого.
+func daily_index() -> int:
+	if _daily_day <= 0 or _day_number() - _daily_last > 1:
+		return 0
+	return _daily_day % DAILY_REWARDS.size()
+
+
+## Награда, которая ждёт сегодня, в монетах.
+func daily_reward() -> int:
+	return int(DAILY_REWARDS[daily_index()])
+
+
+## Сегодня ещё не забирали. Часы, переведённые НАЗАД, награду не дают:
+## подарок ждёт, пока дата не перевалит за день последнего получения
+## (иначе неделю можно было бы пройти за минуту стрелками часов).
+func daily_available() -> bool:
+	return _day_number() > _daily_last
+
+
+## Забрать сегодняшнюю награду. Возвращает начисленные монеты
+## (0 — сегодня уже забирали).
+func claim_daily() -> int:
+	if not daily_available():
+		return 0
+	var idx := daily_index()
+	var coins := int(DAILY_REWARDS[idx])
+	_daily_day = idx + 1
+	_daily_last = _day_number()
+	money += coins
+	_save_profile()
+	daily_claimed.emit(_daily_day, coins)
+	return coins
+
+
 ## Сохранить профиль ЦЕЛИКОМ. Раньше каждый сеттер делал «load → одно поле
 ## → save», и битый profile.cfg (load не OK) перезаписывался одним этим
 ## полем — опыт, монеты и купленные машины пропадали. Теперь нечитаемый
@@ -1250,6 +1330,8 @@ func _save_profile() -> void:
 	cf.set_value("profile", "money", money)
 	cf.set_value("profile", "ads_in_pair", _ads_in_pair)
 	cf.set_value("profile", "ad_pair_done_at", _ad_pair_done_at)
+	cf.set_value("profile", "daily_day", _daily_day)
+	cf.set_value("profile", "daily_last", _daily_last)
 	cf.set_value("profile", "player_name", player_name)
 	cf.set_value("profile", "game_mode", game_mode)
 	cf.set_value("profile", "owned_cars", owned_cars)

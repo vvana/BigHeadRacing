@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Значок оружия «Глушилка» (звуковая волна) в стиле остальных.
+"""Значок оружия «Глушилка» (перекрещённые стрелки) в стиле остальных.
 
 Запуск:  py tools/gen_scramble_icon.py   (из корня проекта)
 
 В листе-референсе (_STYLE_CORE_A_sheet_of_12_weap_2.jpg, режется
 tools/gen_ui_assets.py) звуковой волны нет, поэтому восьмиугольник
 запекается с нуля по тем же правилам: стальной кант с заклёпками, цветная
-эмаль, аварийная полоса внизу, чернильный символ. Цвет — бирюзовый, как у
-самой волны в игре (ScrambleWave).
+эмаль, аварийная полоса внизу, чернильный символ: две перекрещённые
+стрелки в разные стороны — «лево и право перепутаны» (до 23.09 была
+звуковая волна). Цвет — бирюзовый, как у самой волны в игре (ScrambleWave).
 
 Результат: assets/ui/garage/wg_scramble.png (256x256, RGBA).
 """
@@ -36,6 +37,29 @@ def octagon(cx, cy, r, rot=math.pi / 8):
              cy + r * math.sin(rot + i * math.pi / 4)) for i in range(8)]
 
 
+def arrow(d, a, b, n, fill, halo=0.0):
+    """Толстая стрелка из a в b: прямоугольное древко и треугольный
+    наконечник; halo расширяет контур (просвет вокруг верхней стрелки)."""
+    ax, ay = a
+    bx, by = b
+    L = math.hypot(bx - ax, by - ay)
+    ux, uy = (bx - ax) / L, (by - ay) / L      # вдоль
+    px, py = -uy, ux                           # поперёк
+    shaft = n * 0.030 + halo
+    head_w = n * 0.085 + halo
+    head_l = n * 0.14 + halo * 0.8
+    tail_x, tail_y = ax - ux * halo, ay - uy * halo
+    tip_x, tip_y = bx + ux * halo * 0.9, by + uy * halo * 0.9
+    base_x, base_y = tip_x - ux * head_l, tip_y - uy * head_l
+    d.polygon([(tail_x + px * shaft, tail_y + py * shaft),
+               (base_x + px * shaft, base_y + py * shaft),
+               (base_x - px * shaft, base_y - py * shaft),
+               (tail_x - px * shaft, tail_y - py * shaft)], fill=fill)
+    d.polygon([(base_x + px * head_w, base_y + py * head_w),
+               (tip_x, tip_y),
+               (base_x - px * head_w, base_y - py * head_w)], fill=fill)
+
+
 def main():
     n = SIZE * SS
     img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
@@ -59,22 +83,19 @@ def main():
         d.ellipse((px - rr * 0.45, py - rr * 0.45, px + rr * 0.1,
                    py + rr * 0.1), fill=(228, 234, 240, 200))
 
-    # Символ: излучатель слева и три расходящиеся дуги вправо —
-    # «оглушающая волна».
+    # Символ: две перекрещённые стрелки в разные стороны — «лево и право
+    # перепутаны» (просьба 23.09; прежде была звуковая волна). Задняя
+    # стрелка идёт из правого низа в левый верх, передняя — из левого
+    # низа в правый верх и лежит ПОВЕРХ (эмалевый просвет по контуру):
+    # читается как перекрёсток, а не как крестик.
     # Символ приподнят (cy): внизу восьмиугольника идёт аварийная полоса,
     # и посаженный по центру знак сливался бы с ней в одно тёмное пятно.
     cy = c - n * 0.045
-    horn = [(c - n * 0.24, cy - n * 0.13), (c - n * 0.09, cy - n * 0.13),
-            (c - n * 0.09, cy + n * 0.13), (c - n * 0.24, cy + n * 0.13)]
-    d.polygon(horn, fill=INK + (255,))
-    d.polygon([(c - n * 0.09, cy - n * 0.17), (c + n * 0.01, cy - n * 0.25),
-               (c + n * 0.01, cy + n * 0.25), (c - n * 0.09, cy + n * 0.17)],
-              fill=INK + (255,))
-    for k, rad in enumerate((0.09, 0.165, 0.24)):
-        w = int(n * (0.030 - 0.005 * k))
-        box = (c + n * 0.01 - n * rad, cy - n * rad,
-               c + n * 0.01 + n * rad, cy + n * rad)
-        d.arc(box, start=-58, end=58, fill=INK + (255,), width=w)
+    back = ((c + n * 0.23, cy + n * 0.16), (c - n * 0.26, cy - n * 0.16))
+    front = ((c - n * 0.23, cy + n * 0.16), (c + n * 0.26, cy - n * 0.16))
+    arrow(d, back[0], back[1], n, INK + (255,))
+    arrow(d, front[0], front[1], n, TEAL + (255,), halo=n * 0.024)
+    arrow(d, front[0], front[1], n, INK + (255,))
 
     # Аварийная полоса внизу — как на значках из листа.
     band_h = n * 0.075

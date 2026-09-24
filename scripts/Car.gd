@@ -314,6 +314,9 @@ var _track_ang_abs := 0.0       # |угол носа к оси трассы|, с
 var _side_speed := 0.0          # боковой снос с последнего кадра езды (дым)
 var _on_sand := false           # на песчаной трассе съехал с полотна на песок
 var _smoke: Array[CPUParticles3D] = []  # дым из-под задних колёс (занос)
+var _smoke_prev := PackedVector3Array()  # где точки эмиттеров были в прошлом кадре (_spread_smoke)
+var _smoke_prev_ok := false     # _smoke_prev набран (не первый кадр)
+var _smoke_spread := true       # клубы кадра размазывать по пути (--no-smoke-spread — как было)
 var _smoking := false           # дымят ли колёса по расчёту физики (и без эмиттеров)
 var _smoke_color := ""          # цвет дыма/пламени из тюнинга ("" — обычный), apply_fx
 var debug_smoke := false        # стенды: дымить и гореть выхлопом без заноса
@@ -852,19 +855,59 @@ const FIRE_TEX: Texture2D = preload("res://assets/fx/fire_6x3.png")
 const RING_TEX: Texture2D = preload("res://assets/fx/ring_shockwave.png")
 
 
+## Точки дыма в осях машины: строго ЗА задними колёсами, внутри колеи
+## (x ±0.55) — на краю корпуса (±0.85) крупные клубы торчали по бокам.
+const SMOKE_POINTS: Array[Vector3] = [Vector3(-0.55, 0.12, 1.5), Vector3(0.55, 0.12, 1.5)]
+
+
 func _build_smoke() -> void:
-	# Эмиттеры — строго ЗА задними колёсами, внутри колеи (x ±0.55):
-	# на краю корпуса (±0.85) крупные клубы торчали по бокам машины.
 	# На песчаной трассе пыль песочная (track ставится Main ДО add_child,
 	# так что в _ready он уже известен; без track — обычный серый дым).
 	var sand := track != null and track.kind == TrackBuilder.KIND_SAND
 	var snow := track != null and track.kind == TrackBuilder.KIND_SNOW
-	for sx: float in [-0.55, 0.55]:
+	_smoke_spread = not OS.get_cmdline_user_args().has("--no-smoke-spread")
+	for pt: Vector3 in SMOKE_POINTS:
 		var p := make_smoke()
 		tint_smoke(p, _smoke_color, sand, snow)
-		p.position = Vector3(sx, 0.12, 1.5)
+		p.position = pt
 		add_child(p)
 		_smoke.append(p)
+	_smoke_prev.resize(_smoke.size())
+	_smoke_prev_ok = false
+
+
+## Клубы ОДНОГО КАДРА — вдоль пути, который колесо прошло за этот кадр
+## (22.09, телефон: «дым выглядит иначе, пробелы между облачками слишком
+## большие»). CPUParticles3D рождает все клубы кадра в ОДНОЙ точке — где
+## эмиттер стоит сейчас; при 60 кадрах/с на 20 м/с это шаг 0,33 м, и
+## клубы (0,7 м × рост) перекрываются, а телефон рисует 25–30 кадров/с:
+## по 4–5 клубов кучкой через каждые 0,7–0,8 м — «тучки с пробелами».
+## Лечение: область рождения — коробка от прошлого положения точки до
+## нынешнего (эмиттер повёрнут вдоль отрезка), так что клубы кадра ложатся
+## по пути равномерно при любой частоте кадров. Отрезок длиннее 4 м —
+## телепорт (спавн, ресинк марионетки), не размазываем.
+func _spread_smoke(xf: Transform3D) -> void:
+	if not _smoke_spread or _smoke.is_empty():
+		return
+	for i in _smoke.size():
+		var p := _smoke[i]
+		var cur := xf * SMOKE_POINTS[i]
+		var seg := cur - _smoke_prev[i] if _smoke_prev_ok else Vector3.ZERO
+		_smoke_prev[i] = cur
+		if not p.emitting:
+			continue
+		var len := seg.length()
+		if len > 4.0:
+			seg = Vector3.ZERO
+			len = 0.0
+		var basis := Basis.IDENTITY
+		var flat := Vector3(seg.x, 0.0, seg.z)
+		if flat.length() > 0.02:
+			basis = Basis.looking_at(flat.normalized(), Vector3.UP)
+		p.global_transform = Transform3D(basis, cur - seg * 0.5)
+		p.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+		p.emission_box_extents = Vector3(0.04, 0.02, maxf(len * 0.5, 0.02))
+	_smoke_prev_ok = true
 
 
 ## Эмиттер дыма из-под колеса (без цвета — см. tint_smoke). Статический:
@@ -1653,6 +1696,8 @@ func _process(delta: float) -> void:
 		_boost_flame.global_transform = xf * _boost_flame_base
 	if _shock_fx != null:
 		_shock_fx.global_transform = xf
+	# Дым из-под колёс: клубы кадра — вдоль пути за кадр (см. _spread_smoke).
+	_spread_smoke(xf)
 	# Скорлупа льда — тоже с картинкой, а не с телом: ребёнком тела она
 	# отставала от собственного кузова на шаг физики и ехала «отдельно
 	# от машины» (жалоба 07.09).
@@ -4240,15 +4285,19 @@ const SHIELD_RZ := 2.65
 const SHIELD_BODY_R := 0.85
 
 ## Кузов соперника (отрезок ±0.9 м по его курсу, 5 проб) задел сферу:
-## проба в моих осях внутри эллипса SHIELD_RX/RZ + полкузова.
-func _touches_shield(other: Car) -> bool:
+## проба в моих осях внутри эллипса SHIELD_RX/RZ + полкузова. at — где
+## считать центр соперника (по умолчанию — где он сейчас; держатель-
+## марионетка на сервере подставляет отмотанное место, см. _shield_sweep).
+func _touches_shield(other: Car, at := Vector3.INF, me := Vector3.INF) -> bool:
 	var f := true_forward()
 	var r := Vector3(-f.z, 0.0, f.x)
 	var of := other.true_forward() * 0.9
 	var rx := SHIELD_RX + SHIELD_BODY_R
 	var rz := SHIELD_RZ + SHIELD_BODY_R
+	var center := other.global_position if at == Vector3.INF else at
+	var mine := global_position if me == Vector3.INF else me
 	for i in 5:
-		var p := other.global_position + of * (i * 0.5 - 1.0) - global_position
+		var p := center + of * (i * 0.5 - 1.0) - mine
 		p.y = 0.0
 		var x := p.dot(r) / rx
 		var z := p.dot(f) / rz
@@ -4263,13 +4312,41 @@ func _touches_shield(other: Car) -> bool:
 func _shield_sweep() -> void:
 	if is_ghost():
 		return
+	# Держатель — марионетка ЖИВОГО ИГРОКА на сервере (22.09, «красная
+	# сфера не уничтожила машину, которая долго была в контакте»): касание
+	# судим по ЕГО КАРТИНЕ, как выстрел (net_shot_lag). На сервере марионетка
+	# отстаёт от настоящего места игрока на путь до сервера (net_wire_lag),
+	# а соперники на его экране — на буфер + путь от сервера
+	# (net_client_lag): бот, прижатый к бамперу НА ЭКРАНЕ, здесь едет на
+	# (буфер + пинг) × скорость впереди марионетки — вне сферы, сколько ни
+	# толкай. И наоборот: бот в 6 м позади на экране здесь налезал на
+	# марионетку, и сфера «убивала на расстоянии». Соперника отматываем на
+	# это отставание по серверной истории (past_position); у марионетки
+	# другого игрока вычитаем её собственное отставание — она на сервере
+	# тоже позади своего владельца.
+	var lag := net_shot_lag()
 	for node in get_tree().get_nodes_in_group("cars"):
 		var other := node as Car
 		if other == null or other == self:
 			continue
-		if absf(other.global_position.y - global_position.y) > 1.3:
+		var at := other.global_position
+		var me := global_position
+		if lag > 0.0:
+			at = other.past_position(maxf(0.0,
+					lag + net_wire_lag - other.net_wire_lag))
+		elif Net.is_server() and other.net_role == NetRole.PUPPET:
+			# Зеркало (22.09): держатель — БОТ, коснувшийся — марионетка
+			# живого игрока. На его экране бот отстаёт на буфер + путь от
+			# сервера (net_client_lag) плюс его же путь до сервера
+			# (net_wire_lag): бот, к которому он на экране не прикоснулся,
+			# здесь налезал на марионетку — «сфера бота убила без касания»,
+			# и наоборот. Себя отматываем по своей истории на его отставание.
+			var view := (other.net_client_lag if other.net_client_lag > 0.0
+					else 0.12) + other.net_wire_lag
+			me = past_position(view)
+		if absf(at.y - me.y) > 1.3:
 			continue
-		if _touches_shield(other):
+		if _touches_shield(other, at, me):
 			_shield_touch(other)
 
 

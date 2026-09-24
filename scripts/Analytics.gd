@@ -50,6 +50,7 @@ func _ready() -> void:
 	GameState.purchased.connect(_on_purchased)
 	GameState.level_up.connect(_on_level_up)
 	GameState.ad_rewarded.connect(_on_ad)
+	GameState.daily_claimed.connect(_on_daily)
 	session()
 
 
@@ -111,6 +112,11 @@ func soccer(result: int, goals: int, mine: int, theirs: int, ms: int) -> void:
 func party_race(count: int, size: int) -> void:
 	push_event("party", {count = count, size = size})
 
+
+## Забрана награда за ежедневный вход: day — день недели наград (1..7).
+func _on_daily(day: int, coins: int) -> void:
+	push_event("daily", {day = day, coins = coins,
+			money_after = GameState.money, level = GameState.level_info().x})
 
 ## Досмотренный ролик: coins — что начислено (0 — первый ролик пары).
 func _on_ad(coins: int) -> void:

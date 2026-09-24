@@ -33,6 +33,11 @@ Net="*res://scripts/Net.gd"
 Music="*res://scripts/Music.gd"
 Social="*res://scripts/Social.gd"
 Analytics="*res://scripts/Analytics.gd"
+Ads="*res://scripts/Ads.gd"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/GodotAndroidYandexAds/plugin.cfg")
 
 [display]
 
@@ -58,6 +63,15 @@ common/physics_interpolation=true
 ; (пресетный texture_format/etc2_astc сам по себе не помогает).
 textures/vram_compression/import_etc2_astc=true
 anti_aliasing/quality/msaa_3d=2
+; Android (22.09, жалобы из RuStore): в лобби и заезде «всё чёрное, остаются
+; только кнопки, быстро моргает» — известная беда Vulkan-рендерера Mobile в
+; Godot 4.3 на части телефонов (Adreno/Mali): 3D-проход чернеет при MSAA
+; (godot #67204, #81910), 2D поверх живёт. Телефоны переводим на
+; gl_compatibility (OpenGL ES 3 — на нём уже живёт веб-сборка) и без MSAA
+; (в compat на Adreno 610 MSAA тоже моргает, godot #106253). Откат — убрать
+; эти две строки.
+renderer/rendering_method.mobile="gl_compatibility"
+anti_aliasing/quality/msaa_3d.android=0
 ; Браузер (21.09): предпроход глубины рисует каждую непрозрачную модель
 ; дважды и на каждый материал компилирует лишнюю шейдерную программу
 ; (0,1–0,2 с каждая, синхронно). При виде сверху перекрытий мало — не нужен.

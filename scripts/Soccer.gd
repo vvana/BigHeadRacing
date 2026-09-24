@@ -1130,7 +1130,10 @@ func _setup_hud() -> void:
 		_touch.name = "Touch"
 		add_child(_touch)
 		help.visible = false
-		_end_label.text = Loc.t("В ГАРАЖ — кнопка внизу")
+		# Подпись «В ГАРАЖ — кнопка внизу» убрана (22.09): внизу и так кнопка
+		# «В ГАРАЖ», подпись её дублировала. Узел остаётся (его показывает
+		# конец матча), но пустой.
+		_end_label.text = ""
 
 	_announcer = Announcer.new()
 	canvas.add_child(_announcer)
