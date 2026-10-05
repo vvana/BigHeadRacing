@@ -445,6 +445,8 @@ func _ready() -> void:
 	_track.kind = _track_kind
 	_track.name = "Track"
 	add_child(_track)
+	if not Net.is_server():
+		GameState.gfx_strip_lights(_track)   # НИЗКАЯ: точечного света нет
 	_lt = _load_mark("трасса", _lt)
 
 	_spawn_cars()
@@ -662,7 +664,7 @@ func _prewarm_fx() -> void:
 			twin.material_override = m
 			# Там, где тени есть (Windows/Android), двойник их отбрасывает —
 			# иначе теневой проход этого материала остался бы непрогретым.
-			if GameState.lite_gfx():
+			if not GameState.gfx_shadows():
 				twin.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			holder.add_child(twin)
 			twin.global_position = at + Vector3.UP * (0.5 + 0.01 * n_twins)
@@ -699,6 +701,7 @@ func _load_mark(what: String, since: int) -> int:
 	var now := Time.get_ticks_msec()
 	if not Net.is_server():
 		print("[load] %s: %d мс" % [what, now - since])
+		Net.keep_alive()
 	return now
 
 
@@ -836,6 +839,7 @@ func _set_car_model(car: Car, id: String) -> void:
 		_build_placeholder_visual(car)
 	# Цвет дыма и пламени из id (тюнинг); неон — уже в модели.
 	car.apply_fx(id)
+	GameState.gfx_strip_lights(model)   # неон без точечного света: НИЗКАЯ и телефон
 
 
 ## Зелёная стрелка-указатель над СВОЕЙ машиной. Над соперниками стрелок
@@ -2043,17 +2047,22 @@ func _setup_environment() -> void:
 	var space := _track_kind == TrackBuilder.KIND_SPACE
 	var snow := _track_kind == TrackBuilder.KIND_SNOW
 	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-55, -30, 0)
-	sun.shadow_enabled = not GameState.lite_gfx()   # браузер: без теней
-	if neon:
-		sun.light_energy = 0.25
-		sun.light_color = Color(0.65, 0.75, 1.0)   # холодный лунный свет
-	elif space:
-		sun.light_energy = 0.4
-		sun.light_color = Color(0.8, 0.85, 1.0)    # жёсткий свет далёкой звезды
+	sun.rotation_degrees = TrackBuilder.sun_rotation_deg(_track_kind)
+	sun.shadow_enabled = GameState.gfx_shadows()   # браузер и НИЗКАЯ: без теней
+	if neon or space:
+		# Тёмные трассы (05.10, просьба игрока): полотно, борта и машины
+		# освещены ОБЫЧНЫМ светом, как днём, — тёмными остаются только небо и
+		# окружение (город, пустыри, планеты). Раньше вся сцена сидела под
+		# тусклой луной, и без лучей фар (НИЗКАЯ графика, браузер) машин было
+		# не разглядеть. Свет на сцену один; окружение темнит не свет, а его
+		# материалы (TrackBuilder.darken): слои света light_cull_mask у
+		# направленных источников в gl_compatibility (телефон, браузер) не
+		# работают — проверено снимком.
+		sun.light_energy = 1.1
+		sun.light_color = Color(0.9, 0.93, 1.0)
 	elif snow:
-		# Зима: низкое белёсое солнце сквозь пасмурную дымку, тени мягче.
-		sun.rotation_degrees = Vector3(-38, -30, 0)
+		# Зима: низкое белёсое солнце сквозь пасмурную дымку, тени мягче
+		# (угол — в TrackBuilder.sun_rotation_deg).
 		sun.light_energy = 0.95
 		sun.light_color = Color(0.93, 0.95, 1.0)
 	else:
@@ -2482,6 +2491,10 @@ func _setup_hud() -> void:
 		_lobby = Lobby.new()
 		_lobby.name = "Lobby"
 		canvas.add_child(_lobby)
+		# Кнопки езды прячем сразу, а не первым _process: пока сцена
+		# прогревается, он не идёт, и кнопки висели поверх лобби (05.10).
+		if _touch:
+			_touch.show_tap("", false)
 
 
 # ════════════════════ СЕТЕВАЯ ЧАСТЬ ════════════════════
@@ -2696,7 +2709,7 @@ func _say_hello() -> void:
 		if not is_inside_tree():
 			return
 	if Net.my_slot < 0 and _lobby:
-		_lobby.set_status(Loc.t("Сервер не выдал слот.\nВозможно, версии игры различаются — обновите игру.\nEsc — в гараж"))
+		_lobby.set_status(Lobby.with_exit_hint(Loc.t("Сервер не выдал слот.\nВозможно, версии игры различаются — обновите игру.")))
 		_lobby.show_screen()
 
 
@@ -4026,7 +4039,7 @@ func _on_join_failed_in_race(reason: String) -> void:
 		get_tree().reload_current_scene()
 		return
 	if _lobby:
-		_lobby.set_status(Loc.server(reason) + "\n" + Loc.t("Esc — в гараж"))
+		_lobby.set_status(Lobby.with_exit_hint(Loc.server(reason)))
 		_lobby.show_screen()
 
 
@@ -4497,7 +4510,7 @@ func _rx_kick(reason: String) -> void:
 	if _car != null and is_instance_valid(_car):
 		_car.controls_enabled = false
 	if _lobby:
-		_lobby.set_status(Loc.server(reason) + "\n" + Loc.t("Esc — в гараж"))
+		_lobby.set_status(Lobby.with_exit_hint(Loc.server(reason)))
 		_lobby.show_screen()
 
 

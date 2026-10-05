@@ -277,7 +277,6 @@ var _ice_shell_base := Transform3D.IDENTITY   # её место в осях ма
 # ставится по ВИДИМОМУ положению машины (см. _process). Списки — по паре
 # [левая, правая], нужны для посадки на нос конкретной модели.
 var _headlights: Node3D = null
-var _beams: Array[SpotLight3D] = []
 var _lamps: Array[MeshInstance3D] = []
 
 var _grounded_wheels := 0
@@ -419,6 +418,10 @@ func _build_status_icon() -> void:
 ##
 ## Стартовые смещения — грубые: настоящее место фарам ищет
 ## fit_headlights по носу конкретной модели (её ставят уже после _ready).
+## ЛУЧЕЙ фар нет (05.10, решение игрока): 16 прожекторов с тенями давали
+## на телефоне 5 к/с на ночных трассах, а трасса теперь и так освещена
+## обычным светом (Main._setup_environment). Остались лампы — эмиссия и
+## свечение, по ним видно, куда смотрит машина.
 func _build_headlights() -> void:
 	_headlights = Node3D.new()
 	_headlights.name = "Headlights"
@@ -426,23 +429,6 @@ func _build_headlights() -> void:
 	add_child(_headlights)
 	_headlights.global_transform = global_transform
 	for sx: float in [-0.45, 0.45]:
-		var beam := SpotLight3D.new()
-		beam.name = "HeadlightBeam"
-		beam.position = Vector3(sx, 0.1, -1.66)
-		beam.rotation_degrees = Vector3(-10, 0, 0)
-		beam.spot_range = 22.0
-		beam.spot_angle = 30.0
-		beam.light_energy = 6.0
-		beam.light_color = Color(1.0, 0.93, 0.75)
-		# 16 прожекторов с тенями на ночной трассе — в браузере неподъёмно.
-		beam.shadow_enabled = not GameState.lite_gfx()
-		# Луч в браузере не светит вовсе: объекты, попадая в конус, требуют
-		# нового варианта шейдера — секундные рывки посреди заезда. Лампы фар
-		# (эмиссия + glow) горят как раньше.
-		beam.visible = not GameState.lite_gfx()
-		_headlights.add_child(beam)
-		_beams.append(beam)
-
 		var lamp := MeshInstance3D.new()
 		lamp.name = "HeadlightLamp"
 		var lamp_mesh := BoxMesh.new()
@@ -490,10 +476,8 @@ func fit_headlights(model: Node3D) -> void:
 		mesh.size = Vector3(w, w * 0.5, 0.08)
 		# Лампа сидит в кузове по самую «стекляшку»: наружу 2 см, остальные
 		# 6 утоплены. Совсем впритык её съедает скошенный капот, а вылези
-		# она целиком — читается как наклейка перед машиной. Спот — на 6 см
-		# ПЕРЕД кромкой: у спотов включены тени, и капот резал бы луч.
+		# она целиком — читается как наклейка перед машиной.
 		_lamps[i].position = Vector3(sx, y, z + 0.02)
-		_beams[i].position = Vector3(sx, y, z - 0.06)
 
 
 ## Куда садить ПРАВУЮ фару модели: {x, y, z кромки, w — ширина лампы} в
@@ -936,14 +920,20 @@ static func make_smoke() -> CPUParticles3D:
 	# 09.09 («след от дыма слишком длинный»): жизнь 0.6 → 0.35 с — шлейф
 	# на 20 м/с укоротился с 12 до 7 м; число клубов срезано в той же
 	# пропорции (70 → 41), чтобы плотность (≈117 клубов/с) не изменилась.
+	# 28.09 («дым поплотнее — не больше клубов, а ближе друг к другу»):
+	# число то же (41), жизнь 0.35 → 0.28 с — те же клубы на более коротком
+	# шлейфе (на 20 м/с 5.6 м вместо 7, шаг 0.14 м вместо 0.17); разлёт
+	# вбок/вверх меньше (spread 35 → 20°, скорость до 0.9 вместо 1.4) —
+	# клубы держатся линией и не расходятся; клуб 0.7 → 0.8 м и держит
+	# непрозрачность до середины жизни (см. tint_smoke).
 	p.amount = 41
-	p.lifetime = 0.35
+	p.lifetime = 0.28
 	p.local_coords = false   # клубы остаются позади машины
 	p.direction = Vector3.UP
-	p.spread = 35.0
+	p.spread = 20.0
 	p.gravity = Vector3(0.0, 1.0, 0.0)
-	p.initial_velocity_min = 0.4
-	p.initial_velocity_max = 1.4
+	p.initial_velocity_min = 0.3
+	p.initial_velocity_max = 0.9
 	p.angle_min = 0.0        # случайный поворот билборда
 	p.angle_max = 360.0
 	p.angular_velocity_min = -40.0
@@ -956,7 +946,7 @@ static func make_smoke() -> CPUParticles3D:
 	p.anim_offset_min = 0.0
 	p.anim_offset_max = 1.0
 	var quad := QuadMesh.new()
-	quad.size = Vector2(0.7, 0.7)
+	quad.size = Vector2(0.8, 0.8)
 	var mat := StandardMaterial3D.new()
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -994,8 +984,13 @@ static func tint_smoke(p: CPUParticles3D, color: String, sand: bool,
 		grad.set_color(0, Color(0.97, 0.98, 1.0, 0.9))
 		grad.set_color(1, Color(0.9, 0.94, 1.0, 0.0))
 	else:
-		grad.set_color(0, Color(0.92, 0.92, 0.92, 0.75))
+		grad.set_color(0, Color(0.92, 0.92, 0.92, 0.85))
 		grad.set_color(1, Color(0.85, 0.85, 0.85, 0.0))
+	# Плотность (28.09): клуб не тает с рождения, а держит почти всю
+	# непрозрачность до середины жизни и гаснет во второй половине.
+	var c0 := grad.get_color(0)
+	var mid := c0.lerp(grad.get_color(1), 0.35)
+	grad.add_point(0.5, Color(mid.r, mid.g, mid.b, c0.a * 0.85))
 	p.color_ramp = grad
 
 
@@ -2008,6 +2003,11 @@ func reset_speed_memory() -> void:
 
 func _player_control(delta: float, on_ground: bool) -> void:
 	var throttle := Input.get_axis("brake", "accelerate")
+	# Автоматический газ (настройки, 29.09): газ в пол всегда, тормоз его
+	# снимает и тормозит как обычно.
+	if GameState.auto_gas:
+		var brake := Input.get_action_strength("brake")
+		throttle = -brake if brake > 0.0 else 1.0
 	var steer := Input.get_axis("steer_right", "steer_left")
 	var handbraking := Input.is_action_pressed("handbrake")
 	var jumping := Input.is_action_just_pressed("jump")

@@ -13,10 +13,19 @@ extends Camera3D
 
 var _look_offset: Vector3
 
+## Телефон (экранные кнопки): камера ближе — машины на маленьком экране
+## были мелкими (просьба игрока 05.10). Окно по высоте 26 м → 20 м, машина
+## на экране в 1,3 раза крупнее. На столе — как было.
+const TOUCH_ZOOM := 0.77
+
+
+static func zoom() -> float:
+	return TOUCH_ZOOM if TouchControls.wanted() else 1.0
+
 
 func _ready() -> void:
 	projection = Camera3D.PROJECTION_ORTHOGONAL
-	size = ortho_size
+	size = ortho_size * zoom()
 	rotation_degrees = Vector3(pitch_deg, yaw_deg, 0)
 	_look_offset = -global_transform.basis.z * -distance
 	if target:

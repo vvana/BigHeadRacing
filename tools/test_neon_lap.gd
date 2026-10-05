@@ -41,17 +41,31 @@ func _physics_process(delta: float) -> void:
 		worst = minf(worst, _main._progress[i])
 	var lap_ok := worst > length * 0.5
 	var lights := 0
+	var spots := 0
 	for car: Car in _main._cars:
-		# Споты лежат в держателе Headlights (top_level, см. Car._process),
-		# а не прямо в машине — ищем во всём поддереве.
-		lights += _count_spots(car)
-	var lights_ok: bool = lights >= _main._cars.size() * 2
+		# Лампы лежат в держателе Headlights (top_level, см. Car._process),
+		# а не прямо в машине — ищем во всём поддереве. Лучей (споты) с
+		# 05.10 нет совсем — решение игрока, см. Car._build_headlights.
+		lights += _count_lamps(car)
+		spots += _count_spots(car)
+	var lights_ok: bool = lights >= _main._cars.size() * 2 and spots == 0
 	print("  худший ИИ проехал %.0f м (круг %.0f м) — %s; фар %d — %s" % [
 		worst, length, "ok" if lap_ok else "FAIL",
 		lights, "ok" if lights_ok else "FAIL"])
 	var ok: bool = lap_ok and lights_ok
 	print("NEON LAP TEST: %s" % ("PASS" if ok else "FAIL"))
 	get_tree().quit(0 if ok else 1)
+
+
+func _count_lamps(node: Node) -> int:
+	var n := 0
+	for child in node.get_children():
+		# Вторая лампа в том же держателе получает от движка своё имя —
+		# считаем по типу внутри держателя «Headlights».
+		if child is MeshInstance3D and node.name == "Headlights":
+			n += 1
+		n += _count_lamps(child)
+	return n
 
 
 func _count_spots(node: Node) -> int:

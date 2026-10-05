@@ -8,6 +8,7 @@ extends Node
 ## godot --headless --path . res://tools/TestTouch.tscn
 
 var _tc: TouchControls
+var _centers := {}
 var _frame := 0
 var _fails := 0
 var _w := 1280.0
@@ -61,11 +62,16 @@ func _check(name: String, ok: bool) -> void:
 
 func _process(_d: float) -> void:
 	_frame += 1
-	var gas := Vector2(252, _h - 112)
-	var brake := Vector2(104, _h - 96)
-	var left := Vector2(_w - 272, _h - 96)
-	var right := Vector2(_w - 96, _h - 96)
-	var bonus := Vector2(_w - 96, _h - 256)
+	# Центры — из самой раскладки: сторона руля настраивается (05.10).
+	# (Запоминаем раз: в конце стенд слой освобождает.)
+	if _centers.is_empty():
+		for k in ["gas", "brake", "left", "right", "bonus"]:
+			_centers[k] = _tc._by_kind[k].center
+	var gas: Vector2 = _centers["gas"]
+	var brake: Vector2 = _centers["brake"]
+	var left: Vector2 = _centers["left"]
+	var right: Vector2 = _centers["right"]
+	var bonus: Vector2 = _centers["bonus"]
 	var exit_c := Vector2(_w - 16 - 244 - 24, 36)
 	var tap_c := Vector2(_w * 0.5, _h - 60)
 	match _frame:
@@ -87,7 +93,7 @@ func _process(_d: float) -> void:
 			_check("переезд на ◀: влево", Input.is_action_pressed("steer_left"))
 			_check("переезд на ◀: вправо отпущено",
 					not Input.is_action_pressed("steer_right"))
-			_drag(1, Vector2(_w - 292, _h - 400))
+			_drag(1, left + Vector2(-20, -304))
 		6:
 			_check("палец уполз — руль держится",
 					Input.is_action_pressed("steer_left"))

@@ -19,6 +19,7 @@ if not exist "%GODOT%" (
   echo ОШИБКА: не нашёл Godot: %GODOT%
   pause & exit /b 1
 )
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\android_editor_paths.ps1"
 echo Импорт ресурсов...
 "%GODOT%" --headless --path "%~dp0." --import >nul 2>&1
 echo Сборка APK (gradle)...

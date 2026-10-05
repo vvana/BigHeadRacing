@@ -77,10 +77,9 @@ func _ready() -> void:
 
 	# Раннего старта нет (22.09, «убрать пробел»): заезд стартует по отсчёту,
 	# когда все слоты заняты — подсказка только про выход.
-	var hint := _label(self,
-			Loc.t("✕ — в гараж") if TouchControls.wanted()
-			else Loc.t("Esc — в гараж"),
-			16, Color(1, 1, 1, 0.7), 4)
+	# На телефоне подсказки нет вовсе (29.09): клавиш там нет, а ✕ в углу
+	# говорит сам за себя.
+	var hint := _label(self, exit_hint(), 16, Color(1, 1, 1, 0.7), 4)
 	hint.anchor_left = 0.0
 	hint.anchor_right = 1.0
 	hint.anchor_top = 1.0
@@ -315,3 +314,17 @@ func _label(parent: Node, txt: String, size_px: int, color: Color,
 		l.add_theme_color_override("font_outline_color", UiKit.INK)
 	parent.add_child(l)
 	return l
+
+
+## Подсказка «как выйти в гараж»: про клавишу — только там, где клавиши
+## есть. На телефоне пусто (29.09, замечание игрока: «какой ещё Esc в
+## мобильной версии») — выходят кнопкой ✕. Любой текст интерфейса про
+## клавиши обязан идти через такую проверку TouchControls.wanted().
+static func exit_hint() -> String:
+	return "" if TouchControls.wanted() else Loc.t("Esc — в гараж")
+
+
+## Сообщение лобби с подсказкой выхода в конце (на телефоне — без неё).
+static func with_exit_hint(msg: String) -> String:
+	var h := exit_hint()
+	return msg if h == "" else msg + "\n" + h

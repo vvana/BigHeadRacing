@@ -120,6 +120,13 @@ func _physics_process(_delta: float) -> void:
 		if travel > 12.0:
 			prev = p
 			travel = 0.0
+		# Машина далеко — дальше не считаем (29.09, замер на телефоне: боксы
+		# стоили 0.84 мс на тик, почти всё — машины на другом конце трассы).
+		# Отсев строгий, исход тот же: любая точка отрезка не дальше travel
+		# от p, кузов — не дальше 0.9 от точки, подбор — ближе 1.5.
+		if Vector2(p.x - global_position.x, p.z - global_position.z).length() \
+				- travel > 2.5:
+			continue
 		var f := car.true_forward() * 0.9
 		var steps := int(travel) + 1
 		for k in steps + 1:

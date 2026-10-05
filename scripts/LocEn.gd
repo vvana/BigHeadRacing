@@ -44,8 +44,8 @@ const EN := {
 	"Проверяем имя…": "Checking the name…",
 	"Досмотри два ролика подряд — +%d монет.\nПотом 10 минут отдыха.": "Watch two ads in a row — +%d coins.\nThen a 10-minute break.",
 	"ИДЁТ РОЛИК…": "AD IS PLAYING…",
-	"+%d ЗА РЕКЛАМУ": "+%d FOR AN AD",
-	"ЕЩЁ РОЛИК · +%d": "ONE MORE AD · +%d",
+	"+%d ЗА 2 РОЛИКА": "+%d FOR 2 ADS",
+	"ЕЩЁ 1 РОЛИК · +%d": "1 MORE AD · +%d",
 	"ЧЕРЕЗ %d:%02d": "IN %d:%02d",
 	# Ежедневный вход (23.09).
 	"ЕЖЕДНЕВНАЯ НАГРАДА": "DAILY REWARD",
@@ -108,7 +108,6 @@ const EN := {
 	# ---- Лобби ----
 	"ЛОББИ": "LOBBY",
 	"Подключение…": "Connecting…",
-	"✕ — в гараж": "✕ — to garage",
 	"Подключается…": "Connecting…",
 	"Ждём игрока…": "Waiting for a player…",
 	" — ты": " — you",
@@ -148,7 +147,7 @@ const EN := {
 	"ENTER — В ГАРАЖ": "ENTER — TO GARAGE",
 	"WASD — движение | Space — ручник | Shift — прыжок | E — оружие | R — на трассу | Esc — меню": "WASD — drive | Space — handbrake | Shift — jump | E — weapon | R — respawn | Esc — menu",
 	"Связь с сервером потеряна.\nВозвращаемся в гараж…": "Connection to the server lost.\nReturning to the garage…",
-	"Сервер не выдал слот.\nВозможно, версии игры различаются — обновите игру.\nEsc — в гараж": "The server gave no slot.\nGame versions may differ — update the game.\nEsc — to garage",
+	"Сервер не выдал слот.\nВозможно, версии игры различаются — обновите игру.": "The server gave no slot.\nGame versions may differ — update the game.",
 	"Здесь всё занято — едем в свободный заезд…": "This one is full — moving to a free race…",
 	"Сервер не ответил": "The server did not respond",
 	"Заезд не ответил — возвращаемся к воротам…": "The race did not respond — returning to the gate…",
@@ -223,6 +222,27 @@ const EN := {
 	"WASD/стрелки — езда  |  Ctrl/J — оружие  |  Shift — прыжок  |  Space — ручник  |  R — на место  |  Esc — в гараж": "WASD/arrows — drive  |  Ctrl/J — weapon  |  Shift — jump  |  Space — handbrake  |  R — reset  |  Esc — to garage",
 	"СИНИЕ": "BLUE",
 	"КРАСНЫЕ": "RED",
+
+	# ---- Настройки (29.09) ----
+	"НАСТРОЙКИ": "SETTINGS",
+	"КАЧЕСТВО ГРАФИКИ": "GRAPHICS QUALITY",
+	"НИЗКАЯ": "LOW",
+	"СРЕДНЯЯ": "MEDIUM",
+	"МАКСИМАЛЬНАЯ": "MAXIMUM",
+	"Без теней и точечного света, картинка мягче. Самая плавная езда — для слабых телефонов.": "No shadows or point lights, softer picture. The smoothest ride — for slower phones.",
+	"Тени проще, картинка чуть мягче.": "Simpler shadows, slightly softer picture.",
+	"Все тени, полная чёткость. Для мощных устройств.": "All shadows, full sharpness. For powerful devices.",
+	"Если игра идёт рывками — выбери уровень ниже. Свет и тени меняются со следующего заезда.": "If the game stutters, pick a lower level. Lights and shadows change from the next race.",
+
+	"УПРАВЛЕНИЕ": "CONTROLS",
+	"РУЛЬ СЛЕВА": "STEERING LEFT",
+	"РУЛЬ СПРАВА": "STEERING RIGHT",
+	"Кнопки руля слева, газ и тормоз справа.": "Steering buttons on the left, throttle and brake on the right.",
+	"Кнопки руля справа, газ и тормоз слева.": "Steering buttons on the right, throttle and brake on the left.",
+	"Авто — язык устройства: русский или английский.": "Auto — the device language: Russian or English.",
+	"АВТОМАТИЧЕСКИЙ ГАЗ: ВКЛ": "AUTO THROTTLE: ON",
+	"АВТОМАТИЧЕСКИЙ ГАЗ: ВЫКЛ": "AUTO THROTTLE: OFF",
+	"Машина сама держит газ. Тормоз снимает газ и тормозит.": "The car holds the throttle itself. The brake releases it and brakes.",
 
 	# ---- Статистика ----
 	"СТАТИСТИКА · %s": "STATS · %s",

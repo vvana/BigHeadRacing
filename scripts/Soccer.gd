@@ -144,7 +144,7 @@ func _setup_environment() -> void:
 	# Дневное небо, как на травяной трассе (Main._setup_environment).
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-55, -30, 0)
-	sun.shadow_enabled = not GameState.lite_gfx()   # браузер: без теней
+	sun.shadow_enabled = GameState.gfx_shadows()   # браузер и НИЗКАЯ: без теней
 	sun.light_energy = 1.2
 	add_child(sun)
 
@@ -247,6 +247,7 @@ func _set_car_model(car: Car, id: String) -> void:
 		car.add_child(model)
 		car.collect_wheels(model)
 	car.apply_fx(id)   # цвет дыма/пламени из тюнинга; неон — в модели
+	GameState.gfx_strip_lights(model)   # неон без точечного света: НИЗКАЯ и телефон
 
 
 ## Цветное кольцо команды под машиной: свой/чужой виден с одного взгляда.

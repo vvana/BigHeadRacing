@@ -53,7 +53,9 @@ func build(track: TrackBuilder) -> void:
 	# и так виден по шахматной ленте (TrackBuilder._build_start_line).
 	if track.kind == TrackBuilder.KIND_SPACE:
 		_build_road_marks()
+		var first := get_child_count()
 		_build_space()
+		_darken_from(first)
 		return
 	_build_start_area()
 	# Трибуны — гоночная атрибутика: на классике, в городе и зимой. В
@@ -74,7 +76,9 @@ func build(track: TrackBuilder) -> void:
 		_build_trees()
 		_build_race_extras()
 	if track.kind == TrackBuilder.KIND_NEON:
+		var first := get_child_count()
 		_build_city()
+		_darken_from(first)
 		_build_street_lamps()
 	if track.kind == TrackBuilder.KIND_SAND:
 		_build_desert()
@@ -86,6 +90,15 @@ func build(track: TrackBuilder) -> void:
 
 ## Стартовая зона: арка с клетчатым баннером над трассой, ферма стартовых
 ## огней, башня комментаторов, тент-паддок и таблички команд.
+## Всё, что добавлено в декор начиная с ребёнка first, затемнить
+## (TrackBuilder.darken): город и планеты ночных трасс не высветляются
+## обычным светом, которым освещены полотно и машины.
+func _darken_from(first: int) -> void:
+	var cache := {}
+	for i in range(first, get_child_count()):
+		TrackBuilder.darken(get_child(i), cache)
+
+
 func _build_start_area() -> void:
 	var pos := _axis(0.0)
 	var fwd := _forward(0.0)
@@ -598,13 +611,17 @@ func _build_race_extras() -> void:
 
 ## ---------- уличные фонари ночного города ----------
 
-## Фонарные столбы ЕСТЬ ТОЛЬКО ЗДЕСЬ — и они светят по-настоящему:
-## тёплый OmniLight без теней у головки каждого фонаря. Шаг крупный,
-## чтобы огней было ~15-18 на круг — дёшево и достаточно.
+## Фонарные столбы ЕСТЬ ТОЛЬКО ЗДЕСЬ. Шаг крупный — ~15-18 на круг.
+## Свет фонарей ЗАПЕЧЁН (05.10): вместо OmniLight у головки — тёплое пятно
+## на полотне под фонарём (_lamp_pools, одна сетка на все фонари). Точечный
+## свет в gl_compatibility перерисовывает каждый задетый объект (а полотно —
+## один объект на весь круг) — замер на телефоне: 6 мс кадра на 17 фонарях,
+## 22 → 26 к/с. Чего лишились: машина под фонарём не подсвечивается.
 func _build_street_lamps() -> void:
 	var length: float = _track._curve.get_baked_length()
 	var step := 40.0
 	var n := int(length / step)
+	var heads: Array[Vector3] = []
 	for i in n:
 		var d := step * (i + 0.35)
 		# Стартовую прямую не трогаем — там арка и стартовые огни.
@@ -617,16 +634,70 @@ func _build_street_lamps() -> void:
 		var lamp := _spawn(DIR + "Pole_light_free.fbx", p, -side, 0.8, true)
 		if lamp == null:
 			continue
-		var light := OmniLight3D.new()
-		light.light_color = Color(1.0, 0.85, 0.55)
-		light.light_energy = 3.2
-		light.omni_range = 19.0
-		light.shadow_enabled = false
-		light.visible = not OS.has_feature("web")   # браузер: см. CarModelLibrary (неон)
-		lamp.add_child(light)
-		# Головка фонаря: вверх и к полотну (+Z локально — к трассе;
-		# позиция в локальных координатах, масштаб узла 0.8 её ужмёт).
-		light.position = Vector3(0, 5.8, 1.8)
+		# Головка фонаря: в локальных (0, 5.8, 1.8) — вверх и к полотну
+		# (+Z локально — к трассе), масштаб узла 0.8. Пятно — под ней.
+		heads.append(lamp.position - side * 1.8 * 0.8)
+	_lamp_pools(heads)
+
+
+## Пятна света фонарей на полотне: полоса по оси трассы ±POOL_R от каждой
+## головки, поперёк — вся ширина полотна; яркость в вершинах — спад от
+## точки под головкой (плавный, как у света с затуханием). Аддитивно и без
+## освещения: стоит только закраска пятна.
+const POOL_R := 9.0
+const POOL_COLOR := Color(1.0, 0.78, 0.45)
+const POOL_GAIN := 0.5
+
+
+func _lamp_pools(heads: Array[Vector3]) -> void:
+	if heads.is_empty():
+		return
+	var length: float = _track._curve.get_baked_length()
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	const ALONG := 1.0     # шаг вдоль оси, м
+	const ACROSS := 8      # отрезков поперёк полотна
+	for h: Vector3 in heads:
+		var d0: float = _track._curve.get_closest_offset(h)
+		var rows: Array = []
+		var d := d0 - POOL_R
+		while d <= d0 + POOL_R + 0.01:
+			var t := fposmod(d, length) / length
+			var c := _axis_at_dist(d)
+			var r := _right(t)
+			var half := _half(t)
+			var row: Array = []
+			for k in ACROSS + 1:
+				var p := c + r * lerpf(-half, half, float(k) / ACROSS)
+				# Высоко (15 см): сетка полотна своя, на изгибах и горке она местами
+				# выше прямой между точками пятна — на 5 см пятно уходило под неё
+				# полосами. Пятно аддитивное, осевую под ним просто подсвечивает.
+				p.y = c.y + 0.15
+				var f := clampf(1.0 - Vector2(p.x - h.x, p.z - h.z).length() / POOL_R,
+						0.0, 1.0)
+				row.append([p, f * f * POOL_GAIN])
+			rows.append(row)
+			d += ALONG
+		for i in rows.size() - 1:
+			for k in ACROSS:
+				var q := [rows[i][k], rows[i][k + 1], rows[i + 1][k + 1], rows[i + 1][k]]
+				for idx in [0, 1, 2, 0, 2, 3]:
+					var v: Array = q[idx]
+					st.set_color(Color(POOL_COLOR * float(v[1]), 1.0))
+					st.add_vertex(v[0])
+	var mi := MeshInstance3D.new()
+	mi.name = "LampPools"
+	mi.mesh = st.commit()
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	mat.vertex_color_use_as_albedo = true
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.disable_receive_shadows = true
+	mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
+	mi.material_override = mat
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
 
 
 ## ---------- пустыня (Palmov Island) ----------

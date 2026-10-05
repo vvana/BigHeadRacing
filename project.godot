@@ -10,7 +10,7 @@ config/name="Пыль и Пламя"
 config/description="Аркадная изометрическая гонка в стиле Rock'n'Roll Racing"
 ; Версия сборки — уезжает в метрики (Analytics.session). Держать в
 ; согласии с version/name в export_presets.cfg.
-config/version="1.1.1"
+config/version="1.1.2"
 run/main_scene="res://scenes/CarSelect.tscn"
 config/features=PackedStringArray("4.3", "Forward Plus")
 ; Android: «Назад» не закрывает игру — InputSetup вешает KEY_BACK на ui_cancel.
@@ -72,6 +72,13 @@ anti_aliasing/quality/msaa_3d=2
 ; эти две строки.
 renderer/rendering_method.mobile="gl_compatibility"
 anti_aliasing/quality/msaa_3d.android=0
+; Android (28.09, жалоба «тени треугольные» на телефоне; на столе в том же
+; gl_compatibility тени ровные): по умолчанию у мобильных карта направленных
+; теней 2048 и 16-битная глубина — самотень ложится зубцами по треугольникам
+; сетки. Поднимаем точность только на телефоне. Откат — убрать три строки (фильтр: на столе 2, у мобильных по умолчанию 0 — жёсткий).
+lights_and_shadows/directional_shadow/size.android=4096
+lights_and_shadows/directional_shadow/16_bits.android=false
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality.android=2
 ; Браузер (21.09): предпроход глубины рисует каждую непрозрачную модель
 ; дважды и на каждый материал компилирует лишнюю шейдерную программу
 ; (0,1–0,2 с каждая, синхронно). При виде сверху перекрытий мало — не нужен.

@@ -87,6 +87,16 @@ func _physics_process(_d: float) -> void:
 		GameState._daily_day = 3
 		GameState._daily_last = GameState._day_number() - 1
 		_select.call("_show_daily")
+	# `--settings [--gfx N]` (29.09) — панель настроек; --gfx — выбранный уровень.
+	if _frame == 40 and OS.get_cmdline_user_args().has("--settings"):
+		var gi := OS.get_cmdline_user_args().find("--gfx")
+		if gi >= 0:
+			GameState.set_gfx_quality(int(OS.get_cmdline_user_args()[gi + 1]))
+			_select.call("_on_gfx_changed")
+		GameState.auto_gas = OS.get_cmdline_user_args().has("--auto-gas")
+		GameState.steer_right = OS.get_cmdline_user_args().has("--steer-right")
+		_select.call("_close_name_dialog")
+		_select.call("_open_settings")
 	if _frame == 40 and stats:
 		GameState.stats = {races = 37, net_races = 21, wins = 9, podiums = 19,
 				place_sum = 118, best_place = 1, kills = 44, rating = 1187,
@@ -109,6 +119,8 @@ func _physics_process(_d: float) -> void:
 			name = "carselect_party.png"
 		if stats:
 			name = "carselect_stats.png"
+		if OS.get_cmdline_user_args().has("--settings"):
+			name = "carselect_settings.png"
 		if shop:
 			name = "carselect_shop.png"
 		if OS.get_cmdline_user_args().has("--name"):

@@ -1,8 +1,9 @@
 class_name TouchControls
 extends CanvasLayer
-## Экранные кнопки для телефона (Android, 09.09.2026): слева ГАЗ и ТОРМОЗ,
-## справа руль ◀ ▶ и БОНУС (текущее оружие), в углу ✕ — в гараж, внизу по
-## центру — кнопка-подсказка «СТАРТ» (лобби) / «В ГАРАЖ» (после финиша).
+## Экранные кнопки для телефона (Android, 09.09.2026): слева руль ◀ ▶ и
+## БОНУС (текущее оружие), справа ГАЗ и ТОРМОЗ (с 05.10; настройка
+## GameState.steer_right меняет стороны местами — так было раньше), в углу
+## ✕ — в гараж, внизу по центру — кнопка-подсказка «В ГАРАЖ» (после финиша).
 ##
 ## Кнопки НЕ Button: BaseButton в Godot 4 реагирует только на мышь, а мышь
 ## эмулируется лишь из ПЕРВОГО пальца — второй палец (руль при зажатом газе)
@@ -107,13 +108,23 @@ func _layout() -> void:
 	var s := get_viewport().get_visible_rect().size
 	var w := s.x
 	var h := s.y
-	_set_round("brake", Vector2(104, h - 96), 58)
-	_set_round("gas", Vector2(252, h - 112), 74)
-	# Руль крупнее (r76, просьба 09.09), бонус НАД ▶ (по его оси, просьба
-	# 09.09): верх круга (h−316 = 404) ниже пятой строки ленты событий (~388).
-	_set_round("left", Vector2(w - 272, h - 96), 76)
-	_set_round("right", Vector2(w - 96, h - 96), 76)
-	_set_round("bonus", Vector2(w - 96, h - 256), 60)
+	# Числа ниже — отступы от «своего» края: руль у одного, педали у
+	# другого. По умолчанию руль слева (05.10), steer_right — зеркально.
+	var sr := GameState.steer_right
+	var steer_x := func(off: float) -> float: return w - off if sr else off
+	var pedal_x := func(off: float) -> float: return off if sr else w - off
+	_set_round("brake", Vector2(pedal_x.call(104), h - 96), 58)
+	_set_round("gas", Vector2(pedal_x.call(252), h - 112), 74)
+	# Автоматический газ: «ТОРМОЗ» один — крупнее, на месте «ГАЗА».
+	if GameState.auto_gas:
+		_set_round("brake", Vector2(pedal_x.call(178), h - 112), 74)
+		_by_kind["gas"].visible = false
+	# Руль крупнее (r76, просьба 09.09), бонус НАД крайней стрелкой (по её
+	# оси, просьба 09.09): верх круга (h−316 = 404) ниже пятой строки ленты
+	# событий (~388). ◀ всегда левее ▶, с какой бы стороны руль ни стоял.
+	_set_round("left", Vector2(w - 272 if sr else 96, h - 96), 76)
+	_set_round("right", Vector2(w - 96 if sr else 272, h - 96), 76)
+	_set_round("bonus", Vector2(steer_x.call(96), h - 256), 60)
 	var ex: Btn = _by_kind["exit"]
 	ex.rect = Rect2(Vector2(w - 16 - _exit_shift - 48, 12), Vector2(48, 48))
 	var tp: Btn = _by_kind["tap"]
@@ -148,7 +159,12 @@ func show_tap(text: String, allow_drive := true) -> void:
 	var driving := text.is_empty() and allow_drive
 	for k in ["gas", "brake", "left", "right", "bonus"]:
 		_by_kind[k].visible = driving
-	_by_kind["tap"].visible = not driving
+	# Автоматический газ (настройки): кнопка «ГАЗ» не нужна.
+	if GameState.auto_gas:
+		_by_kind["gas"].visible = false
+	# Пустой текст — кнопки-подсказки нет (в лобби висела пустая жёлтая
+	# плашка, 28.09: show_tap("", false) прятал езду, но показывал её).
+	_by_kind["tap"].visible = not text.is_empty()
 	_by_kind["tap"].label = text
 	if not driving:
 		# Кнопки езды исчезли — пальцы на них больше ничего не держат.

@@ -103,7 +103,14 @@ func _ready() -> void:
 		_ground_drop = 0.05
 	_build_curve()
 	_sample_frames()
-	_build_ground()
+	# Черновик под лобби (bare, клиент ещё не знает трассы сервера): без
+	# земли, трамплинов и ускорителей (05.10). Его целиком закрывает лобби,
+	# машины стоят на решётке — им хватает полотна и стен, а сцену всё равно
+	# перестроит _rx_track. Земля — 2/3 постройки (сетка 149×149, высота
+	# каждой вершины — поиск по кривой): на телефоне черновик шёл 3,2 с
+	# одним кадром, и вход в заезд ждал его дважды.
+	if not bare:
+		_build_ground()
 	_build_road()
 	if has_walls:
 		_build_walls()
@@ -111,8 +118,9 @@ func _ready() -> void:
 		# города, у космической трассы — свои цвета (см. _build_neon_strips).
 		if (kind == KIND_NEON or kind == KIND_SPACE) and not _headless_server():
 			_build_neon_strips()
-	_build_ramps()
-	_build_boost_pads()
+	if not bare:
+		_build_ramps()
+		_build_boost_pads()
 	_build_start_line()
 	_build_decor()
 
@@ -630,6 +638,88 @@ func _ground_height(x: float, z: float) -> float:
 	return base - away * 0.28 + hills * blend
 
 
+## Поворот солнца (градусы) — общий для Main._setup_environment и проверки
+## тени земли ниже. Зимой солнце ниже.
+## ТЁМНОЕ ОКРУЖЕНИЕ ночных трасс (город, пустыри, планеты). Полотно, борта
+## и машины там освещены обычным светом (Main._setup_environment), а
+## окружение остаётся ночным за счёт материалов: цвет умножается на
+## DARK_K (подобрано: 0.25 луны против 1.1 нынешнего света). Свечение
+## (окна, вывески) не трогается. cache: исходный материал → затемнённый,
+## чтобы общие материалы зданий остались общими.
+const DARK_K := 0.25
+
+
+static func darken(root: Node, cache: Dictionary) -> void:
+	var mi := root as MeshInstance3D
+	if mi != null and mi.mesh != null:
+		if mi.material_override != null:
+			mi.material_override = _dark_copy(mi.material_override, cache)
+		else:
+			for s in mi.mesh.get_surface_count():
+				var m := mi.get_active_material(s)
+				if m != null:
+					mi.set_surface_override_material(s, _dark_copy(m, cache))
+	for c in root.get_children():
+		darken(c, cache)
+
+
+static func _dark_copy(m: Material, cache: Dictionary) -> Material:
+	var sm := m as StandardMaterial3D
+	if sm == null or sm.shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED:
+		return m
+	if not cache.has(m):
+		var d := sm.duplicate() as StandardMaterial3D
+		d.albedo_color = Color(sm.albedo_color.r * DARK_K,
+				sm.albedo_color.g * DARK_K, sm.albedo_color.b * DARK_K,
+				sm.albedo_color.a)
+		cache[m] = d
+	return cache[m]
+
+
+static func sun_rotation_deg(track_kind: String) -> Vector3:
+	return Vector3(-38, -30, 0) if track_kind == KIND_SNOW \
+			else Vector3(-55, -30, 0)
+
+
+## Может ли земля бросить тень. Земля — поле высот; пока ни одна её грань
+## не отвернулась от солнца, в виде от солнца у неё нет складок, и затенить
+## она не может ни себя, ни то, что стоит на ней и выше. Тогда тень ей не
+## нужна — а стоит она дорого: сетка земли одна на весь мир и заливает карту
+## теней целиком (замер 29.09 на телефоне: −3.8 мс кадра из 32; у фар ночных
+## трасс — ещё по проходу на каждый прожектор). Ответ на вид трассы один и
+## тот же — считаем раз за запуск.
+static var _ground_shade_cache := {}
+
+
+func _ground_can_shade(h: Array, step: float) -> bool:
+	if _ground_shade_cache.has(kind):
+		return _ground_shade_cache[kind]
+	var rot := sun_rotation_deg(kind)
+	var to_sun := Basis.from_euler(Vector3(
+			deg_to_rad(rot.x), deg_to_rad(rot.y), deg_to_rad(rot.z))).z
+	# Запас 1°: грань, стоящая к лучу ребром, тоже считается «отвернувшейся».
+	var limit := sin(deg_to_rad(1.0))
+	var shade := false
+	for ix in GROUND_RES:
+		var r0: PackedFloat32Array = h[ix]
+		var r1: PackedFloat32Array = h[ix + 1]
+		for iz in GROUND_RES:
+			var h00 := r0[iz]
+			var h10 := r1[iz]
+			var h11 := r1[iz + 1]
+			var h01 := r0[iz + 1]
+			# Нормали двух треугольников ячейки (a,b,c) и (a,c,d), вверх.
+			var n1 := Vector3(h00 - h10, step, h10 - h11).normalized()
+			var n2 := Vector3(h01 - h11, step, h00 - h01).normalized()
+			if n1.dot(to_sun) < limit or n2.dot(to_sun) < limit:
+				shade = true
+				break
+		if shade:
+			break
+	_ground_shade_cache[kind] = shade
+	return shade
+
+
 func _build_ground() -> void:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -714,6 +804,10 @@ func _build_ground() -> void:
 				"res://assets/models/track_env/cartoon/textures/grass_1.png")
 	mat.vertex_color_use_as_albedo = true
 	mesh.material_override = mat
+	if not _headless_server() and not _ground_can_shade(h, step):
+		mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	if kind == KIND_NEON:
+		darken(mesh, {})   # пустыри города остаются ночными
 	_add_visual(ground, mesh)
 
 	var col := CollisionShape3D.new()

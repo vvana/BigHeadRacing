@@ -128,6 +128,10 @@ var _party_btn: Button            # «КОМАНДА»
 var _party_badge: Label           # кружок с числом людей в команде на кнопке
 var _stats: StatsPanel            # статистика игрока (09.09, там же)
 var _stats_btn: Button            # «СТАТИСТИКА»
+var _settings: SettingsPanel      # настройки (29.09, там же): качество графики
+var _settings_btn: Button         # «НАСТРОЙКИ» — над «СТАТИСТИКОЙ»
+var _key_light: DirectionalLight3D   # свет гаража — уровень графики правит на ходу
+var _lamp_light: SpotLight3D
 var _invite_box: Control          # плашка «X зовёт в команду» (null — нет)
 var _name_hint: Label             # подсказка в окне имени («занято…»)
 var _name_wait := false           # ждём ответ сервера друзей на имя
@@ -267,6 +271,10 @@ func _process(delta: float) -> void:
 	if _stats != null and _stats.visible:
 		if Input.is_action_just_pressed("ui_cancel"):
 			_stats.close()
+		return
+	if _settings != null and _settings.visible:
+		if Input.is_action_just_pressed("ui_cancel"):
+			_settings.close()
 		return
 	# Esc закрывает раскрытое меню «МАГАЗИН» (09.09, вечер).
 	if _shop_open and Input.is_action_just_pressed("ui_cancel"):
@@ -664,6 +672,8 @@ func _open_party(focus_search: bool = true) -> void:
 		_weapons.visible = false
 	if _stats != null:
 		_stats.visible = false
+	if _settings != null:
+		_settings.visible = false
 	_party.open(focus_search)
 	_set_panel_open(true)
 
@@ -678,8 +688,41 @@ func _open_stats() -> void:
 		_weapons.visible = false
 	if _party != null:
 		_party.visible = false
+	if _settings != null:
+		_settings.visible = false
 	_stats.open()
 	_set_panel_open(true)
+
+
+## Настройки (29.09): качество графики, управление, язык. В браузере
+## раздела графики нет — там она облегчена всегда (GameState.lite_gfx).
+func _open_settings() -> void:
+	if _settings == null:
+		return
+	_grid_panel.visible = false
+	if _tuning != null and _tuning.visible:
+		_tuning.visible = false
+	if _weapons != null:
+		_weapons.visible = false
+	_hide_social_panels()
+	_settings.open()
+	_set_panel_open(true)
+
+
+## Язык сменили: весь гараж собран на прежнем — перезагрузить сцену и
+## вернуть игрока в настройки, где он был.
+func _on_lang_changed() -> void:
+	GameState.reopen_settings = true
+	get_tree().reload_current_scene.call_deferred()
+
+
+## Уровень графики сменили: свет гаража правим на месте (заезд возьмёт
+## уровень сам, когда будет строиться).
+func _on_gfx_changed() -> void:
+	if _key_light != null:
+		_key_light.shadow_enabled = GameState.gfx_shadows()
+	if _lamp_light != null:
+		_lamp_light.visible = GameState.gfx_point_lights()
 
 
 ## Сигналы сети: гонка начнётся, когда сервер подтвердит соединение
@@ -980,9 +1023,9 @@ func _refresh_ad_btn() -> void:
 	if GameState.ad_available():
 		_ad_btn.disabled = false
 		if GameState.ad_pair_progress() == 0:
-			_ad_btn.text = Loc.t("+%d ЗА РЕКЛАМУ") % GameState.AD_PAIR_REWARD
+			_ad_btn.text = Loc.t("+%d ЗА 2 РОЛИКА") % GameState.AD_PAIR_REWARD
 		else:
-			_ad_btn.text = Loc.t("ЕЩЁ РОЛИК · +%d") % GameState.AD_PAIR_REWARD
+			_ad_btn.text = Loc.t("ЕЩЁ 1 РОЛИК · +%d") % GameState.AD_PAIR_REWARD
 		return
 	var left := int(ceil(GameState.ad_cooldown_left()))
 	_ad_btn.disabled = true
@@ -1382,6 +1425,8 @@ func _hide_social_panels() -> void:
 		_party.visible = false
 	if _stats != null:
 		_stats.visible = false
+	if _settings != null:
+		_settings.visible = false
 
 
 ## Магазин ступеней оружия (08.09) — на месте доски; тюнинг и доска
@@ -1624,8 +1669,9 @@ func _setup_environment() -> void:
 	key.rotation_degrees = Vector3(-48, -32, 0)
 	key.light_energy = 0.9
 	key.light_color = Color(1.0, 0.95, 0.88)
-	key.shadow_enabled = not GameState.lite_gfx()   # браузер: без теней
+	key.shadow_enabled = GameState.gfx_shadows()   # браузер и НИЗКАЯ: без теней
 	add_child(key)
+	_key_light = key
 
 	# Заполняющий — холодный, с окна напротив.
 	var fill := DirectionalLight3D.new()
@@ -1642,8 +1688,9 @@ func _setup_environment() -> void:
 	lamp.spot_range = 9
 	lamp.light_energy = 1.4
 	lamp.light_color = Color(1.0, 0.94, 0.82)
-	lamp.visible = not GameState.lite_gfx()   # браузер: без точечного света
+	lamp.visible = GameState.gfx_point_lights()   # браузер и НИЗКАЯ: без точечного света
 	add_child(lamp)
+	_lamp_light = lamp
 
 	var cam := Camera3D.new()
 	# ДЛИННЫЙ ОБЪЕКТИВ. Раньше было 50° с 4.6 м, и машина стояла у самого
@@ -2130,6 +2177,13 @@ func _build_podium_ui(canvas: Node, col: Control) -> void:
 	_place(_stats_btn, 540, _row_y - _row2_h - 12.0, 116, _row2_h, true)
 	_stats_btn.pressed.connect(_open_stats)
 	col.add_child(_stats_btn)
+	# «НАСТРОЙКИ» (29.09) — над «СТАТИСТИКОЙ», той же ширины.
+	_settings_btn = Button.new()
+	_settings_btn.text = Loc.t("НАСТРОЙКИ")
+	UiKit.style_button(_settings_btn, "steel", 13 if _touch_ui else 12, 8)
+	_place(_settings_btn, 540, _row_y - (_row2_h + 12.0) * 2.0, 116, _row2_h, true)
+	_settings_btn.pressed.connect(_open_settings)
+	col.add_child(_settings_btn)
 
 	_build_shop_menu(col)
 
@@ -2271,6 +2325,15 @@ func _setup_grid(canvas: CanvasLayer) -> void:
 	_place(_stats, BOARD_X, BOARD_Y, BOARD_W, BOARD_H)
 	_stats.closed.connect(func() -> void: _set_panel_open(false))
 	canvas.add_child(_stats)
+	_settings = SettingsPanel.new()
+	_place(_settings, BOARD_X, BOARD_Y, BOARD_W, BOARD_H)
+	_settings.closed.connect(func() -> void: _set_panel_open(false))
+	_settings.changed.connect(_on_gfx_changed)
+	_settings.lang_changed.connect(_on_lang_changed)
+	if GameState.reopen_settings:
+		GameState.reopen_settings = false
+		_open_settings.call_deferred()
+	canvas.add_child(_settings)
 
 	_scroll = ScrollContainer.new()
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED

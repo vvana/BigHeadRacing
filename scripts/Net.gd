@@ -471,6 +471,39 @@ func join_server(address: String, p: int, remember := true) -> bool:
 	return true
 
 
+## Сколько сервер терпит молчащего клиента (05.10, «сервер не выдал
+## слот» с телефона). Клиент строит заезд ОДНИМ кадром — на Realme ~5,2 с
+## (сцена ~1 с, трасса 3,2-3,5 с, машины, HUD), после свежей установки ещё
+## дольше, — и всё это время не отвечает. По умолчанию ENet рвёт пира, не
+## подтвердившего надёжные пакеты, уже через 5 с (timeout_min): сервер
+## отключал телефон ровно на 5-й секунде, его hello уходил в пустоту.
+## Мёртвый клиент теперь замечается позже — до 15 с.
+const PEER_TIMEOUT_MIN_MS := 15000
+const PEER_TIMEOUT_MAX_MS := 30000
+
+
+func _relax_timeout(id: int) -> void:
+	var enet := multiplayer.multiplayer_peer as ENetMultiplayerPeer
+	if enet == null:
+		return
+	var p := enet.get_peer(id)
+	if p != null:
+		p.set_timeout(32, PEER_TIMEOUT_MIN_MS, PEER_TIMEOUT_MAX_MS)
+
+
+## Клиент посреди долгой постройки заезда (Main._load_mark между шагами):
+## обслужить соединение — отправить подтверждения серверу, чтобы он не
+## счёл нас пропавшими (см. PEER_TIMEOUT_MIN_MS). Только сам ENet: пакеты
+## встают в очередь, RPC разберёт обычный опрос SceneMultiplayer в
+## следующем кадре — недостроенная сцена их не получит.
+func keep_alive() -> void:
+	if mode != Mode.CLIENT:
+		return
+	var enet := multiplayer.multiplayer_peer as ENetMultiplayerPeer
+	if enet != null:
+		enet.poll()
+
+
 ## Полный сброс в одиночный режим — при выходе из сетевой гонки в меню.
 func leave() -> void:
 	if multiplayer.multiplayer_peer != null:
@@ -518,6 +551,7 @@ func _free_slot() -> int:
 
 
 func _on_peer_connected(id: int) -> void:
+	_relax_timeout(id)
 	var slot := _free_slot()
 	if slot < 0:
 		# Мест нет — но соединение НЕ рвём: это гость, Main._rx_hello

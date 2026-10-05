@@ -427,6 +427,177 @@ static func warm_gfx() -> bool:
 	return DisplayServer.get_name() != "headless" 			and not OS.get_cmdline_user_args().has("--server") 			and not OS.get_cmdline_user_args().has("--no-warm")
 
 
+## ── КАЧЕСТВО ГРАФИКИ (29.09, меню «НАСТРОЙКИ» в гараже) ──
+## Замер на телефоне (Realme, Unisoc T612, см. PROGRESS 29.09): дневные
+## трассы 31 к/с, ночной город 4,7, космос 6,9. Дорого стоят тени фар
+## (16 прожекторов), карта теней солнца и закраска пикселей — их и
+## переключают уровни:
+## (Лучи фар 05.10 убраны совсем — решение игрока; строки про них ниже
+## описывают, как уровни делили их до этого.)
+##   МАКСИМАЛЬНАЯ — всё как было: тени 4096 с мягким фильтром, фары с
+##                  тенями у всех машин, полное разрешение;
+##   СРЕДНЯЯ      — тени солнца 2048 с лёгким мягким фильтром, луч фар (с
+##                  тенью) только у своей машины, 3D в 80 % разрешения;
+##   НИЗКАЯ       — без теней, без лучей фар и точечного света (лампы и
+##                  свечение остаются), без MSAA, 3D в 60 % разрешения.
+## Настройка — про УСТРОЙСТВО, а не про игрока: лежит в своём файле, а не в
+## профиле (профиль переезжает между устройствами через облако). В браузере
+## действует lite_gfx() — там уровня нет, меню настроек скрыто.
+const GFX_LOW := 0
+const GFX_MID := 1
+const GFX_MAX := 2
+const GFX_NAMES := ["НИЗКАЯ", "СРЕДНЯЯ", "МАКСИМАЛЬНАЯ"]
+const SETTINGS_PATH := "user://settings.cfg"
+var gfx_quality := GFX_MAX
+
+
+## Уровень для устройства, на котором игрок ещё ничего не выбирал:
+## МАКСИМАЛЬНАЯ везде, и на Android тоже (решение игрока 29.09; слабому
+## телефону уровень снижают в настройках).
+static func gfx_default() -> int:
+	return GFX_MAX
+
+
+## АВТОМАТИЧЕСКИЙ ГАЗ (29.09, настройки): газ нажат всегда, кнопка тормоза
+## снимает газ и тормозит, как обычный тормоз (решение игрока). Кнопка
+## «ГАЗ» на экране телефона при этом не нужна — TouchControls её прячет.
+var auto_gas := false
+
+
+func set_auto_gas(on: bool) -> void:
+	auto_gas = on
+	_save_setting("drive", "auto_gas", auto_gas)
+
+
+## СТОРОНА РУЛЯ на экране телефона (05.10, настройки): по умолчанию кнопки
+## руля слева, газ и тормоз справа (решение игрока); true — наоборот, как
+## было до 05.10. Раскладку строит TouchControls._layout.
+var steer_right := false
+
+
+func set_steer_right(on: bool) -> void:
+	steer_right = on
+	_save_setting("drive", "steer_right", steer_right)
+
+
+## ЯЗЫК ИГРЫ (05.10, настройки): "" — авто (язык площадки в браузере, язык
+## системы на остальных устройствах: русский, иначе английский), "ru" / "en"
+## — выбор игрока. Применяет _apply_platform_lang.
+var lang_choice := ""
+## Гараж после смены языка перезагружается — и должен снова открыть настройки.
+var reopen_settings := false
+
+
+func set_lang_choice(l: String) -> void:
+	lang_choice = l if l in Loc.LOCALES else ""
+	_save_setting("ui", "lang", lang_choice)
+	_apply_platform_lang()
+
+
+func _save_setting(section: String, key: String, value: Variant) -> void:
+	if is_test_profile():
+		return
+	var cf := ConfigFile.new()
+	cf.load(SETTINGS_PATH)
+	cf.set_value(section, key, value)
+	cf.save(SETTINGS_PATH)
+
+
+func _load_settings() -> void:
+	gfx_quality = gfx_default()
+	# Стенды меряют и снимают картинку на умолчании — чужой выбор не читают.
+	if is_test_profile():
+		return
+	var cf := ConfigFile.new()
+	if cf.load(SETTINGS_PATH) == OK:
+		gfx_quality = clampi(int(cf.get_value("gfx", "quality", gfx_quality)),
+				GFX_LOW, GFX_MAX)
+		auto_gas = bool(cf.get_value("drive", "auto_gas", false))
+		steer_right = bool(cf.get_value("drive", "steer_right", false))
+
+
+## Выбрать уровень: запомнить и применить то, что меняется на ходу
+## (разрешение, MSAA, карта теней). Свет и тени сцен берут уровень при
+## постройке — заезд строится заново при каждом входе, гараж правит сам.
+func set_gfx_quality(q: int) -> void:
+	gfx_quality = clampi(q, GFX_LOW, GFX_MAX)
+	apply_gfx()
+	if is_test_profile():
+		return
+	var cf := ConfigFile.new()
+	cf.load(SETTINGS_PATH)
+	cf.set_value("gfx", "quality", gfx_quality)
+	cf.save(SETTINGS_PATH)
+
+
+func apply_gfx() -> void:
+	if lite_gfx() or DisplayServer.get_name() == "headless":
+		return
+	var vp := get_tree().root
+	vp.scaling_3d_scale = [0.6, 0.8, 1.0][gfx_quality]
+	var msaa: int = ProjectSettings.get_setting_with_override(
+			"rendering/anti_aliasing/quality/msaa_3d")
+	vp.msaa_3d = Viewport.MSAA_DISABLED if gfx_quality == GFX_LOW \
+			else msaa as Viewport.MSAA
+	var size: int = ProjectSettings.get_setting_with_override(
+			"rendering/lights_and_shadows/directional_shadow/size")
+	var bits: bool = ProjectSettings.get_setting_with_override(
+			"rendering/lights_and_shadows/directional_shadow/16_bits")
+	var soft: int = ProjectSettings.get_setting_with_override(
+			"rendering/lights_and_shadows/directional_shadow/soft_shadow_filter_quality")
+	if gfx_quality < GFX_MAX:
+		size = mini(size, 2048)
+		soft = mini(soft, 1)
+	RenderingServer.directional_shadow_atlas_set_size(size, bits)
+	RenderingServer.directional_soft_shadow_filter_set_quality(soft)
+	print("[gfx] качество: %s (3D %d %%, карта теней %d, фильтр %d)"
+			% [GFX_NAMES[gfx_quality], int(vp.scaling_3d_scale * 100.0), size, soft])
+
+
+## Тени солнца и ключевого света гаража.
+func gfx_shadows() -> bool:
+	return not lite_gfx() and gfx_quality > GFX_LOW
+
+
+## Точечный свет (неон под машиной, фонари, лампа гаража).
+func gfx_point_lights() -> bool:
+	return not lite_gfx() and gfx_quality > GFX_LOW
+
+
+## НИЗКАЯ: погасить точечные источники под узлом. Их ставят CarModelLibrary
+## и TrackDecor, которым GameState недоступен (стенды --script идут без
+## автозагрузок), — поэтому гасим снаружи, после постройки.
+## Свет неона под машиной («NeonLight») в заезде на мобильном рендерере
+## (gl_compatibility — телефон) гасим на ЛЮБОМ уровне (05.10): крошечный
+## источник задевает полотно, а полотно — один объект на весь круг, и
+## рендерер перерисовывает его целиком ради каждого огонька. Замер на
+## телефоне: неон у трёх машин — 20 мс кадра (трава 32 → 19,5 к/с). Пятно
+## неона на дороге — отдельная плоскость, оно остаётся. Гараж эту функцию
+## не зовёт — там неон светит как прежде.
+func gfx_strip_lights(root: Node) -> void:
+	if root == null:
+		return
+	var all := not gfx_point_lights()
+	var neon := mobile_renderer()
+	if not all and not neon:
+		return
+	var stack: Array[Node] = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		if n is OmniLight3D and (all or n.name == "NeonLight"):
+			(n as OmniLight3D).visible = false
+
+
+## Рендерер телефона (и браузера): gl_compatibility. Точечный свет там
+## стоит по проходу на каждый задетый объект — см. gfx_strip_lights.
+static func mobile_renderer() -> bool:
+	# Своего RenderingDevice нет только у gl_compatibility (в 4.3 метода
+	# «текущий рендерер» у RenderingServer ещё нет).
+	return RenderingServer.get_rendering_device() == null
+
+
 var _kept_materials := {}           # RID шейдера → материал (держим ссылку)
 var web_tapped := false             # браузер: игрок уже кликнул (звук разрешён)
 
@@ -613,6 +784,8 @@ func _ready() -> void:
 	if not CarModelLibrary.CAR_IDS.has(sel) or not car_owned(sel):
 		sel = FREE_CARS[0]
 	selected_car_id = full_id(sel)
+	_load_settings()
+	apply_gfx()
 	# Строка в лог с ПЕРВОЙ секунды запуска: какой файл прочитан и что в
 	# нём было. 04.09 игрок трижды сообщал «прогресс исчез» — без этой
 	# строки каждый раз приходилось гадать по времени записи файлов.
@@ -672,15 +845,33 @@ func platform_lang() -> String:
 	return str(v).to_lower() if v != null else ""
 
 
-## Выбрать язык игры (Loc): на площадке — по языку SDK, иначе русский;
-## ключ `--lang=en` (стенды, проверка перевода) сильнее всего.
+## Выбрать язык игры (Loc). По убыванию силы: ключ `--lang=en` (стенды,
+## проверка перевода); выбор игрока в настройках (lang_choice); язык SDK
+## площадки; язык системы (05.10: русский, иначе английский). Стенды
+## (тестовый профиль) без ключа всегда русские — снимки и проверки текстов
+## не должны зависеть от языка машины, на которой их гоняют.
 func _apply_platform_lang() -> void:
+	if not is_test_profile() and not _lang_loaded:
+		_lang_loaded = true
+		var cf := ConfigFile.new()
+		if cf.load(SETTINGS_PATH) == OK:
+			var saved := str(cf.get_value("ui", "lang", ""))
+			lang_choice = saved if saved in Loc.LOCALES else ""
 	var lang := platform_lang()
+	if lang == "" and not is_test_profile():
+		lang = OS.get_locale_language()
 	var forced := Loc.cmdline_lang()
-	var locale := forced if forced != "" else Loc.pick_locale(lang)
+	var locale := Loc.pick_locale(lang)
+	if lang_choice != "":
+		locale = lang_choice
+	if forced != "":
+		locale = forced
 	Loc.setup(locale)
-	if lang != "" or forced != "":
-		print("[lang] язык площадки «%s» -> игра: %s" % [lang, TranslationServer.get_locale()])
+	print("[lang] язык устройства «%s», выбор игрока «%s» -> игра: %s"
+			% [lang, lang_choice, TranslationServer.get_locale()])
+
+
+var _lang_loaded := false
 
 
 ## ---- Облачные сохранения Яндекс Игр (требование 1.9, 18.09.2026) ----

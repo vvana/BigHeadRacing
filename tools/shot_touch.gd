@@ -4,6 +4,7 @@ extends Node3D
 ## и снимает кадр; затем кадр с кнопкой «В ГАРАЖ» (лобби/финиш).
 ## Запуск С ОКНОМ:
 ## godot --path . res://tools/ShotTouch.tscn -- <папка_вывода> --touch
+## [--auto-gas] [--steer-right]
 
 var _main: Node3D
 var _frame := 0
@@ -13,6 +14,8 @@ var _hold := ""
 
 func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
+	GameState.auto_gas = args.has("--auto-gas")   # настройка «автоматический газ»
+	GameState.steer_right = args.has("--steer-right")   # руль справа (как до 05.10)
 	if args.size() > 0:
 		_out = args[0]
 	DirAccess.make_dir_recursive_absolute(_out)
@@ -48,18 +51,24 @@ func _process(_d: float) -> void:
 	var tc: TouchControls = _main._touch
 	if tc != null and not _hold.is_empty():
 		tc.show_tap(_hold)
-	var s := get_viewport().get_visible_rect().size
+	# Пальцы — в центры кнопок, где бы их ни поставила раскладка (сторона
+	# руля, автогаз): педаль (газ или, при автогазе, тормоз) и ▶.
+	var pedal := Vector2.ZERO
+	var steer := Vector2.ZERO
+	if tc != null:
+		pedal = tc._by_kind["brake" if GameState.auto_gas else "gas"].center
+		steer = tc._by_kind["right"].center
 	match _frame:
 		60:
 			_shot("touch_countdown.png")
 		250:
-			_touch(0, Vector2(252, s.y - 112), true)
-			_touch(1, Vector2(s.x - 112, s.y - 100), true)
+			_touch(0, pedal, true)
+			_touch(1, steer, true)
 		262:
 			_shot("touch_race.png")
 		270:
-			_touch(0, Vector2(252, s.y - 112), false)
-			_touch(1, Vector2(s.x - 112, s.y - 100), false)
+			_touch(0, pedal, false)
+			_touch(1, steer, false)
 			_hold = "В ГАРАЖ"
 		276:
 			_shot("touch_tap.png")
