@@ -88,6 +88,7 @@ var _name_btn: Button             # «ИМЯ: …» на верхней полк
 var _name_dialog: Control         # модальное окно ввода имени (null — нет)
 var _name_edit: LineEdit
 var _scroll: ScrollContainer
+var _grid_swiped := false         # с последнего касания ячейки доску листали
 var _style_normal: StyleBoxFlat
 var _style_hover: StyleBoxFlat
 var _style_selected: StyleBoxFlat
@@ -1530,6 +1531,8 @@ func _update_thumb(i: int) -> void:
 
 
 func _on_cell_pressed(i: int) -> void:
+	if _grid_swiped:
+		return   # палец листал доску, а не жал ячейку
 	if i == _index:
 		_start_race()  # повторный клик по выбранной — старт
 	else:
@@ -2339,6 +2342,13 @@ func _setup_grid(canvas: CanvasLayer) -> void:
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_scroll.position = Vector2(18, 46)
 	_scroll.size = Vector2(BOARD_W - 36, BOARD_H - 46 - 30)
+	# Свайп по доске на телефоне (жалоба 08.10): ячейки-кнопки забирали
+	# касание себе, и листалось только за щели между ними. Теперь кнопки
+	# пропускают касание дальше (MOUSE_FILTER_PASS), а палец, сдвинутый
+	# дальше мёртвой зоны, — листание, а не нажатие (иначе свайп по уже
+	# выбранной машине запускал бы заезд).
+	_scroll.scroll_deadzone = 12
+	_scroll.scroll_started.connect(func() -> void: _grid_swiped = true)
 	board.add_child(_scroll)
 
 	var grid := GridContainer.new()
@@ -2358,7 +2368,9 @@ func _setup_grid(canvas: CanvasLayer) -> void:
 		btn.custom_minimum_size = THUMB_SIZE
 		btn.expand_icon = true
 		btn.focus_mode = Control.FOCUS_NONE
+		btn.mouse_filter = Control.MOUSE_FILTER_PASS
 		_apply_style(btn, _style_normal, _style_hover)
+		btn.button_down.connect(func() -> void: _grid_swiped = false)
 		btn.pressed.connect(_on_cell_pressed.bind(i))
 		grid.add_child(btn)
 		_buttons.append(btn)
