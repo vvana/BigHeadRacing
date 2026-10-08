@@ -898,6 +898,13 @@ func _open_name_dialog(first: bool, taken := false) -> void:
 	plate.offset_right = 230
 	plate.offset_top = -110
 	plate.offset_bottom = 110
+	if TouchControls.wanted():
+		# На телефоне экранная клавиатура закрывает нижнюю половину экрана
+		# и вместе с ней поле ввода (жалоба 08.10) — окно прижато к верху.
+		plate.anchor_top = 0.0
+		plate.anchor_bottom = 0.0
+		plate.offset_top = 16
+		plate.offset_bottom = 236
 
 	var title := UiKit.label(plate, Loc.t("КАК ТЕБЯ ЗОВУТ?"), 26, Color.WHITE, 6)
 	title.position = Vector2(0, 16)
