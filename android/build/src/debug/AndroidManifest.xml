@@ -13,19 +13,27 @@
     <application android:label="@string/godot_project_name_string"
         android:allowBackup="false"
         android:icon="@mipmap/icon"
-        android:appCategory="game"
         android:isGame="true"
         android:hasFragileUserData="false"
         android:requestLegacyExternalStorage="false"
+        android:appCategory="game"
         tools:replace="android:allowBackup,android:appCategory,android:isGame,android:hasFragileUserData,android:requestLegacyExternalStorage"
         tools:ignore="GoogleAppIndexingWarning">
 
-        <activity android:name="com.godot.game.GodotApp" tools:replace="android:screenOrientation,android:excludeFromRecents,android:resizeableActivity" tools:node="mergeOnlyAttributes" android:excludeFromRecents="false" android:screenOrientation="userLandscape" android:resizeableActivity="true">
+        <meta-data tools:node="replace" android:name="org.godotengine.rendering.method" android:value="gl_compatibility" />
+        <meta-data tools:node="replace" android:name="org.godotengine.editor.version" android:value="4.7.2.stable" />
+        <activity android:name=".GodotApp" tools:replace="android:screenOrientation,android:excludeFromRecents,android:resizeableActivity" tools:node="mergeOnlyAttributes" android:excludeFromRecents="false" android:screenOrientation="userLandscape" android:resizeableActivity="true">
+        </activity>
+        <activity-alias
+            tools:node="mergeOnlyAttributes"
+            android:name=".GodotAppLauncher"
+            android:targetActivity=".GodotApp"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
     </application>
 </manifest>

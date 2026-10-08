@@ -11,7 +11,7 @@ rem debug-ключом, ставится на телефон как есть).
 rem Боевой APK для RuStore: пресет "Android" (--export-release ... dist\DustAndFlame-unsigned.apk),
 rem потом "Подписать APK.bat".
 
-set "GODOT=E:\Soft\Godot\Godot_v4.3-stable_win64_console.exe"
+set "GODOT=E:\Soft\Godot47\Godot_v4.7.2-stable_win64_console.exe"
 set "JAVA_HOME=C:\Program Files\Android\Android Studio\jbr"
 set "GRADLE_OPTS=-Djava.net.preferIPv4Stack=true"
 

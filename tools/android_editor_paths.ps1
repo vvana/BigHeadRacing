@@ -1,4 +1,4 @@
-﻿# Прописывает в настройки редактора Godot 4.3 (%APPDATA%\Godot\editor_settings-4.3.tres)
+﻿# Прописывает в настройки редактора Godot 4.7 (%APPDATA%\Godot\editor_settings-4.7.tres)
 # пути Android SDK / Java / debug-ключа, без которых экспорт Android падает
 # «Требуется указать верный путь к Android SDK». Зовётся из «Собрать боевой APK.bat»
 # и «Собрать тестовый APK.bat». Прежний файл сохраняется как .bak_<дата> (раз в день).
@@ -11,7 +11,7 @@ $want = [ordered]@{
     'export/android/debug_keystore_pass' = '"android"'
 }
 $dir = Join-Path $env:APPDATA 'Godot'
-$path = Join-Path $dir 'editor_settings-4.3.tres'
+$path = Join-Path $dir 'editor_settings-4.7.tres'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 if (Test-Path $path) {
     $text = [IO.File]::ReadAllText($path, $utf8)

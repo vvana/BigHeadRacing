@@ -9,7 +9,7 @@ $old = if (Test-Path $apk) { (Get-Item $apk).LastWriteTime } else { [datetime]::
 $env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
 $env:JAVA_TOOL_OPTIONS = '-Djdk.net.unixdomain.tmpdir=E:/UnityProjects/jtmp'
 $t0 = Get-Date
-$godot = 'E:\Soft\Godot\Godot_v4.3-stable_win64_console.exe'
+$godot = 'E:\Soft\Godot47\Godot_v4.7.2-stable_win64_console.exe'
 $p = Start-Process $godot -ArgumentList '--headless','--path','E:\UnityProjects\BigHeadRacing','--export-debug','"Android (test)"','dist/test/DustAndFlame.apk' -RedirectStandardOutput tools\perf_kit\export_log.txt -RedirectStandardError tools\perf_kit\export_log.err -PassThru
 $last = -1; $stable = 0
 for ($i = 0; $i -lt 100; $i++) {

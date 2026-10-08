@@ -9,7 +9,7 @@ rem затем вызывается "Подписать APK.bat" (ключ dustf
 rem Итог: dist\DustAndFlame-release.apk. Версию (version/code, version/name)
 rem менять в export_presets.cfg и config/version в project.godot.
 
-set "GODOT=E:\Soft\Godot\Godot_v4.3-stable_win64_console.exe"
+set "GODOT=E:\Soft\Godot47\Godot_v4.7.2-stable_win64_console.exe"
 set "JAVA_HOME=C:\Program Files\Android\Android Studio\jbr"
 set "GRADLE_OPTS=-Djava.net.preferIPv4Stack=true"
 set "OUT=%~dp0dist\DustAndFlame-unsigned.apk"
