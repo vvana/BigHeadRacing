@@ -754,7 +754,9 @@ func _build_ground() -> void:
 				# у снега 40 м — пятна между сугробами не повторяются
 				# «обоями» с высоты.
 				var uv_k := 0.07
-				if kind == KIND_SPACE:
+				if kind == KIND_GRASS or kind == KIND_NEON:
+					uv_k = 0.05   # земля ИИ-художника: тайл 20 м
+				elif kind == KIND_SPACE:
 					uv_k = 0.02
 				elif kind == KIND_SNOW:
 					uv_k = 0.025
@@ -782,10 +784,10 @@ func _build_ground() -> void:
 				"res://assets/models/track_env/cartoon/textures/gravel.png")
 		mat.albedo_color = Color(1.45, 1.32, 1.05)
 	elif kind == KIND_NEON:
-		# Ночной город: тот же гравий, но затемнённый в холодный бетон.
-		mat.albedo_texture = load(
-				"res://assets/models/track_env/cartoon/textures/gravel.png")
-		mat.albedo_color = Color(0.30, 0.33, 0.44)
+		# Ночной город (15.10): мокрый ночной асфальт ИИ-художника — уже
+		# тёмный, сам по себе (darken не нужен), под 2D-кварталы
+		# (TrackDecor._build_neon_2d).
+		mat.albedo_texture = load("res://assets/env/neon/ground.png")
 	elif kind == KIND_SPACE:
 		# Космос: земля — сама «пустота», чёрно-синее поле со звёздами и
 		# пятнами туманностей (текстура печётся кодом). UNSHADED — звёзды
@@ -798,16 +800,14 @@ func _build_ground() -> void:
 		mat.albedo_texture = _snow_ground_texture()
 		mat.roughness = 0.9
 	else:
-		# Зелёные поля — трава из Cartoon Tracks Pack (пятна текстуры
-		# смягчены при конвертации, см. ПРОГРЕСС.md).
-		mat.albedo_texture = load(
-				"res://assets/models/track_env/cartoon/textures/grass_1.png")
+		# Классика (15.10): выгоревшая трава с проплешинами — бесшовная
+		# земля ИИ-художника (tools/gen_env_grass.py), под 2D-окружение
+		# (TrackDecor._build_grass_2d).
+		mat.albedo_texture = load("res://assets/env/grass/ground.png")
 	mat.vertex_color_use_as_albedo = true
 	mesh.material_override = mat
 	if not _headless_server() and not _ground_can_shade(h, step):
 		mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	if kind == KIND_NEON:
-		darken(mesh, {})   # пустыри города остаются ночными
 	_add_visual(ground, mesh)
 
 	var col := CollisionShape3D.new()

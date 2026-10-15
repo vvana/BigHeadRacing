@@ -57,6 +57,21 @@ func build(track: TrackBuilder) -> void:
 		_build_space()
 		_darken_from(first)
 		return
+	# КЛАССИКА (15.10): мир вокруг трассы — 2D из атласов ИИ-художника
+	# (EnvSprites): картонки и куски земли, по вызову отрисовки на атлас
+	# вместо сотен FBX. В 3D остались только стартовая арка, огни старта и разметка.
+	if track.kind == TrackBuilder.KIND_GRASS:
+		_build_start_gate()
+		_build_road_marks()
+		_build_grass_2d()
+		return
+	# НОЧНОЙ ГОРОД (15.10) — так же: 2D-кварталы из атласов, в 3D только
+	# арка, огни старта и разметка.
+	if track.kind == TrackBuilder.KIND_NEON:
+		_build_start_gate()
+		_build_road_marks()
+		_build_neon_2d()
+		return
 	_build_start_area()
 	# Трибуны — гоночная атрибутика: на классике, в городе и зимой. В
 	# пустыне их нет — там вестерн (станция, лошади, бочки), зрителей не
@@ -100,25 +115,11 @@ func _darken_from(first: int) -> void:
 
 
 func _build_start_area() -> void:
-	var pos := _axis(0.0)
-	var fwd := _forward(0.0)
 	var out := _outward(0.0)
+	_build_start_gate()
 
-	# Арка BEDRILL: пролёт 15.2 м, надо накрыть дорогу с ограждениями (~20.8).
-	_spawn(DIR + "Arch_for_banner_free.fbx", pos, fwd, 1.38, true)
-	# Клетчатый финишный баннер — в проём арки.
-	_spawn(DIR + "Arch_banner_finish_free.fbx",
-			pos + Vector3(0, 4.4 * 1.38, 0), fwd, 1.95, true)
-
-	# Ферма стартовых огней (мультяшная): столб за правым ограждением,
-	# консоль с тремя светодиодными панелями нависает над полотном.
-	# У модели консоль уходит в +Z от столба — разворачиваем её К трассе.
-	var gantry_pos := _axis_at_dist(-9.0) + out * (_half(0.0) + 2.0)
-	gantry_pos.y = _ground_y(gantry_pos)
-	_spawn(CDIR + "prop_startlights.FBX", gantry_pos, -out, 1.0, false)
-
-	# Снаружи стартовой прямой: на классике и в городе — башня комментаторов
-	# и тент-паддок с табличками команд; в пустыне — вестерн-паддок:
+	# Снаружи стартовой прямой: в городе и зимой — башня комментаторов и
+	# тент-паддок с табличками команд; в пустыне — вестерн-паддок:
 	# водонапорная башня, телега, коновязь с лошадьми и бочки.
 	if _track.kind == TrackBuilder.KIND_SAND:
 		var tank_pos := _axis_at_dist(18.0) + out * (_half(0.0) + 14.0)
@@ -163,6 +164,410 @@ func _build_start_area() -> void:
 		var p := _axis_at_dist(-16.0 - 6.0 * i) + out * (_half(0.0) + 1.6)
 		p.y = _ground_y(p)
 		_spawn(CDIR + "prop_team_%d.FBX" % (i + 1), p, -out, 1.0, false)
+
+
+## Арка с клетчатым баннером над стартом и ферма стартовых огней — всё, что
+## нависает над полотном (картонкой не сделать: машины едут ПОД ними).
+func _build_start_gate() -> void:
+	var pos := _axis(0.0)
+	var fwd := _forward(0.0)
+	var out := _outward(0.0)
+
+	# Арка BEDRILL: пролёт 15.2 м, надо накрыть дорогу с ограждениями (~20.8).
+	_spawn(DIR + "Arch_for_banner_free.fbx", pos, fwd, 1.38, true)
+	# Клетчатый финишный баннер — в проём арки.
+	_spawn(DIR + "Arch_banner_finish_free.fbx",
+			pos + Vector3(0, 4.4 * 1.38, 0), fwd, 1.95, true)
+
+	# Ферма стартовых огней (мультяшная): столб за правым ограждением,
+	# консоль с тремя светодиодными панелями нависает над полотном.
+	# У модели консоль уходит в +Z от столба — разворачиваем её К трассе.
+	var gantry_pos := _axis_at_dist(-9.0) + out * (_half(0.0) + 2.0)
+	gantry_pos.y = _ground_y(gantry_pos)
+	_spawn(CDIR + "prop_startlights.FBX", gantry_pos, -out, 1.0, false)
+
+
+## ---------- классика в 2D ----------
+
+const GRASS_SEED := 20261015
+# Без class_name: новые классы не попадают в кэш классов, пока редактор
+# не пересканирует проект, — грузим напрямую.
+const EnvSprites := preload("res://scripts/EnvSprites.gd")
+const EnvGrassAtlas := preload("res://scripts/EnvGrassAtlas.gd")
+const EnvNeonAtlas := preload("res://scripts/EnvNeonAtlas.gd")
+
+# Что ставить по краю куска земли [лист, имя] — чтобы кусок «жил».
+const PATCH_PROPS := {
+	"stubble": [["nature", "bales"], ["nature", "haystack"], ["nature", "bales"]],
+	"pond": [["nature", "weeds"], ["nature", "bush"], ["nature", "dry_shrub"]],
+	"car_park": [["nature", "fence"], ["nature", "gate"], ["nature", "power_pole"]],
+	"service_yard": [["race", "tyre_pile"], ["race", "jerrycans"], ["race", "crates"]],
+	"fuel_station": [["nature", "power_pole"], ["race", "jerrycans"]],
+	"moto_loop": [["race", "tyre_wall"], ["race", "flag"], ["race", "cones"]],
+	"mud_pit": [["race", "tyre_pile"], ["race", "cones"]],
+	"crossroads": [["nature", "power_pole"], ["nature", "water_pump"],
+			["nature", "sunflowers"]],
+}
+
+# Россыпь растительности: [имя, вес, отступ от обочины (м), можно отражать].
+const GRASS_NATURE := [
+	["birch", 3.0, 7.0, true], ["birch_pair", 2.0, 7.0, true],
+	["oak", 2.0, 8.0, true], ["apple", 1.0, 6.0, true],
+	["spruce", 2.0, 7.0, true], ["poplars", 1.0, 8.0, false],
+	["bush", 3.0, 3.0, true], ["dry_shrub", 2.0, 3.0, true],
+	["weeds", 3.0, 2.0, true], ["sunflowers", 1.0, 3.0, true],
+	["haystack", 1.0, 5.0, false], ["bales", 1.0, 4.0, false],
+	["power_pole", 0.5, 4.0, false],
+]
+
+# Мелочь у обочин: [имя в листе race, вес].
+const GRASS_ROADSIDE := [
+	["tyre_wall", 3.0], ["tyre_pile", 2.0], ["cones", 2.0], ["flag", 1.0],
+	["jerrycans", 1.0], ["crates", 1.0],
+]
+
+
+## Классика (15.10): весь мир вокруг трассы — картонки и куски земли из
+## атласов ИИ-художника (EnvSprites). Порядок важен: сначала привязанное к
+## трассе (паддок у старта, трибуны, щиты, мачты), потом куски земли на
+## свободных местах, затем мелочь у обочин и растительность. Всё через общие
+## занятые круги (_occupy) — ничто не стоит друг в друге и на полотне.
+func _build_grass_2d() -> void:
+	var env := EnvSprites.new(_iso_basis(), EnvGrassAtlas.SHEETS)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = GRASS_SEED
+	_grass_paddock(env)
+	_grass_stands(env)
+	_grass_patches(env, rng)
+	_grass_roadside(env, rng)
+	_grass_nature(env, rng)
+	env.commit(self)
+
+
+## Паддок снаружи стартовой прямой: бетонная площадка боксов, на ней вышка
+## комментатора, шатёр, бокс-навес, колонка, канистры, ящики, шины.
+func _grass_paddock(env: EnvSprites) -> void:
+	var out := _outward(0.0)
+	var edge := _half(0.0) + TrackBuilder.SHOULDER
+	var pad_ext := env.extent("patches", "pit_pad")
+	var pad := _axis_at_dist(26.0) + out * (edge + pad_ext * 0.5 + 1.0)
+	if _clear_of_track(pad, pad_ext * 0.5):
+		env.flat("patches", "pit_pad", pad, _track._ground_height)
+	for item: Array in [
+		["tower", 18.0, 12.0], ["tent", 32.0, 9.0], ["shed", 46.0, 10.0],
+		["fuel_pump", 8.0, 6.0], ["jerrycans", 12.0, 4.5],
+		["crates", 24.0, 4.5], ["tyre_pile", 38.0, 4.0],
+	]:
+		var what: String = item[0]
+		var p := _axis_at_dist(float(item[1])) + out * (edge + float(item[2]))
+		if _clear_of_track(p, env.width("race", what) * 0.5):
+			_env_put(env, "race", what, p)
+
+
+## Трибуны, рекламные щиты и мачты освещения вдоль трассы. У трибуны и щита
+## два рисунка — лицом и тылом: лицо смотрит на трассу, и если трасса
+## между ними и камерой, игрок видит тыл.
+func _grass_stands(env: EnvSprites) -> void:
+	for item: Array in [
+		[0.30, "stand", 4.0], [0.42, "stand", 4.0], [0.62, "stand", 4.0],
+		[0.88, "stand", 4.0], [0.18, "billboard", 2.0],
+		[0.48, "billboard", 2.0], [0.70, "billboard", 2.0],
+		[0.05, "floodlight", 2.0], [0.35, "floodlight", 2.0],
+		[0.56, "floodlight", 2.0], [0.78, "floodlight", 2.0],
+	]:
+		for k in 10:
+			var t: float = float(item[0]) + 0.021 * k
+			var out := _outward(t)
+			var what: String = item[1]
+			if what != "floodlight":
+				var face := -out   # лицо — к трассе
+				what += "_front" if face.dot(env.toward_camera()) > 0.0 else "_back"
+			var r := env.width("race", what) * 0.5
+			var p := _axis(t) + out * (_half(t) + TrackBuilder.SHOULDER
+					+ float(item[2]) + r)
+			if _env_free(p, r, 1.0):
+				_env_put(env, "race", what, p)
+				break
+
+
+## Куски земли (кроме площадки паддока) — на свободных местах у трассы,
+## ближе к полотну, чтобы попадали в кадр; по краю — свой реквизит.
+func _grass_patches(env: EnvSprites, rng: RandomNumberGenerator) -> void:
+	for what: String in EnvGrassAtlas.PATCHES:
+		if what == "pit_pad":
+			continue
+		var r := env.extent("patches", what) * 0.5
+		for _a in 300:
+			var c: Vector3 = _near_axis(rng, r + 1.0, r + 28.0)[0]
+			if not _env_free(c, r, 1.0):
+				continue
+			env.flat("patches", what, c, _track._ground_height)
+			# Края куска — рваная трава: деревья могут к ним подступать.
+			_occupy(c, r * 0.85)
+			for prop: Array in PATCH_PROPS.get(what, []):
+				var ang := rng.randf() * TAU
+				var p := c + Vector3(cos(ang), 0.0, sin(ang)) * (r * 0.95)
+				var sheet: String = prop[0]
+				var prop_name: String = prop[1]
+				var pr := env.width(sheet, prop_name) * 0.5
+				if _clear_of_track(p, pr + 1.0) and not _is_occupied(p, pr):
+					_env_put(env, sheet, prop_name, p)
+			break
+
+
+## Гоночная мелочь вдоль обочин: шины, конусы, флаги, канистры — шагом
+## ~22 м, сторона случайная.
+func _grass_roadside(env: EnvSprites, rng: RandomNumberGenerator) -> void:
+	var length: float = _track._curve.get_baked_length()
+	var n := int(length / 22.0)
+	for i in n:
+		var t := (float(i) + rng.randf_range(0.2, 0.8)) / n
+		var side := _right(t) * (1.0 if rng.randf() < 0.5 else -1.0)
+		var what: String = GRASS_ROADSIDE[_pick_weighted(GRASS_ROADSIDE, rng)][0]
+		var r := env.width("race", what) * 0.5
+		var p := _axis(t) + side * (_half(t) + TrackBuilder.SHOULDER
+				+ rng.randf_range(1.0, 4.0) + r)
+		if _env_free(p, r, 0.5):
+			_env_put(env, "race", what, p)
+
+
+## Деревья, кусты, бурьян, стога — россыпь вокруг трассы (зерно
+## фиксировано — трасса всегда одинаковая).
+func _grass_nature(env: EnvSprites, rng: RandomNumberGenerator) -> void:
+	var placed := 0
+	for _a in 900:
+		if placed >= 120:
+			break
+		var item: Array = GRASS_NATURE[_pick_weighted(GRASS_NATURE, rng)]
+		var what: String = item[0]
+		var scale := rng.randf_range(0.85, 1.2)
+		var r := env.width("nature", what, scale) * 0.5
+		var near: float = float(item[2]) + r
+		var p: Vector3 = _near_axis(rng, near, near + SCATTER_FAR)[0]
+		if not _env_free(p, r, float(item[2])):
+			continue
+		if _env_hides_track(env, p, env.height("nature", what, scale), r * 2.0):
+			continue
+		_env_put(env, "nature", what, p, scale, bool(item[3]) and rng.randf() < 0.5)
+		placed += 1
+
+
+## ---------- ночной город в 2D ----------
+
+const NEON_SEED := 20261016
+
+# Здания вокруг трассы: [имя, вес]. Высокие башни сами уходят на дальнюю
+# от камеры сторону — у ближней они закрыли бы полотно (_env_hides_track).
+const NEON_BUILDINGS := [
+	["tower_cyan", 2.0], ["tower_slim", 2.0], ["office_curved", 2.0],
+	["tower_round", 2.0], ["tuning_shop", 2.0], ["car_wash", 1.0],
+	["diner", 1.5], ["nightclub", 1.5], ["car_park", 1.0],
+	["screen_store", 1.0], ["showroom", 1.0], ["corner_store", 2.0],
+	["hotel", 1.0], ["skybridge", 1.0], ["mast", 0.5],
+]
+
+# Уличная мелочь у обочин: [имя, вес].
+const NEON_STREET := [
+	["bus_stop", 1.0], ["vending", 1.0], ["bench_bin", 2.0], ["barrier", 1.5],
+	["cones", 2.0], ["taxi", 1.0], ["bus", 0.5], ["power_pole", 1.0],
+]
+
+# Плоская мелочь на пустырях и обочинах: [имя, вес].
+const NEON_DECALS := [
+	["puddle_cyan", 2.0], ["puddle_pink", 2.0], ["puddle_orange", 1.0],
+	["oil_slick", 1.0], ["manhole", 2.0], ["grate", 2.0], ["nitro_mark", 1.0],
+	["pool_violet", 1.0], ["pool_blue", 1.0], ["pool_orange", 1.0],
+]
+
+
+## Ночной город (15.10): весь мир вокруг трассы — картонки и куски земли из
+## атласов ИИ-художника (EnvSprites, листы нарисованы уже ночными).
+## Порядок: фонари со светофорами и щиты у полотна, потом куски земли,
+## здания, уличная мелочь и россыпь на земле — через общие занятые круги.
+func _build_neon_2d() -> void:
+	var env := EnvSprites.new(_iso_basis(), EnvNeonAtlas.SHEETS)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = NEON_SEED
+	_neon_lamps(env)
+	_neon_signs(env)
+	_neon_patches(env, rng)
+	_neon_buildings(env, rng)
+	_neon_street(env, rng)
+	_neon_decals(env, rng)
+	env.commit(self)
+
+
+## Фонари вдоль полотна, чередуя стороны (как 3D-фонари _build_street_lamps,
+## шаг 40 м), их свет на полотне — те же запечённые пятна (_lamp_pools).
+## Каждый третий — светофор (без пятна).
+func _neon_lamps(env: EnvSprites) -> void:
+	var length: float = _track._curve.get_baked_length()
+	var step := 40.0
+	var heads: Array[Vector3] = []
+	for i in int(length / step):
+		var d := step * (i + 0.35)
+		# Стартовую прямую не трогаем — там арка и стартовые огни.
+		if d < 25.0 or d > length - 20.0:
+			continue
+		var t := d / length
+		var side := _outward(t) if i % 2 == 0 else -_outward(t)
+		var p := _axis(t) + side * (_half(t) + 1.5)
+		if _track.distance_from_axis(p) < _half(t) + 1.0:
+			continue   # шпилька: «снаружи» уже соседний виток
+		var what := "lamp" if i % 3 != 2 else \
+				("traffic_red" if i % 2 == 0 else "traffic_yellow")
+		_env_put(env, "street", what, p)
+		if what == "lamp":
+			heads.append(p - side * 1.44 + Vector3.UP * 5.0)
+	_lamp_pools(heads)
+
+
+## Неоновые стрелки перед крутыми поворотами (на внешней стороне, стрелка
+## смотрит туда, куда уходит дорога на экране) и щиты лицом/тылом к камере.
+func _neon_signs(env: EnvSprites) -> void:
+	var n := _track._pts.size()
+	var length: float = _track._curve.get_baked_length()
+	for pair: Array in _turn_peaks(5, 0.30):
+		var i: int = pair[0]
+		var t := float(i) / n - 20.0 / length
+		var right := _right(t)
+		var side := right if pair[1] > 0.0 else -right
+		var r := env.width("street", "neon_arrow") * 0.5
+		var p := _axis(t) + side * (_half(t) + TrackBuilder.SHOULDER + r)
+		if not _env_free(p, r, 0.0):
+			continue
+		var after := _forward(float(i) / n + 20.0 / length)
+		_env_put(env, "street", "neon_arrow", p, 1.0, after.dot(env.right()) < 0.0)
+	for t0: float in [0.15, 0.40, 0.65, 0.90]:
+		for k in 10:
+			var t := t0 + 0.021 * k
+			var out := _outward(t)
+			var what := "billboard_front" if (-out).dot(env.toward_camera()) > 0.0 \
+					else "billboard_back"
+			var r := env.width("street", what) * 0.5
+			var p := _axis(t) + out * (_half(t) + TrackBuilder.SHOULDER + 2.0 + r)
+			if _env_free(p, r, 1.0):
+				_env_put(env, "street", what, p)
+				break
+
+
+## Куски земли — на свободных местах у трассы, ближе к полотну.
+func _neon_patches(env: EnvSprites, rng: RandomNumberGenerator) -> void:
+	for what: String in EnvNeonAtlas.PATCHES:
+		var r := env.extent("patches", what) * 0.5
+		for _a in 300:
+			var c: Vector3 = _near_axis(rng, r + 1.0, r + 26.0)[0]
+			if not _env_free(c, r, 1.0):
+				continue
+			env.flat("patches", what, c, _track._ground_height)
+			_occupy(c, r * 0.9)
+			break
+
+
+## Кварталы: здания по свободным местам вокруг трассы. Высокое не ставится
+## между камерой и полотном (закрыло бы машины).
+func _neon_buildings(env: EnvSprites, rng: RandomNumberGenerator) -> void:
+	var placed := 0
+	for _a in 900:
+		if placed >= 45:
+			break
+		var what: String = NEON_BUILDINGS[_pick_weighted(NEON_BUILDINGS, rng)][0]
+		var scale := rng.randf_range(0.9, 1.15)
+		var r := env.width("buildings", what, scale) * 0.5
+		var p: Vector3 = _near_axis(rng, r + 3.0, r + 45.0)[0]
+		if not _env_free(p, r, 3.0):
+			continue
+		if _env_hides_track(env, p, env.height("buildings", what, scale),
+				r * 2.0):
+			continue
+		_env_put(env, "buildings", what, p, scale)
+		placed += 1
+
+
+## Уличная мелочь у обочин: остановки, автоматы, скамейки, заграждения,
+## припаркованные такси и автобусы — шагом ~30 м, сторона случайная.
+func _neon_street(env: EnvSprites, rng: RandomNumberGenerator) -> void:
+	var length: float = _track._curve.get_baked_length()
+	var n := int(length / 30.0)
+	for i in n:
+		var t := (float(i) + rng.randf_range(0.2, 0.8)) / n
+		var side := _right(t) * (1.0 if rng.randf() < 0.5 else -1.0)
+		var what: String = NEON_STREET[_pick_weighted(NEON_STREET, rng)][0]
+		var r := env.width("street", what) * 0.5
+		var p := _axis(t) + side * (_half(t) + TrackBuilder.SHOULDER
+				+ rng.randf_range(1.0, 5.0) + r)
+		if _env_free(p, r, 0.5):
+			_env_put(env, "street", what, p, 1.0, rng.randf() < 0.5)
+
+
+## Лужи, люки, решётки, пятна света — россыпь по пустырям у трассы.
+## Плоские, друг на друга не ложатся; картонки могут стоять поверх.
+func _neon_decals(env: EnvSprites, rng: RandomNumberGenerator) -> void:
+	var taken: Array[Vector3] = []
+	var placed := 0
+	for _a in 600:
+		if placed >= 70:
+			break
+		var what: String = NEON_DECALS[_pick_weighted(NEON_DECALS, rng)][0]
+		var r := env.extent("decals", what) * 0.5
+		var p: Vector3 = _near_axis(rng, r + 0.5, r + 30.0)[0]
+		if not _env_free(p, r, 0.5):
+			continue
+		var clash := false
+		for q in taken:
+			if Vector2(p.x - q.x, p.z - q.z).length() < r + q.y:
+				clash = true
+				break
+		if clash:
+			continue
+		taken.append(Vector3(p.x, r, p.z))
+		env.flat("decals", what, p, _track._ground_height, 1.0,
+				rng.randf() * TAU, 2)
+		placed += 1
+
+
+## Закроет ли картонка высоты h (ширины w) полотно: она стоит между камерой
+## и дорогой, и дорога попадает в полосу земли, которую она загораживает.
+func _env_hides_track(env: EnvSprites, p: Vector3, h: float, w: float) -> bool:
+	var reach := env.hide_reach(h)
+	for lateral: float in [-0.5, 0.0, 0.5]:
+		var base := p + env.right() * (w * lateral)
+		var s := 2.0
+		while s < reach:
+			var q := base + env.away() * s
+			if _track.distance_from_axis(q) < _track.half_width_at_pos(q) + 1.0:
+				return true
+			s += 3.0
+	return false
+
+## Свободна ли точка под картонку/кусок радиуса r: в пределах земли, не
+## ближе margin к обочине любого витка, не в чужом занятом круге.
+func _env_free(p: Vector3, r: float, margin: float) -> bool:
+	var half := TrackBuilder.GROUND_SIZE * 0.47
+	if absf(p.x) > half - r or absf(p.z) > half - r:
+		return false
+	return _clear_of_track(p, r + margin) and not _is_occupied(p, r)
+
+
+## Картонка в точке p (высота — по рельефу) + занятый круг по её ширине.
+func _env_put(env: EnvSprites, sheet: String, what: String, p: Vector3,
+		scale := 1.0, mirror := false) -> void:
+	p.y = _ground_y(p)
+	env.sprite(sheet, what, p, scale, mirror)
+	_occupy(p, env.width(sheet, what, scale) * 0.5)
+
+
+## Индекс случайного элемента списка [[имя, вес, ...], ...] по весам.
+func _pick_weighted(list: Array, rng: RandomNumberGenerator) -> int:
+	var total := 0.0
+	for it: Array in list:
+		total += float(it[1])
+	var x := rng.randf() * total
+	for i in list.size():
+		x -= float(list[i][1])
+		if x <= 0.0:
+			return i
+	return list.size() - 1
 
 
 ## Трибуны на внешней стороне, «лицом» (сиденьями) к трассе. У модели
