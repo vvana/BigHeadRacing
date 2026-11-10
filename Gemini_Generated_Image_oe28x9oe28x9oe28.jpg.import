@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://1f86q76qa7ih"
-path="res://.godot/imported/nature.png-155c0033029b4a69c24d35cb8e1c9616.ctex"
+uid="uid://dm0gc31w5osxo"
+path="res://.godot/imported/Gemini_Generated_Image_oe28x9oe28x9oe28.jpg-068095ef0585c8730d2ecbf36bfb254e.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/env/grass/nature.png"
-dest_files=["res://.godot/imported/nature.png-155c0033029b4a69c24d35cb8e1c9616.ctex"]
+source_file="res://Gemini_Generated_Image_oe28x9oe28x9oe28.jpg"
+dest_files=["res://.godot/imported/Gemini_Generated_Image_oe28x9oe28x9oe28.jpg-068095ef0585c8730d2ecbf36bfb254e.ctex"]
 
 [params]
 

@@ -44,30 +44,25 @@ func _physics_process(delta: float) -> void:
 	var lights := 0
 	for car: Car in _main._cars:
 		lights += _count_spots(car)
+	# С 23.10 лес и деревни — картонки EnvSprites: по мешу на лист
+	# («Env_nature», «Env_village»), картонка — 6 вершин.
 	var decor: Node = track.get_node_or_null("Decor")
-	var firs := 0
-	var houses := 0
+	var forest := 0
+	var village := 0
 	if decor != null:
 		for n: Node in decor.get_children():
-			# По имени узла не посчитать: дубли имён Godot переименовывает в
-			# «Node3D». Узнаём пропс по пути ресурса его первого меша
-			# («…/fir_winter_large.fbx::…»).
-			var mi: MeshInstance3D = n if n is MeshInstance3D else null
-			if mi == null:
-				var found := n.find_children("*", "MeshInstance3D", true, false)
-				if not found.is_empty():
-					mi = found[0]
-			if mi == null or mi.mesh == null:
+			var mi := n as MeshInstance3D
+			if mi == null or not (mi.mesh is ArrayMesh) or mi.mesh.get_surface_count() == 0:
 				continue
-			var src := mi.mesh.resource_path.to_lower()
-			if src.contains("fir_winter"):
-				firs += 1
-			elif src.contains("winter_house"):
-				houses += 1
-	var decor_ok := firs >= 60 and houses == 3
-	print("  худший ИИ проехал %.0f м (круг %.0f м) — %s; снегопад %s; фар %d; елей %d, домов %d — %s" % [
+			var verts: int = mi.mesh.surface_get_array_len(0)
+			if n.name == "Env_nature":
+				forest = verts / 6
+			elif n.name == "Env_village":
+				village = verts / 6
+	var decor_ok := forest >= 100 and village >= 5
+	print("  худший ИИ проехал %.0f м (круг %.0f м) — %s; снегопад %s; фар %d; лес %d картонок, деревни %d — %s" % [
 		worst, length, "ok" if lap_ok else "FAIL", str(snow_ok), lights,
-		firs, houses, "ok" if decor_ok else "FAIL"])
+		forest, village, "ok" if decor_ok else "FAIL"])
 	var ok: bool = lap_ok and snow_ok and lights == 0 and decor_ok
 	print("SNOW LAP TEST: %s" % ("PASS" if ok else "FAIL"))
 	get_tree().quit(0 if ok else 1)

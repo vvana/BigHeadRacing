@@ -40,3 +40,13 @@ desktop.ini
 /image*.jpeg
 /photo_*.jpg
 /tools/_loc_missing.txt
+
+# Отладочная свалка стендов и сборок (10.11.2026): проверочные снимки,
+# журналы, временные скрипты — в репозиторий не идут
+/tools/shots_dbg/
+/tools/_tmp/
+*.log
+*.err
+/dist/build_log.txt
+/tools/perf_kit/export_log.txt
+*.orig

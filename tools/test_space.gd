@@ -82,16 +82,19 @@ func _physics_process(_d: float) -> void:
 			get_tree().quit(0 if all_ok else 1)
 
 
-## Висящий декор (над уровнем дороги выше 1 м, кроме шаттла и комет — они
-## летают под шоссе) не заслоняет полотно на экране игровой камеры: каждая
-## вершина его сеток, спроецированная по линии взгляда на уровень дороги,
-## лежит за бортом.
+## Декор (кроме шаттла и комет — они летают под шоссе) не заслоняет
+## полотно на экране игровой камеры: каждая вершина его сеток ВЫШЕ уровня
+## дороги, спроецированная по линии взгляда на уровень дороги, лежит за
+## бортом. Вершины ниже полотна дорога закрывает сама. 23.10: раньше
+## проверялись только узлы с центром выше 1 м — планета с центром под
+## дорогой, но макушкой над ней, проходила мимо (жалоба игрока «планеты
+## перекрывают трассу»).
 func _check_clear() -> bool:
 	var track: TrackBuilder = _main._track
 	var b := TrackDecor._iso_basis()
 	var ok := true
 	for n: Node in _decor.get_children():
-		if not (n is Node3D) or (n as Node3D).global_position.y < 1.0:
+		if not (n is Node3D):
 			continue
 		if n.name.begins_with("Comet") or n.name.begins_with("space_shuttle"):
 			continue
@@ -104,8 +107,10 @@ func _check_clear() -> bool:
 			for si in mi.mesh.get_surface_count():
 				var arrays := mi.mesh.surface_get_arrays(si)
 				var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-				for vi in range(0, verts.size(), 3):
+				for vi in verts.size():
 					var c: Vector3 = mi.global_transform * verts[vi]
+					if c.y < 0.3:
+						continue
 					var g := c - b.z * (c.y / b.z.y)
 					if track.distance_from_axis(g) < track.half_width_at_pos(g):
 						hit = true

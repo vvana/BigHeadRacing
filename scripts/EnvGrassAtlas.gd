@@ -5,59 +5,62 @@ extends RefCounted
 ## У картонок размер — высота на экране, у плоских кусков — ширина.
 
 const GROUND := "res://assets/env/grass/ground.png"
+const ROAD := "res://assets/env/grass/road.png"
 
-const PATCHES := {
-	"mud_pit": [377, 763, 360, 347, 30.0],
-	"moto_loop": [4, 763, 369, 348, 36.0],
-	"pit_pad": [741, 763, 365, 339, 30.0],
-	"fuel_station": [721, 386, 363, 350, 30.0],
-	"service_yard": [4, 386, 351, 373, 30.0],
-	"car_park": [759, 4, 369, 374, 34.0],
-	"stubble": [384, 4, 371, 375, 36.0],
-	"pond": [4, 4, 376, 378, 32.0],
-	"crossroads": [359, 386, 358, 364, 34.0],
+const STADIUM := {
+	"stand_front": [409, 231, 210, 165, 6.0],
+	"stand_back": [985, 231, 214, 143, 6.0],
+	"stand_covered": [623, 231, 188, 162, 6.5],
+	"control_tower": [289, 4, 143, 210, 9.0],
+	"leaderboard": [71, 4, 58, 220, 7.0],
+	"light_tower": [4, 4, 63, 223, 12.0],
+	"billboard_front": [436, 4, 154, 208, 6.5],
+	"billboard_back": [133, 4, 152, 213, 6.5],
+	"flagman": [815, 231, 166, 145, 3.2],
+	"ticket_booth": [777, 4, 168, 189, 4.2],
+	"concession": [949, 4, 208, 189, 4.5],
+	"merch_trailer": [4, 231, 194, 173, 3.8],
+	"toilets": [202, 231, 203, 168, 3.0],
+	"arch": [594, 4, 179, 192, 5.0],
 }
 
-const NATURE := {
-	"birch": [672, 4, 150, 285, 9.0],
-	"birch_pair": [1077, 4, 198, 271, 9.0],
-	"oak": [4, 4, 280, 303, 10.0],
-	"apple": [826, 4, 247, 283, 7.0],
-	"spruce": [509, 4, 159, 296, 11.0],
-	"poplars": [288, 4, 217, 302, 12.0],
-	"bush": [783, 584, 248, 203, 3.5],
-	"dry_shrub": [899, 311, 227, 230, 3.0],
-	"weeds": [550, 311, 199, 245, 2.5],
-	"haystack": [114, 311, 229, 256, 4.5],
-	"bales": [4, 584, 239, 222, 3.0],
-	"power_pole": [4, 311, 106, 269, 8.0],
-	"water_pump": [753, 311, 142, 244, 2.0],
-	"fence": [247, 584, 260, 220, 2.0],
-	"gate": [511, 584, 268, 219, 2.0],
-	"sunflowers": [347, 311, 199, 253, 2.5],
+const PIT := {
+	"garages": [4, 4, 238, 204, 6.5],
+	"crew_red": [428, 212, 179, 169, 2.4],
+	"crew_blue": [235, 390, 178, 134, 2.2],
+	"transporter": [645, 4, 226, 179, 5.0],
+	"hauler": [4, 212, 214, 174, 4.0],
+	"pickup_trailer": [4, 390, 227, 135, 2.8],
+	"motorhome": [1052, 4, 200, 175, 4.5],
+	"pace_car": [969, 212, 201, 144, 2.4],
+	"safety_truck": [222, 212, 202, 170, 2.6],
+	"tow_truck": [246, 4, 211, 193, 3.8],
+	"fuel_cart": [611, 212, 132, 153, 2.0],
+	"tyre_stack": [875, 4, 173, 178, 2.0],
+	"tyre_wall": [747, 212, 218, 149, 2.0],
+	"canopy": [461, 4, 180, 183, 3.6],
 }
 
-const RACE := {
-	"stand_front": [768, 4, 268, 260, 8.0],
-	"stand_back": [438, 307, 247, 247, 8.0],
-	"tower": [4, 4, 175, 299, 10.0],
-	"tent": [689, 307, 330, 241, 5.5],
-	"shed": [164, 307, 270, 254, 5.5],
-	"tyre_wall": [1023, 307, 252, 232, 3.0],
-	"tyre_pile": [741, 566, 251, 181, 2.0],
-	"cones": [490, 566, 247, 206, 1.5],
-	"flag": [4, 307, 156, 255, 5.0],
-	"billboard_front": [183, 4, 240, 292, 6.5],
-	"billboard_back": [530, 4, 234, 280, 6.5],
-	"floodlight": [427, 4, 99, 287, 12.0],
-	"fuel_pump": [1040, 4, 165, 256, 2.5],
-	"jerrycans": [4, 566, 242, 215, 2.0],
-	"crates": [250, 566, 236, 211, 2.2],
+const INFIELD := {
+	"camper": [462, 4, 210, 195, 4.2],
+	"fans_pickup": [1018, 4, 186, 173, 3.6],
+	"picnic_tent": [676, 4, 180, 183, 3.8],
+	"tent": [724, 216, 188, 143, 2.4],
+	"parked_cars": [491, 216, 229, 149, 2.6],
+	"banners": [4, 4, 158, 208, 5.0],
+	"tyre_balloon": [860, 4, 154, 174, 5.0],
+	"topiary": [166, 4, 119, 205, 4.0],
+	"poplars": [289, 4, 169, 205, 7.5],
+	"bush": [916, 216, 145, 116, 2.2],
+	"arrow_sign": [190, 216, 94, 168, 3.0],
+	"medic_tent": [288, 216, 199, 168, 3.0],
+	"helipad": [4, 216, 182, 170, 4.0],
 }
 
-## Лист -> [атлас, куски, плоский (лежит на земле), без освещения].
+## Лист -> [атлас, куски, плоский (лежит на земле), без освещения,
+## сложением цвета (чёрное = прозрачно)].
 const SHEETS := {
-	"patches": ["res://assets/env/grass/patches.png", PATCHES, true, false],
-	"nature": ["res://assets/env/grass/nature.png", NATURE, false, false],
-	"race": ["res://assets/env/grass/race.png", RACE, false, false],
+	"stadium": ["res://assets/env/grass/stadium.png", STADIUM, false, false, false],
+	"pit": ["res://assets/env/grass/pit.png", PIT, false, false, false],
+	"infield": ["res://assets/env/grass/infield.png", INFIELD, false, false, false],
 }

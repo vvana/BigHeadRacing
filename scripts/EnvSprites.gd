@@ -8,12 +8,13 @@ extends RefCounted
 
 const FLAT_LIFT := 0.1    # плоские куски над рельефом, м (против мерцания)
 const FLAT_GRID := 8      # плоский кусок — сетка N×N по рельефу
+const ADD_GAIN := 0.8     # яркость листов «сложением» (туманности космоса)
 
 var _right: Vector3     # вправо по экрану, горизонтально
 var _away: Vector3      # от камеры вглубь сцены, горизонтально
 var _stretch: float     # вертикальная картонка видна укороченной в cos(наклон)
 var _rise: float        # на сколько м экрана поднимается точка земли за 1 м вглубь
-var _sheets := {}       # лист -> {tex, rects, flat, unshaded, size, st, count}
+var _sheets := {}       # лист -> {tex, rects, flat, unshaded, add, size, st, count}
 
 
 ## cam — базис игровой камеры (TrackDecor._iso_basis): x — вправо по
@@ -24,15 +25,17 @@ func _init(cam: Basis, sheets: Dictionary) -> void:
 	# Угол между осью Y камеры и вертикалью = наклон камеры.
 	_stretch = 1.0 / maxf(cam.y.dot(Vector3.UP), 0.2)
 	_rise = maxf(cam.z.y, 0.1)
+	# Атлас грузится при первом куске с него: листы, которые трасса не
+	# ставит (patches с 16.10), не занимают память.
 	for sheet: String in sheets:
 		var d: Array = sheets[sheet]
-		var tex: Texture2D = load(String(d[0]))
 		var st := SurfaceTool.new()
 		st.begin(Mesh.PRIMITIVE_TRIANGLES)
 		_sheets[sheet] = {
-			"tex": tex, "rects": d[1], "flat": bool(d[2]), "unshaded": bool(d[3]),
-			"size": tex.get_size() if tex != null else Vector2.ONE,
-			"st": st, "count": 0,
+			"path": String(d[0]), "tex": null, "rects": d[1],
+			"flat": bool(d[2]), "unshaded": bool(d[3]),
+			"add": d.size() > 4 and bool(d[4]),
+			"size": Vector2.ONE, "st": st, "count": 0,
 		}
 
 
@@ -148,8 +151,15 @@ func commit(parent: Node3D) -> void:
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		var mat := StandardMaterial3D.new()
 		mat.albedo_texture = s["tex"]
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-		mat.alpha_scissor_threshold = 0.5
+		if bool(s["add"]):
+			# Свечение на чёрном (туманности): цвет складывается с землёй,
+			# чёрное ничего не добавляет — альфы у таких листов нет.
+			mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+			mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			mat.albedo_color = Color(ADD_GAIN, ADD_GAIN, ADD_GAIN)
+		else:
+			mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+			mat.alpha_scissor_threshold = 0.5
 		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 		mat.roughness = 1.0
 		if bool(s["unshaded"]):
@@ -163,6 +173,11 @@ func commit(parent: Node3D) -> void:
 
 
 func _uv_rect(s: Dictionary, r: Array) -> Rect2:
+	if s["tex"] == null:
+		var tex: Texture2D = load(String(s["path"]))
+		s["tex"] = tex
+		if tex != null:
+			s["size"] = tex.get_size()
 	var size: Vector2 = s["size"]
 	return Rect2(float(r[0]) / size.x, float(r[1]) / size.y,
 			float(r[2]) / size.x, float(r[3]) / size.y)

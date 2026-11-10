@@ -39,6 +39,7 @@ const GROUND_DROP := 1.2
 # закрывала кадр ортокамеры: картинка плоскости сдвигается на
 # 30·cos 32° ≈ 25 м при запасе земли за габаритом трассы ≥ 78 м.
 const SPACE_VOID_DROP := 30.0
+const ROAD_TILE := 20.0       # тайл текстуры асфальта на полотне, м (= gen_env ROAD_TILE_M)
 # Юбка ограждений в космосе: борт платформы уходит вниз на 5 м — иначе
 # под тонкой кромкой полотна сразу зияет пустота.
 const SPACE_SKIRT := 5.0
@@ -751,15 +752,15 @@ func _build_ground() -> void:
 			for v in [a, b, c, a, c, d]:
 				# Планарная UV по миру: тайл травы 14 м; у космоса тайл
 				# звёздного поля 50 м — повтор звёзд не бросается в глаза;
-				# у снега 40 м — пятна между сугробами не повторяются
-				# «обоями» с высоты.
+				# у снега 20 м — гранёные сугробы ИИ-художника крупные (их
+				# по 3–4 на тайл), на 40 м выходили валунами.
 				var uv_k := 0.07
 				if kind == KIND_GRASS or kind == KIND_NEON:
 					uv_k = 0.05   # земля ИИ-художника: тайл 20 м
 				elif kind == KIND_SPACE:
 					uv_k = 0.02
 				elif kind == KIND_SNOW:
-					uv_k = 0.025
+					uv_k = 1.0 / 20.0
 				st.set_uv(Vector2(v.x, v.z) * uv_k)
 				# Низкочастотная вариация яркости по вершинам ломает
 				# видимую повторяемость тайла (пятна «одинаково
@@ -789,15 +790,16 @@ func _build_ground() -> void:
 		# (TrackDecor._build_neon_2d).
 		mat.albedo_texture = load("res://assets/env/neon/ground.png")
 	elif kind == KIND_SPACE:
-		# Космос: земля — сама «пустота», чёрно-синее поле со звёздами и
-		# пятнами туманностей (текстура печётся кодом). UNSHADED — звёзды
-		# видны независимо от тусклого космического освещения.
-		mat.albedo_texture = _space_ground_texture()
+		# Космос: земля — сама «пустота»: звёздное поле с туманностями
+		# ИИ-художника (23.10; раньше пеклось кодом). UNSHADED — звёзды
+		# видны независимо от тусклого космического освещения. Яркие
+		# туманности поверх — TrackDecor._space_nebulae.
+		mat.albedo_texture = load("res://assets/env/space/ground.png")
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	elif kind == KIND_SNOW:
-		# Зима: снег — белое поле с голубоватыми тенями между сугробами и
-		# редкими искрами наста (текстура печётся кодом, тайл 14 м).
-		mat.albedo_texture = _snow_ground_texture()
+		# Зима: снег с голубыми тенями между гранёными сугробами — земля
+		# ИИ-художника (23.10; раньше пеклась кодом).
+		mat.albedo_texture = load("res://assets/env/snow/ground.png")
 		mat.roughness = 0.9
 	else:
 		# Классика (15.10): выгоревшая трава с проплешинами — бесшовная
@@ -819,84 +821,6 @@ func _build_ground() -> void:
 	add_child(ground)
 
 
-## Звёздное поле для земли космической трассы: чёрно-синяя пустота, пятна
-## туманностей и россыпь звёзд. Тайлится (края без швов — звёзды не ставим
-## вплотную к кромке, туманности гаснут к краям блоба). Зерно фиксировано —
-## трасса всегда одинаковая.
-static func _space_ground_texture() -> ImageTexture:
-	const S := 512
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 20260831
-	var img := Image.create(S, S, false, Image.FORMAT_RGB8)
-	img.fill(Color(0.012, 0.012, 0.035))
-	# Туманности: мягкие радиальные пятна, складываются с фоном.
-	for _n in 5:
-		var cx := rng.randf_range(60, S - 60)
-		var cy := rng.randf_range(60, S - 60)
-		var r := rng.randf_range(45.0, 90.0)
-		var tint := Color(0.10, 0.03, 0.16) if rng.randf() < 0.5 \
-				else Color(0.03, 0.07, 0.16)
-		for py in range(maxi(0, int(cy - r)), mini(S, int(cy + r))):
-			for px in range(maxi(0, int(cx - r)), mini(S, int(cx + r))):
-				var d := Vector2(px - cx, py - cy).length() / r
-				if d >= 1.0:
-					continue
-				var k := (1.0 - d) * (1.0 - d)
-				var c := img.get_pixel(px, py)
-				img.set_pixel(px, py, Color(
-						c.r + tint.r * k, c.g + tint.g * k, c.b + tint.b * k))
-	# Звёзды: белые, голубые и тёплые, часть — «крупные» крестики 3 px.
-	for _i in 420:
-		var x := rng.randi_range(2, S - 3)
-		var y := rng.randi_range(2, S - 3)
-		var b := rng.randf_range(0.35, 1.0)
-		var c := Color(b, b, b)
-		var roll := rng.randf()
-		if roll < 0.2:
-			c = Color(b * 0.7, b * 0.85, b)        # голубоватая
-		elif roll < 0.35:
-			c = Color(b, b * 0.9, b * 0.65)        # тёплая
-		img.set_pixel(x, y, c)
-		if rng.randf() < 0.12:
-			var half := c * 0.55
-			img.set_pixel(x + 1, y, half)
-			img.set_pixel(x - 1, y, half)
-			img.set_pixel(x, y + 1, half)
-			img.set_pixel(x, y - 1, half)
-	return ImageTexture.create_from_image(img)
-
-
-## Снег для земли зимней трассы: белое поле, мягкие голубоватые пятна
-## (тени между сугробами) и редкие блёстки наста. Тайлится (пятна гаснут
-## к краям, блёстки не у кромки), зерно фиксировано.
-static func _snow_ground_texture() -> ImageTexture:
-	const S := 256
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 20260915
-	var img := Image.create(S, S, false, Image.FORMAT_RGB8)
-	img.fill(Color(0.93, 0.95, 0.98))
-	# Пятна редкие и мягкие: тайл 40 м (см. _build_ground), и повтор
-	# резкого рисунка с высоты читался бы как обои.
-	for _n in 9:
-		var cx := rng.randf_range(30, S - 30)
-		var cy := rng.randf_range(30, S - 30)
-		var r := rng.randf_range(28.0, 60.0)
-		var depth := rng.randf_range(0.02, 0.05)
-		for py in range(maxi(0, int(cy - r)), mini(S, int(cy + r))):
-			for px in range(maxi(0, int(cx - r)), mini(S, int(cx + r))):
-				var d := Vector2(px - cx, py - cy).length() / r
-				if d >= 1.0:
-					continue
-				var k := (1.0 - d) * (1.0 - d) * depth
-				var c := img.get_pixel(px, py)
-				img.set_pixel(px, py, Color(c.r - k * 1.3, c.g - k * 0.9, c.b - k * 0.3))
-	for _i in 160:
-		var x := rng.randi_range(1, S - 2)
-		var y := rng.randi_range(1, S - 2)
-		img.set_pixel(x, y, Color(1.0, 1.0, 1.0))
-	return ImageTexture.create_from_image(img)
-
-
 ## Полотно трассы: непрерывная лента по кривой с собственной коллизией —
 ## именно по ней едут машины (земля под ней может уходить вниз).
 func _build_road() -> void:
@@ -914,7 +838,12 @@ func _build_road() -> void:
 		var normal := (rj - li).cross(lj - ri).normalized()
 		if normal.y < 0.0:
 			normal = -normal
-		_add_quad(st, li, ri, rj, lj, normal)
+		# UV планарные по миру (как у земли): в текстуре асфальта нет
+		# ничего направленного, поворот полотна ей не важен.
+		st.set_normal(normal)
+		for v: Vector3 in [li, ri, rj, li, rj, lj]:
+			st.set_uv(Vector2(v.x, v.z) / ROAD_TILE)
+			st.add_vertex(v)
 		faces.append_array([li, ri, rj, li, rj, lj])
 
 	var body := StaticBody3D.new()
@@ -925,12 +854,16 @@ func _build_road() -> void:
 	var mat := StandardMaterial3D.new()
 	# Классика — тёмный асфальт; пустыня — укатанный песок (темнее рыхлого
 	# вокруг, чтобы полотно читалось); ночной город — почти чёрный асфальт,
-	# на котором неон и разметка горят контрастнее.
+	# на котором неон и разметка горят контрастнее. У классики и города с
+	# 23.10 — текстура асфальта ИИ-художника (tools/gen_env.py, road_texture),
+	# цвет её притемняет до прежней яркости (средняя у дневной 0.39, у
+	# ночной 0.18 — полотно было 0.18 и 0.09).
 	match kind:
 		KIND_SAND:
 			mat.albedo_color = Color(0.64, 0.53, 0.36)
 		KIND_NEON:
-			mat.albedo_color = Color(0.09, 0.09, 0.12)
+			mat.albedo_texture = load("res://assets/env/neon/road.png")
+			mat.albedo_color = Color(0.55, 0.55, 0.62)
 		KIND_SPACE:
 			# Космос: сине-фиолетовое «покрытие станции», чуть светлее
 			# пустоты вокруг — полотно читается на фоне звёзд.
@@ -942,7 +875,8 @@ func _build_road() -> void:
 			mat.roughness = 0.35
 			mat.metallic = 0.1
 		_:
-			mat.albedo_color = Color(0.18, 0.18, 0.2)
+			mat.albedo_texture = load("res://assets/env/grass/road.png")
+			mat.albedo_color = Color(0.5, 0.5, 0.54)
 	road.material_override = mat
 	_add_visual(body, road)
 
