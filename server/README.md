@@ -148,7 +148,7 @@ VDS не потянет. Комнат не осталось — опоздавш
 | Godot 4.3 headless | `/usr/local/bin/godot` |
 | Проект | `/opt/bighead` (владелец `bighead`) |
 | Служба | `bighead-server.service`, автозапуск включён |
-| Аналитика | `bhr-metrics.service` (Node, `/opt/bhr-metrics`), панель https://daf.autovsauto.ru — см. `server/metrics/README.md` |
+| Аналитика | `bhr-metrics.service` (Node, `/opt/bhr-metrics`), панель https://daf.autovsauto.ru/daf/ (общий сайт аналитики игр — https://daf.autovsauto.ru/, с 16.11.2026) — см. `server/metrics/README.md` |
 | Пользователь | `bighead` (без шелла, не root) |
 | Порт | UDP 9977 (гонка, ворота), 9978…9980 (комнаты), 9990 (друзья); тестовый сервер — 9877, 9878…9880, 9890 (см. выше); панель аналитики — TCP 8090 ТОЛЬКО на 127.0.0.1, наружу через Caddy (443); firewall на VDS пустой (policy ACCEPT) |
 | Расход | ~113 МБ RAM, ~22% одного ядра |

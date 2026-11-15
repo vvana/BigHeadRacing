@@ -217,9 +217,52 @@ const q1 = (sql, ...args) => db.prepare(sql).get(...args) || {};
 
 function today() { return dayOf(Date.now() / 1000); }
 function dayShift(n) { return dayOf(Date.now() / 1000 - n * 86400); }
+function addDays(day, n) {
+  return new Date(Date.parse(day + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+}
 
-function summary(days) {
-  const from = dayShift(days - 1);
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_SPAN = 730; // Не больше двух лет за раз — панель на слабом VDS
+
+/**
+ * Период графиков по дням (16.11.2026): ?from=ГГГГ-ММ-ДД&to=ГГГГ-ММ-ДД (свой), ?days=all
+ * (всё время) или ?days=N (последние N суток, по умолчанию 30). Даты проверяются регуляркой.
+ * Остальная сводка (машины, оружие, покупки, игроки…) — как и раньше, за всё время.
+ */
+function parseRange(params) {
+  const T = today();
+  let to = DAY_RE.test(params.get('to') || '') ? params.get('to') : T;
+  if (to > T) to = T;
+  let from;
+  if (DAY_RE.test(params.get('from') || '')) {
+    from = params.get('from');
+  } else if (params.get('days') === 'all') {
+    from = q1('SELECT MIN(day) AS d FROM events').d || to;
+  } else {
+    const n = Math.min(Math.max(Number(params.get('days')) || 30, 1), MAX_SPAN);
+    from = addDays(to, -(n - 1));
+  }
+  if (from > to) [from, to] = [to, from];
+  let days = Math.round((Date.parse(to) - Date.parse(from)) / 86400000) + 1;
+  if (days > MAX_SPAN) { from = addDays(to, -(MAX_SPAN - 1)); days = MAX_SPAN; }
+  const preset = DAY_RE.test(params.get('from') || '') ? 'custom'
+    : params.get('days') === 'all' ? 'all' : String(days);
+  return { from, to, days, preset };
+}
+
+/** Строки по дням с нулями в днях без событий — ось времени на графике без провалов. */
+function fillDays(rows, from, days, empty) {
+  const map = new Map(rows.map((r) => [r.day, r]));
+  const out = [];
+  for (let i = 0; i < days; i++) {
+    const day = addDays(from, i);
+    out.push(map.get(day) || { day, ...empty });
+  }
+  return out;
+}
+
+function summary(range) {
+  const { from, to, days } = range;
   const tdy = today();
   const week = dayShift(6);
 
@@ -254,14 +297,15 @@ function summary(days) {
   const newWeek = Object.entries(newByDay)
     .filter(([d]) => d >= week).reduce((a, [, n]) => a + n, 0);
 
-  const byDay = q(`SELECT day,
+  const byDay = fillDays(q(`SELECT day,
       COUNT(DISTINCT CASE WHEN uid <> '' THEN uid END) AS players,
       SUM(CASE WHEN e = 'race' THEN 1 ELSE 0 END) AS races,
       SUM(CASE WHEN e = 'soccer' THEN 1 ELSE 0 END) AS soccer,
       SUM(CASE WHEN e IN ('session','hello') THEN 1 ELSE 0 END) AS sessions,
       SUM(CASE WHEN e = 'ad' THEN 1 ELSE 0 END) AS ads,
       SUM(CASE WHEN e = 'buy' THEN COALESCE(price,0) ELSE 0 END) AS spent
-    FROM events WHERE day >= ? GROUP BY day ORDER BY day`, from);
+    FROM events WHERE day >= ? AND day <= ? GROUP BY day ORDER BY day`, from, to),
+    from, days, { players: 0, races: 0, soccer: 0, sessions: 0, ads: 0, spent: 0 });
   for (const r of byDay) r.newcomers = newByDay[r.day] || 0;
 
   const cars = q(`SELECT car,
@@ -316,9 +360,10 @@ function summary(days) {
       COALESCE(SUM(coins),0) AS coins,
       COUNT(DISTINCT uid) AS players
     FROM events WHERE e = 'ad'`);
-  const adsByDay = q(`SELECT day, COUNT(*) AS views,
+  const adsByDay = fillDays(q(`SELECT day, COUNT(*) AS views,
       SUM(CASE WHEN coins > 0 THEN 1 ELSE 0 END) AS pairs
-    FROM events WHERE e = 'ad' AND day >= ? GROUP BY day ORDER BY day`, from);
+    FROM events WHERE e = 'ad' AND day >= ? AND day <= ? GROUP BY day ORDER BY day`, from, to),
+    from, days, { views: 0, pairs: 0 });
 
   const buys = q(`SELECT kind, COUNT(*) AS n, COALESCE(SUM(price),0) AS spent,
       COUNT(DISTINCT uid) AS players
@@ -389,7 +434,9 @@ function summary(days) {
         GROUP BY uid)) AS watched`);
 
   return {
-    now: new Date().toISOString(), tz: CFG.tzOffsetHours, days,
+    now: new Date().toISOString(), tz: CFG.tzOffsetHours, days, from, to,
+    preset: range.preset, today: tdy,
+    firstDay: q1('SELECT MIN(day) AS d FROM events').d || tdy,
     totals: { ...totals, new_week: newWeek }, live, byDay, cars, carBuys,
     tracks, weapons, modes, sizes, platforms, versions, ads, adsByDay,
     buys, topBuys, levels, players, retention, funnel,
@@ -465,6 +512,14 @@ const PAGE = String.raw`<!doctype html>
   button { background:var(--panel2); color:var(--ink); border:1px solid var(--line);
     border-radius:8px; padding:6px 12px; cursor:pointer; font-size:13px; }
   button:hover { border-color:var(--teal); }
+  .period { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:0 0 12px;
+    padding:10px 12px; background:var(--panel); border:1px solid var(--line); border-radius:10px; }
+  .period .lbl { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.5px; margin-right:4px; }
+  .period button.on { background:var(--teal); color:#10201d; border-color:var(--teal); font-weight:600; }
+  .period input[type=date] { background:var(--panel2); color:var(--ink); border:1px solid var(--line);
+    border-radius:8px; padding:5px 8px; font:inherit; font-size:13px; color-scheme:dark; }
+  .period .rng { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-left:8px;
+    color:var(--dim); font-size:13px; }
 </style></head>
 <body>
 <header>
@@ -490,7 +545,9 @@ function kpi(cap, val, note) {
 /** Столбики по дням: серии [{key,color,label}] из массива rows с полем day. */
 function chart(rows, series) {
   if (!rows.length) return '<p class="muted">нет данных</p>';
-  const W = Math.max(rows.length * 26, 320), H = 170, pad = 24;
+  // Ширина постоянная: SVG тянется без сохранения пропорций, и ширина «по числу дней»
+  // сплющивала бы подписи на длинном периоде (выбор периода — 16.11.2026)
+  const W = 640, H = 170, pad = 24;
   let max = 1;
   for (const r of rows) for (const s of series) max = Math.max(max, Number(r[s.key]) || 0);
   const bw = (W - pad * 2) / rows.length;
@@ -505,19 +562,22 @@ function chart(rows, series) {
   }
   rows.forEach((r, i) => {
     const x0 = pad + i * bw;
+    const gap = Math.min(2, bw * 0.15); // На годовом периоде столбик уже 2 единиц
     series.forEach((s, k) => {
       const v = Number(r[s.key]) || 0;
       const h = ((H - pad) * v) / max;
-      const w = (bw - 4) / series.length;
-      svg += '<rect x="' + (x0 + 2 + k * w) + '" y="' + (H - h) + '" width="' +
-        Math.max(w - 1, 1) + '" height="' + Math.max(h, v ? 1 : 0) +
+      const w = (bw - gap * 2) / series.length;
+      svg += '<rect x="' + (x0 + gap + k * w) + '" y="' + (H - h) + '" width="' +
+        Math.max(w - Math.min(1, w * 0.2), 0.5) + '" height="' + Math.max(h, v ? 1 : 0) +
         '" fill="' + s.color + '" rx="1"><title>' + r.day + ': ' + v +
         ' ' + s.label + '</title></rect>';
     });
-    if (rows.length <= 32 || i % 2 === 0) {
+    // Подписи: не больше ~16 штук; на длинном периоде — «дд.мм»
+    const step = Math.max(1, Math.ceil(rows.length / 16));
+    if (rows.length <= 32 || i % step === 0) {
       svg += '<text x="' + (x0 + bw / 2) + '" y="' + (H + 12) +
         '" fill="#6f7a8c" font-size="9" text-anchor="middle">' +
-        r.day.slice(8) + '</text>';
+        (rows.length > 31 ? r.day.slice(8) + '.' + r.day.slice(5, 7) : r.day.slice(8)) + '</text>';
     }
   });
   svg += '</svg><div class="legend">' + series.map((s) =>
@@ -549,8 +609,42 @@ function card(title, body) {
 
 let DATA = null;
 
+// Период графиков по дням: 'days=30', 'days=all' или 'from=…&to=…'. Помнится браузером.
+let PERIOD = 'days=30';
+try { PERIOD = localStorage.getItem('bhrPeriod') || PERIOD; } catch (e) {}
+const PRESETS = [['7', '7 дней'], ['14', '14 дней'], ['30', '30 дней'], ['90', '90 дней'], ['all', 'всё время']];
+const FD = (d) => (d ? d.slice(8, 10) + '.' + d.slice(5, 7) + '.' + d.slice(0, 4) : '—');
+
+function setPeriod(p) {
+  PERIOD = p;
+  try { localStorage.setItem('bhrPeriod', p); } catch (e) {}
+  load();
+}
+
+function periodBar(d) {
+  const cur = d.preset === 'custom' ? 'custom' : String(d.preset);
+  return '<div class="period"><span class="lbl">Период графиков</span>' +
+    PRESETS.map((p) => '<button data-days="' + p[0] + '"' + (cur === p[0] ? ' class="on"' : '') + '>' +
+      p[1] + '</button>').join('') +
+    '<span class="rng">с <input type="date" id="pFrom" value="' + d.from + '" min="' + d.firstDay +
+    '" max="' + d.today + '"> по <input type="date" id="pTo" value="' + d.to + '" min="' + d.firstDay +
+    '" max="' + d.today + '"><button id="pGo"' + (cur === 'custom' ? ' class="on"' : '') +
+    '>показать</button></span></div>';
+}
+
+function bindPeriod() {
+  document.querySelectorAll('.period [data-days]').forEach((b) => {
+    b.onclick = () => setPeriod('days=' + b.dataset.days);
+  });
+  const go = document.getElementById('pGo');
+  if (go) go.onclick = () => {
+    const f = document.getElementById('pFrom').value, t = document.getElementById('pTo').value;
+    if (f && t) setPeriod('from=' + (f < t ? f : t) + '&to=' + (f < t ? t : f));
+  };
+}
+
 async function load() {
-  const r = await fetch('api/summary?days=30', { credentials: 'same-origin' });
+  const r = await fetch('api/summary?' + PERIOD, { credentials: 'same-origin' });
   if (!r.ok) {
     document.getElementById('root').innerHTML =
       '<div class="err">Сервер ответил ' + r.status + '. Проверьте ссылку с паролем.</div>';
@@ -583,7 +677,8 @@ function render() {
       (d.retention.d7_pct == null ? '—' : d.retention.d7_pct + ' %')) +
     '</div>';
 
-  h += '<h2>По дням (30 суток)</h2><div class="cards">' +
+  h += '<h2>По дням: ' + FD(d.from) + ' — ' + FD(d.to) + ' (' + R(d.days) + ' дн.)</h2>' +
+    periodBar(d) + '<div class="cards">' +
     card('Игроки и новички', chart(d.byDay, [
       { key:'players', color:'#35c9b5', label:'играли' },
       { key:'newcomers', color:'#ffc61e', label:'новые' }])) +
@@ -696,6 +791,7 @@ function render() {
       (d.ingest.errors ? ', битых ' + R(d.ingest.errors) : '')) + '</p>';
 
   document.getElementById('root').innerHTML = h;
+  bindPeriod();
 }
 
 function row(k, v) {
@@ -759,10 +855,9 @@ const server = http.createServer((req, res) => {
       return res.end(PAGE.replaceAll('__TITLE__', CFG.title));
     }
     if (url.pathname === '/api/summary') {
-      const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 1), 365);
       res.writeHead(200, { ...headers,
         'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-      return res.end(JSON.stringify(summary(days)));
+      return res.end(JSON.stringify(summary(parseRange(url.searchParams))));
     }
     if (url.pathname === '/api/events') {
       const limit = Number(url.searchParams.get('limit')) || 120;
